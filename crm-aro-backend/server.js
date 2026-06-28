@@ -23405,6 +23405,9 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
     // the row + the optional filter. Batched single query; mapped by leadId.
     var ccFilter = String(req.query.closingCompanyId || "").trim();
     var ccFilterValid = mongoose.Types.ObjectId.isValid(ccFilter);
+    // Developer (D5) — optional filter, ANDed with the closing-company filter.
+    var devFilter = String(req.query.developerId || "").trim();
+    var devFilterValid = mongoose.Types.ObjectId.isValid(devFilter);
     var pbdLeadIds = docs.map(function(x){ return x.leadId; }).filter(Boolean);
     var ccByLeadPBD = {}, devByLeadPBD = {};
     if (pbdLeadIds.length) {
@@ -23494,6 +23497,12 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       if (ccFilterValid) {
         var ccIdPBD = ccDocPBD ? String(ccDocPBD._id) : "";
         if (ccIdPBD !== ccFilter) continue;
+      }
+      // Developer (D5) — skip non-matching deals before totals accumulate, so
+      // both the rows AND the footer totals reflect the developer filter.
+      if (devFilterValid) {
+        var devIdPBD = devDocPBD ? String(devDocPBD._id) : "";
+        if (devIdPBD !== devFilter) continue;
       }
 
       tRev += revenue; tBroker += brokerPayouts; tTeam += teamPayouts;

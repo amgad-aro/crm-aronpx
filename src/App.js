@@ -295,6 +295,77 @@ var SourceFilterSelect = memo(function SourceFilterSelect(props){
   </select>;
 });
 
+// Reusable searchable single-select (D5). Native <select> has no type-to-filter,
+// which is painful for long lists (50+ developers). This is a minimal combobox: a
+// trigger button that opens a panel with a filter input + a keyboard-navigable
+// option list (ArrowUp/Down to move, Enter to pick, Esc to close); closes on
+// outside-click. Props:
+//   value       — current selected value ("" = the empty row)
+//   onChange    — fn(nextValue)
+//   options     — [{ value, label }]  (do NOT include the empty row; pass emptyLabel)
+//   emptyLabel  — label for the always-present value="" row ("All developers" / "— None —")
+//   placeholder — search input placeholder + trigger text when nothing is selected
+//   width / maxWidth / fontSize — optional style overrides
+var SearchableSelect = function(props){
+  var options = props.options || [];
+  var emptyLabel = props.emptyLabel != null ? props.emptyLabel : "";
+  var stateOpen = useState(false), open = stateOpen[0], setOpen = stateOpen[1];
+  var stateQ = useState(""), q = stateQ[0], setQ = stateQ[1];
+  var stateHi = useState(0), hi = stateHi[0], setHi = stateHi[1];
+  var boxRef = useRef(null);
+  var inputRef = useRef(null);
+
+  var allOpts = [{ value: "", label: emptyLabel }].concat(options);
+  var ql = q.trim().toLowerCase();
+  var filtered = ql ? allOpts.filter(function(o){ return String(o.label||"").toLowerCase().indexOf(ql) !== -1; }) : allOpts;
+  var selected = allOpts.filter(function(o){ return String(o.value)===String(props.value||""); })[0];
+  var triggerLabel = selected ? selected.label : (props.value || "");
+
+  useEffect(function(){
+    if (!open) return;
+    function onDown(e){ if (boxRef.current && !boxRef.current.contains(e.target)) { setOpen(false); setQ(""); } }
+    document.addEventListener("mousedown", onDown);
+    return function(){ document.removeEventListener("mousedown", onDown); };
+  }, [open]);
+  useEffect(function(){ if (open) { setHi(0); if (inputRef.current) { try { inputRef.current.focus(); } catch(e){} } } }, [open]);
+  useEffect(function(){ setHi(function(h){ return Math.min(h, Math.max(0, filtered.length-1)); }); }, [ql, filtered.length]);
+
+  function choose(o){ props.onChange(o.value); setOpen(false); setQ(""); }
+  function onKey(e){
+    if (e.key === "ArrowDown"){ e.preventDefault(); setHi(function(h){ return Math.min(h+1, filtered.length-1); }); }
+    else if (e.key === "ArrowUp"){ e.preventDefault(); setHi(function(h){ return Math.max(h-1, 0); }); }
+    else if (e.key === "Enter"){ e.preventDefault(); if (filtered[hi]) choose(filtered[hi]); }
+    else if (e.key === "Escape"){ e.preventDefault(); setOpen(false); setQ(""); }
+  }
+
+  var width = props.width || "100%";
+  var maxWidth = props.maxWidth || 260;
+  var fontSize = props.fontSize || 12;
+
+  return <div ref={boxRef} style={{ position:"relative", width:width, maxWidth:maxWidth, boxSizing:"border-box" }}>
+    <button type="button" onClick={function(){ setOpen(function(o){ return !o; }); }}
+      style={{ width:"100%", textAlign:"start", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, background:"#fff", fontSize:fontSize, cursor:"pointer", boxSizing:"border-box", display:"flex", justifyContent:"space-between", alignItems:"center", gap:6, color:(triggerLabel?C.text:C.textLight), fontFamily:"inherit" }}>
+      <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{triggerLabel || props.placeholder || "Select…"}</span>
+      <span style={{ color:C.textLight, flexShrink:0 }}>▾</span>
+    </button>
+    {open && <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,0.16)", zIndex:1000, maxHeight:260, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+      <input ref={inputRef} value={q} onChange={function(e){ setQ(e.target.value); }} onKeyDown={onKey}
+        placeholder={props.placeholder || "Search…"}
+        style={{ margin:8, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:fontSize, outline:"none", boxSizing:"border-box", fontFamily:"inherit" }}/>
+      <div style={{ overflowY:"auto" }}>
+        {filtered.length===0 && <div style={{ padding:"8px 12px", fontSize:fontSize, color:C.textLight }}>No matches</div>}
+        {filtered.map(function(o, idx){
+          var isSel = String(o.value)===String(props.value||"");
+          return <div key={String(o.value)+"|"+idx} onMouseEnter={function(){ setHi(idx); }} onMouseDown={function(e){ e.preventDefault(); choose(o); }}
+            style={{ padding:"7px 12px", fontSize:fontSize, cursor:"pointer", background:(idx===hi?"#F1F5F9":"#fff"), color:(o.value?C.text:C.textLight), fontWeight:(isSel?700:400), whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+            {o.label || (o.value || "")}
+          </div>;
+        })}
+      </div>
+    </div>}
+  </div>;
+};
+
 // Build the dropdown options for a Lead source <select>. Always prepends a
 // disabled-feeling "Select source..." placeholder so the empty value is a
 // forced choice (caller validates before submit). If the current value is
@@ -2973,7 +3044,7 @@ var fillTemplate = function(template, lead, agentName) {
 };
 
 // ===== EXPORT EXCEL =====
-var exportLeadsToExcel = async function(leads, users, filename, includeClosingCompany, includeLeadId) {
+var exportLeadsToExcel = async function(leads, users, filename, includeClosingCompany, includeLeadId, includeDeveloper) {
   var XLSX = await new Promise(function(resolve) {
     if (window.XLSX) { resolve(window.XLSX); return; }
     var s = document.createElement("script");
@@ -2990,6 +3061,8 @@ var exportLeadsToExcel = async function(leads, users, filename, includeClosingCo
   // Feature B — resolve a lead's closing company name from the populated
   // closingCompanyId ({_id,name}); empty for non-deal leads / unpopulated ids.
   var ccName = function(l){ var cc=l&&l.closingCompanyId; return (cc&&typeof cc==="object"&&cc.name)?cc.name:""; };
+  // Developer (D5) — developerId arrives populated ({_id,name}) from /api/leads.
+  var devName = function(l){ var dv=l&&l.developerId; return (dv&&typeof dv==="object"&&dv.name)?dv.name:""; };
   var rows = leads.map(function(l) {
     var row = {
       "Name": l.name,
@@ -3013,6 +3086,7 @@ var exportLeadsToExcel = async function(leads, users, filename, includeClosingCo
     // those leads were never EOI/DoneDeal). Matches the on-screen "ID #01000".
     if (includeLeadId) row["ID"] = (l.leadId != null ? formatLeadId(l.leadId) : "");
     if (includeClosingCompany) row["Closing Company"] = ccName(l);
+    if (includeDeveloper) row["Developer"] = devName(l);
     return row;
   });
   var ws = XLSX.utils.json_to_sheet(rows);
@@ -6051,7 +6125,7 @@ var LeadsPage = function(p) {
         <input type="file" ref={fileRef} accept=".xlsx,.xls,.csv" onChange={handleImport} style={{ display:"none" }}/>
         {isOnlyAdmin&&<Btn outline onClick={function(){fileRef.current.click();}} loading={importing} style={{ padding:"7px 11px", fontSize:12 }}><Upload size={13}/> {t.importExcel}</Btn>}
         {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 11px", fontSize:12 }}><Plus size={14}/> {isReq?t.addRequest:t.addLead}</Btn>}
-        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads",canSeeClosingCompany(p.cu)&&!isReq,canSeeLeadIds(p.cu)&&!isReq);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
+        {p.cu&&p.cu.role==="admin"&&<Btn outline onClick={function(){exportLeadsToExcel(filtered,p.users,isReq?"daily_requests":"leads",canSeeClosingCompany(p.cu)&&!isReq,canSeeLeadIds(p.cu)&&!isReq,canEditDeveloper(p.cu)&&!isReq);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}><FileSpreadsheet size={13}/> {t.exportExcel}</Btn>}
         {!p.isMobile&&isOnlyAdmin&&<Btn outline onClick={function(){setShowQuickAdd(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><Zap size={13}/> {t.quickAdd}</Btn>}
       </div>
       </div>
@@ -11731,9 +11805,11 @@ var DealsPage = function(p) {
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token]);
-  // Developers (D4) — fetch once for the dropdown + name map (admin/SA only).
+  // Developers (D4/D5) — fetch once for the side-panel dropdown (admin/SA) AND
+  // the developer filter (all roles). GET /api/developers is open to any auth,
+  // so load it for everyone; the dropdown itself stays admin/SA-gated below.
   useEffect(function(){
-    if (!p.token || !canEditDeveloper(p.cu)) return;
+    if (!p.token) return;
     var cancelled = false;
     apiFetch("/api/developers","GET",null,p.token)
       .then(function(data){
@@ -11778,6 +11854,8 @@ var DealsPage = function(p) {
   // name via the populated object first, then the fetched developers map.
   var devIdOf=function(d){ var dv=d&&d.developerId; return dv?String(dv._id||dv):""; };
   var devNameOf=function(d){ var dv=d&&d.developerId; if(dv&&typeof dv==="object"&&dv.name) return dv.name; var id=devIdOf(d); if(!id) return ""; var hit=(dealDevelopers||[]).find(function(x){return String(x._id)===id;}); return hit?hit.name:""; };
+  // Developer (D5) — options for the filter dropdown (managed developers list).
+  var dealDeveloperOpts=(dealDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; });
   // Split-deal credit rule mirrors the backend my-stats reducer: for any
   // non-admin caller, a split deal counts as FULL (1.0) when both agents are
   // visible in p.users (server-scoped subtree), else 0.5. Sales p.users is
@@ -11859,6 +11937,7 @@ var DealsPage = function(p) {
     var w={};deals.forEach(function(d){if(d.project)w[d.project]=getProjectWeight(d.project);});return w;
   });
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
+  var [dealDeveloperFilter,setDealDeveloperFilter]=useState(""); // Developer (D5) — "" = all
   // Phase R-12 Part 4 — All / Internal / External filter pill state. Scoped
   // to the current Active|Cancelled tab (counts and filter both). Default
   // "all". Pre-Part-2 leads default to dealType "internal" so the External
@@ -11891,6 +11970,7 @@ var DealsPage = function(p) {
     if(dealTypeFilter==="internal" && (d.dealType||"internal")!=="internal") return false;
     if(dealTypeFilter==="external" && d.dealType!=="external") return false;
     if(dealTypeFilter==="ambassador" && d.dealType!=="ambassador") return false; // Phase R-14
+    if(dealDeveloperFilter && devIdOf(d)!==dealDeveloperFilter) return false; // Developer (D5)
     return true;
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){
@@ -12096,19 +12176,27 @@ var DealsPage = function(p) {
             label resolve via devIdOf / the developers map. "— None —" clears it. */}
         {canEditDeveloper(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
-          <select value={devIdOf(selectedDeal)} onChange={async function(e){
-            var val=e.target.value;
-            try{
-              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{developerId:val||null},p.token);
-              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-              setSelectedDeal(updated);
-              setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;}):prev;});
-            }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
-          }} style={{ width:"100%", maxWidth:260, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, boxSizing:"border-box" }}>
-            <option value="">— None —</option>
-            {(dealDevelopers||[]).length===0 && devIdOf(selectedDeal) && <option value={devIdOf(selectedDeal)}>{devNameOf(selectedDeal)}</option>}
-            {(dealDevelopers||[]).map(function(dv){ return <option key={dv._id} value={String(dv._id)}>{dv.name}</option>; })}
-          </select>
+          <SearchableSelect
+            value={devIdOf(selectedDeal)}
+            emptyLabel="— None —"
+            placeholder="Search developers…"
+            maxWidth={260}
+            options={(function(){
+              var base=(dealDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; });
+              // Inject the current value if the list hasn't loaded it yet, so the
+              // trigger shows the name (devNameOf resolves it) instead of an id.
+              var cur=devIdOf(selectedDeal);
+              if (cur && !base.some(function(o){ return o.value===cur; })) base.unshift({ value:cur, label:devNameOf(selectedDeal)||cur });
+              return base;
+            })()}
+            onChange={async function(val){
+              try{
+                var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{developerId:val||null},p.token);
+                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+                setSelectedDeal(updated);
+                setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;}):prev;});
+              }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
+            }}/>
         </div>}
 
         {/* Commission Claim Date - sales admin only */}
@@ -12272,6 +12360,9 @@ var DealsPage = function(p) {
           {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
         </select>}
       </div>
+      {canSeeDeveloper(p.cu)&&<div style={{ marginBottom:8 }}>
+        <SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width="100%" maxWidth={9999} fontSize={12}/>
+      </div>}
       <div style={{ display:"flex", gap:12, marginBottom:8 }}>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
           <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>📅 From</span>
@@ -12282,13 +12373,14 @@ var DealsPage = function(p) {
           <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
         </div>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all")&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>:<div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="">👤 All Agents</option>
         {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
       </select>}
+      {canSeeDeveloper(p.cu)&&<SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width={200} maxWidth={200} fontSize={12}/>}
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
         <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
@@ -12297,7 +12389,7 @@ var DealsPage = function(p) {
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all")&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
@@ -24865,6 +24957,11 @@ var CommissionsPage = function(p) {
   // company list that feeds its dropdown.
   var [pbdCcFilter, setPbdCcFilter] = useState("");
   var [commClosingCompanies, setCommClosingCompanies] = useState([]);
+  // Developer (D5) — claims-list filter ("" = all), Net-Profit-by-Deal filter,
+  // and the shared developers list feeding both searchable dropdowns.
+  var [developerFilter, setDeveloperFilter] = useState("");
+  var [pbdDevFilter, setPbdDevFilter] = useState("");
+  var [commDevelopers, setCommDevelopers] = useState([]);
   var [expenseCategories, setExpenseCategories] = useState([]);
   var [addingExpense, setAddingExpense] = useState(false);
   var [editingExpense, setEditingExpense] = useState(null); // expense row or null
@@ -24997,14 +25094,14 @@ var CommissionsPage = function(p) {
       .catch(function(){ if (!cancelled) { setPnl(null); setPnlLoading(false); pnlSilentReloadRef.current = false; } });
     // Phase R-15 — Net Profit by Deal feed (admin-only, same year scope).
     if (!silent) setProfitByDealLoading(true);
-    apiFetch("/api/commissions/profit-by-deal?year=" + encodeURIComponent(effYear) + (pbdCcFilter ? "&closingCompanyId=" + encodeURIComponent(pbdCcFilter) : ""), "GET", null, p.token)
+    apiFetch("/api/commissions/profit-by-deal?year=" + encodeURIComponent(effYear) + (pbdCcFilter ? "&closingCompanyId=" + encodeURIComponent(pbdCcFilter) : "") + (pbdDevFilter ? "&developerId=" + encodeURIComponent(pbdDevFilter) : ""), "GET", null, p.token)
       .then(function(d){ if (!cancelled) { setProfitByDeal(d || null); setProfitByDealLoading(false); } })
       .catch(function(){ if (!cancelled) { setProfitByDeal(null); setProfitByDealLoading(false); } });
     apiFetch("/api/expense-categories", "GET", null, p.token)
       .then(function(d){ if (!cancelled) setExpenseCategories((d && d.data) || []); })
       .catch(function(){ if (!cancelled) setExpenseCategories([]); });
     return function(){ cancelled = true; };
-  }, [activeTab, annualYear, p.cu, p.token, pnlReloadTick, pbdCcFilter]);
+  }, [activeTab, annualYear, p.cu, p.token, pnlReloadTick, pbdCcFilter, pbdDevFilter]);
   // Feature B — load closing companies for the Net Profit by Deal filter dropdown.
   useEffect(function(){
     if (activeTab !== "annual" || !p.cu || p.cu.role !== "admin" || !p.token) return;
@@ -25014,6 +25111,18 @@ var CommissionsPage = function(p) {
       .catch(function(){ /* non-fatal: dropdown just shows "All companies" */ });
     return function(){ cancelled = true; };
   }, [activeTab, p.cu, p.token]);
+  // Developer (D5) — load the managed developers list for the claims-list filter
+  // AND the Net-Profit-by-Deal filter. Page-wide (not tab-scoped) since the
+  // claims filter lives on the main tab. Page is admin/SA-only at routing.
+  useEffect(function(){
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/developers", "GET", null, p.token)
+      .then(function(d){ if (!cancelled) { var rows=(d&&Array.isArray(d.data))?d.data:(Array.isArray(d)?d:[]); setCommDevelopers(rows); } })
+      .catch(function(){ /* non-fatal: dropdown just shows "All developers" */ });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.token]);
 
   // Phase R-7 — Payout Report fetcher. payoutMonth is "YYYY-MM"; backend
   // accepts year/month numeric params.
@@ -26190,7 +26299,11 @@ var CommissionsPage = function(p) {
           return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>;
         })}
       </select>
-      {(search || agentFilter || claimsYearFilter || statusFilter !== "all" || dealTypeFilter !== "all") && <button onClick={function(){ setSearch(""); setAgentFilter(""); setClaimsYearFilter(""); setStatusFilter("all"); setDealTypeFilter("all"); }} style={{
+      {/* Developer (D5) — searchable filter; options from the managed list. */}
+      <SearchableSelect value={developerFilter} onChange={setDeveloperFilter}
+        options={(commDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
+        emptyLabel="🏗️ All developers" placeholder="Search developers…" width={180} maxWidth={180} fontSize={13}/>
+      {(search || agentFilter || claimsYearFilter || statusFilter !== "all" || dealTypeFilter !== "all" || developerFilter) && <button onClick={function(){ setSearch(""); setAgentFilter(""); setClaimsYearFilter(""); setStatusFilter("all"); setDealTypeFilter("all"); setDeveloperFilter(""); }} style={{
         padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, color:C.textLight
       }}>Clear</button>}
     </div>
@@ -26214,6 +26327,11 @@ var CommissionsPage = function(p) {
           return !(r && r.externalSplit && r.externalSplit.isExternal)
               && !(r && r.ambassadorSplit && r.ambassadorSplit.isAmbassador);
         });
+      }
+      // Developer (D5) — client-side filter by the joined r.developer (the
+      // lead's linked developerId resolved on the commissions endpoint).
+      if (developerFilter) {
+        displayRows = displayRows.filter(function(r){ return r && r.developer && String(r.developer._id) === String(developerFilter); });
       }
       if (displayRows.length === 0) {
         return <div style={{ padding:"40px 16px", textAlign:"center", color:C.textLight, background:"#fff", borderRadius:14, border:"1px solid #E8ECF1" }}>
@@ -26767,6 +26885,11 @@ var CommissionsPage = function(p) {
                       <option value="">All companies</option>
                       {(commClosingCompanies||[]).map(function(co){ return <option key={co._id} value={String(co._id)}>{co.name}</option>; })}
                     </select>
+                    {/* Developer (D5) — searchable filter (server-side via
+                        profit-by-deal?developerId=..., ANDed with the company filter). */}
+                    <SearchableSelect value={pbdDevFilter} onChange={setPbdDevFilter}
+                      options={(commDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
+                      emptyLabel="🏗️ All developers" placeholder="Search developers…" width={170} maxWidth={170} fontSize={11}/>
                   </div>
                   {profitByDealLoading && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>Loading…</div>}
                   {!profitByDealLoading && allDeals.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No deals for this year</div>}
