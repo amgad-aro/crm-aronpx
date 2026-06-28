@@ -2373,6 +2373,14 @@ var LeadForm = function(p) {
   var [showAddBroker, setShowAddBroker] = useState(false);
   var [newBrokerName, setNewBrokerName] = useState("");
   var [savingBroker, setSavingBroker] = useState(false);
+  // Developer (N3) — REQUIRED for Add Deal / Add EOI (create mode, EOI/DoneDeal).
+  // Same pattern as StatusModal: devSelId (dropdown) XOR devPendName (typed new
+  // name). Create-only — edit mode never shows it (developer edits go through the
+  // deal side-panel dropdown, which carries the N1 approval lock).
+  var [devSelId, setDevSelId] = useState("");
+  var [devPendName, setDevPendName] = useState("");
+  var [devPendOpen, setDevPendOpen] = useState(false);
+  var [devList, setDevList] = useState([]);
   // Phase R-12 Part 5 — commission lock. When editing an existing deal whose
   // active commission already exists, the dealType / broker / pct fields are
   // frozen on the FE (matched by the backend lock at PUT /api/leads/:id).
@@ -2433,6 +2441,19 @@ var LeadForm = function(p) {
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOnlyAdmin, isDoneDealForm, p.editId]);
+  // Developer list (N3) — load the 505 managed developers for the create-mode
+  // EOI/DoneDeal developer picker (edit mode never shows the field).
+  useEffect(function(){
+    if (p.editId || !(isEOIForm||isDoneDealForm) || !p.token) return;
+    var cancelled = false;
+    apiFetch("/api/developers","GET",null,p.token).then(function(data){
+      if (cancelled) return;
+      var rows = (data && Array.isArray(data.data)) ? data.data : (Array.isArray(data) ? data : []);
+      setDevList(rows);
+    }).catch(function(){ /* non-fatal: dropdown shows no options */ });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEOIForm, isDoneDealForm, p.editId, p.token]);
 
   // Inline broker creation. Triggered when the user picks "+ Add new broker"
   // in the dropdown OR clicks the inline + button. Posts to /api/brokers,
@@ -2476,6 +2497,7 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
     if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
+    if (!p.editId && (isEOIForm || isDoneDealForm) && !devSelId && !devPendName.trim()) { alert("Please pick a developer or enter a new name"); return; }   // N3
     // Phase R-13 — broker split is now informal (commissionTaxPct may be 0).
     // Only brokerSharePct is required > 0 for External; broker dropdown still
     // required. State tax is handled by the canonical preview flow off
@@ -2534,6 +2556,12 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      // Developer (N3) — create-mode EOI/DoneDeal only: send exactly one of
+      // developerId / developerPending (N1's backend require accepts either).
+      if (!p.editId && (isEOIForm || isDoneDealForm)) {
+        if (devSelId) payload.developerId = devSelId;
+        else if (devPendName.trim()) payload.developerPending = devPendName.trim();
+      }
       // Phase R-13 — FE sends commissionRate only; BE recomputes commissionAmount
       // server-side from budget × rate / 100. Never trust the client number.
       (function(){
@@ -2660,6 +2688,25 @@ var LeadForm = function(p) {
       {value:"DoneDeal",label:"Done Deal"}
     ]}/>}
     <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
+    {/* Developer (N3) — REQUIRED for create-mode EOI/DoneDeal. Pick from the 505
+        OR type a new name (mutually exclusive). */}
+    {(isEOIForm||isDoneDealForm)&&!p.editId&&<div style={{ marginBottom:13 }}>
+      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏗️ Developer <span style={{color:C.danger}}>*</span></label>
+      {!devPendOpen && <SearchableSelect
+        value={devSelId}
+        emptyLabel="— Select developer —"
+        placeholder="Search developers…"
+        width="100%" maxWidth={9999} fontSize={13}
+        options={(devList||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
+        onChange={function(val){ setDevSelId(val); if(val) setDevPendName(""); }}/>}
+      {devPendOpen && <input type="text" value={devPendName} placeholder="New developer name"
+        onChange={function(e){ setDevPendName(e.target.value); setDevSelId(""); }}
+        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>}
+      <button type="button" onClick={function(){ if(devPendOpen){ setDevPendOpen(false); setDevPendName(""); } else { setDevPendOpen(true); setDevSelId(""); } }}
+        style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline" }}>
+        {devPendOpen ? "← Pick from the list instead" : "Can't find the developer? Enter a new name"}
+      </button>
+    </div>}
     {!isReq&&<Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/>}
     {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
       // Agent-selector list. EOI / Deal forms ONLY also expose the admin "amgad"
@@ -3053,7 +3100,7 @@ var LeadForm = function(p) {
     />}
     <div style={{ display:"flex", gap:10 }}>
       <Btn outline onClick={p.onClose} style={{ flex:1 }}>{t.cancel}</Btn>
-      <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
+      <Btn onClick={submit} loading={saving} disabled={!p.editId && (isEOIForm||isDoneDealForm) && !devSelId && !devPendName.trim()} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
     </div>
   </div>;
 };
