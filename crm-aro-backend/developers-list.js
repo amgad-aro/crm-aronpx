@@ -1,0 +1,61 @@
+// Shared data module — the cleaned list of 506 developer display names provided
+// by the user. Single source of truth, required by BOTH bulk-add-developers.js
+// (CLI) and the temporary POST /api/admin/bulk-add-developers endpoint in
+// server.js, so the two can never drift.
+//
+// Note: "One\\One" stores a literal backslash so the display name is exactly
+// "One\One". Uniqueness downstream is by normalizedName (lowercase + strip
+// non-alphanumeric); "Almarassem" collapses into "Al Marassem" (1 collision).
+module.exports = [
+  "33 Development","A Capital","AAyan Dev","ADC","ADVA","AG","Agec","AIG Misr","Ajad","Ajna",
+  "Akadia","Akam","Akam Alrajhi","Al Ahly Sabbour","Al Bostani","Al Dawlia","Al Fath","Al Hayah","Al Jazi","Al Karam",
+  "Al Marassem","Al Oroba","Al Qamzi","Al Raabat","Al Remas","Al Riyadh Misr","Al Waheed","Alamakan","Alasima","Albrouj Misr (ABM)",
+  "Alchemy","ALJAR (Valore)","Almousa","Almarassem","Amazon","Amer","AMG","Amorada","AMA","AMD",
+  "Anchor","AOG","Aqar Misr","Arab","Arabco","Arabco Commercial","Arabia","ARAQ","Archplan","Areej",
+  "Areva","Arkan Palm","ARCO","Aroma","Arqa","Artal","Ashrafia","Aspect","Aswaq","Atric",
+  "Avalon","AVA Mina","AV","Axis West","Azha (Separate)","Azizi (UAE)","Aziz Properties","AZZAR","Badr Eldin","Baron",
+  "Barwa","Beta Green","Better Home","B-Gate","Bin Salem","Binaa","Binghatti","BNG","Brixton","Brouq",
+  "Bulidex","Business Bay","C Dev","Cairo Heights","Capital","Capital Edge","Capital Hills","Capital Link","Captain","Carizma",
+  "Castello","Catalyst","Center Point","Centrada","Century","CGP","City Edge","Cleopatra","CLD","Code",
+  "Concrete","Constructa","Contact","Convoy","Coral Hills","Cornado","Cornerstone","Cred","Damac","Dana",
+  "Dar Alalmia","Dar Alarkan","Dar El Maghraby","Darak Group","Darna","Dahab","Delta","DiG","Direction White","DMP",
+  "Doja","Dolman","Dominar","Dorra","Dream Hills","Dream Town","Dubai","Eagle Group","Ebdaa","Ebny Dev",
+  "Eden","Edge","Edge Stone","Efid","Egy Holding","Egyptian","Egygap","Eg Tower","El Amar Group","El Basiony",
+  "El Garbry","El Haram","El Khalifa","El Manara","El Mansour","El Masria Group","El Massar","El Morshdy","El Nahal","El Riad Masr",
+  "ELEZZ Group","Elgendy","Elite","Elite Dev","Elite Home","Elite House","Elm","Emaar","Emaar Alex","Emarcom",
+  "Emperor","Empire Estate","Emtlak","Enmaa","Enwan","Enza","ERG","Euphoria","Everst","Everst View",
+  "First Group","Flow","Founders","FSG","FUD","G Dev","Gates","GDG","Gedico","Genoa",
+  "Geometric","Golden Pillars","Golden Point","Golden Town","Golden View","Golf City","Gosour","Grit","Grova","GUD",
+  "GUP","GV","Haiba","Hamat","Harva","Hassan Allam","HDP","HDP New Capital","HGD","Home Group",
+  "Home Town","Horizon","Horizona","House Building","HPD","Hub","HUD","Hyde Park","I Capital","I Home",
+  "Ibn Sina","Ibtkar","Icon","IGI","Il Cazar","Illume Societies","IMARAE","INMA","Inertia","Infinity",
+  "Innovia","Inter Build","Iunu","Iwan","JD","Jadeer","Jdar","Jiwa","JUST","Kandeel",
+  "Karnak","Kastoria","Katameya Gardens","Kayan","Khaled Sabry","Kleek","Kultura","Kunouz","KUD","La Hacienda",
+  "La Mirada","La Verde","La Vista","LakeView","Larz","Lasirena","Lazura","Leader","LEGACY","Life Louvers",
+  "Line","Living Yard","LMD","LUD","Lunar","M Squared","MA","Mabany Edris","Madaar","Madean",
+  "MAG","Magna","Main Mark","Mainland","Majid Al Futtaim","MAK","Make Place","Malaz","Malvern","Manaj",
+  "Maqam Misr","Mardev","Margins","Marakez","Marota","Marquee","Marsa Bagoush","Marsillia","Masr El Gadida","Mass",
+  "Master Group","Matter Makers","Maven","Maxim","Mazaya","Meamar Makkah","Melee","Memar Alashraf","Menaa Development","Menassat",
+  "Mercon","MG","Midicon","Milestone","Mint","Miqaat","Mirage","Misr Italia","MNHD","Mobco",
+  "Modad","Modon","Modon UAE","Monte Dev","Monterra","Montreal","More","Mountain View","MRS","Murtaqa",
+  "My Home","Naia","Najma","Nakhel","Namaa Al Khaleeg","Nations Of Sky","Nawassy","NCB","New Dream","New Event",
+  "New Generation","New Plan","Next Deal","Next Home","NJD","Noble","Nouvaz Stanza","Novara","NTG","One\\One",
+  "Ontario","Ora","Orascom (Gouna)","Orascom (Makadi)","Orascom (West)","Orbis","Orbit","OMG","OUD","Owagik",
+  "Palm Hills","Palmera","Paragon","People & Places","Pillarz-Tiffany","Plaza Gardens","PLDG","PRE","Prime","Prime Home",
+  "Project Gate","PTC","Pyramids","Pyramids Wales","Q Development","Qatari Diar","Qawafil","Qontrac","Qurtuba","Radix",
+  "Ramatan","Rayan","Rayat","Rayhana","Rayz","RE","RFCO","Red In","Red Sea","Redcon",
+  "REEDY GROUP","Reflect","Regency","Rejan","Rejan Commercial","Rekaz","Remal","Reportage","Retal","Retan",
+  "RG","RGD","Rich Point","RIO","Ritzy","Rivan","RMD","ROI","Roaya Group","Rock Elbatal",
+  "Rock Elbatal 2","Roq","Roses","Royal","Roya","RSD","RTM","RNA","RUD","Sakan",
+  "SAG","Samana","Samco","Sawary","Scope","SD","SDR","SED","SAM","Sense",
+  "Sephora","SERAC","Seif Dev","SIAC","Sign","Sia","SIVA","Sky AD","Sky Innovo","Skyway",
+  "Sckylers","Sobha Realty","SODIC","Sol","Solimar","Solvia","Somabay","Sorouh","SPD","Spectra",
+  "Squares","Starlight","Stau","Stella","STM","SUD","Sumou","Symphony","SV","Taj Dev",
+  "Taj Misr","Tabark","Tameer","Tameer West","Tamyoz","Tatweer","TBK","TED","TG","Tharaa",
+  "The ARK","The Eye","The Fort","The Gate","The Groove","The MarQ","Times","TLD","TMG","Torec",
+  "Town Writers","Townway","Travco","UC","UDG","UE","Upscale","Upwyde","Urban Edge","Urbnalanes",
+  "URD","V-Development","VACAY","VAI","Valero","Value","Vie Communities","Villar","Vivinda","Vortex",
+  "Vow","Voya","Wadi Digla","Wajha","WaterWay","Wealth","Wealth Holding","Wealth New","West Way","White Eagle",
+  "Winvistor","Wise","Wujha","W'S","X Estate","Xland Dev","Yasser Abdalla","Zada","Zaeem","Zaghloul",
+  "Zaya","Zayedar","Zayed Greens","Zayton","Zee Properties","Zodiac"
+];

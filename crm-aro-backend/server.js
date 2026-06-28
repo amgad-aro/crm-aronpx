@@ -23781,6 +23781,59 @@ app.delete("/api/developers/:id", auth, strictAdminOnly, async function(req, res
   }
 });
 
+// ===== TEMPORARY (one-time bulk import) — REMOVE this whole block once the
+// developer list has been imported. Loads developers-list.js (the same 506-name
+// list the CLI bulk-add-developers.js uses) and creates any missing Developer
+// docs idempotently. Admin-only. `?dryRun=1` previews with NO writes. Mirrors
+// the CLI script's dedupe/idempotency, reusing the Developer model +
+// normalizeDeveloperName already defined above. =====
+app.post("/api/admin/bulk-add-developers", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var DEV_NAMES = require("./developers-list");
+    var dryRun = String((req.query && req.query.dryRun) || "") === "1" || !!(req.body && req.body.dryRun === true);
+
+    // Dedupe input by normalizedName (keep first spelling); collect collisions.
+    var firstByKey = {}, order = [], collisions = [], invalid = [];
+    DEV_NAMES.forEach(function(raw){
+      var name = String(raw || "").trim();
+      var key = normalizeDeveloperName(name);
+      if (!key) { invalid.push(name); return; }
+      if (firstByKey[key] == null) { firstByKey[key] = name; order.push(key); }
+      else collisions.push({ key: key, kept: firstByKey[key], dropped: name });
+    });
+
+    var existing = await Developer.find({}).select("normalizedName").lean();
+    var existingByKey = {};
+    existing.forEach(function(d){ if (d && d.normalizedName) existingByKey[d.normalizedName] = true; });
+
+    var created = 0, already = 0, createdNames = [];
+    for (var i = 0; i < order.length; i++) {
+      var key = order[i], name = firstByKey[key];
+      if (existingByKey[key]) { already++; continue; }
+      if (dryRun) { created++; createdNames.push(name); continue; }
+      try { await Developer.create({ name: name, normalizedName: key }); created++; createdNames.push(name); }
+      catch(e2){ if (e2 && e2.code === 11000) already++; else throw e2; }
+    }
+
+    var finalCount = await Developer.countDocuments({});
+    res.json({
+      dryRun: dryRun,
+      inputNames: DEV_NAMES.length,
+      distinctKeys: order.length,
+      collisions: collisions,
+      invalid: invalid,
+      alreadyInDb: already,
+      created: created,
+      finalCount: finalCount,
+      createdNames: createdNames
+    });
+  } catch(e) {
+    console.error("[POST /api/admin/bulk-add-developers]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "bulk_add_developers_failed" });
+  }
+});
+// ===== END TEMPORARY bulk import =====
+
 // --- Expenses --------------------------------------------------------------
 // Cairo-local year-scoping: build a UTC range that maps to Y/01/01 00:00 →
 // (Y+1)/01/01 00:00 in Cairo. Egypt is UTC+3 fixed (no DST).
