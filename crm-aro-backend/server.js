@@ -302,6 +302,11 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // NO impact on commission/tax/payout math (like closingCompanyId above).
   // Indexed for DealsPage / Commissions / Reports filters.
   developerId:{type:mongoose.Schema.Types.ObjectId,ref:"Developer",default:null,index:true},
+  // Developer pending (N1) — free-text developer name a deal-editor typed at
+  // conversion when the developer wasn't in the managed list. Admin resolves it
+  // at approval (link/add/reject) -> sets developerId + clears this. At least one
+  // of developerId / developerPending is REQUIRED when converting to EOI/Deal.
+  developerPending:{type:String,default:"",trim:true},
   // Permanent sequential Lead ID (Feature A) — minted on creation via
   // nextLeadId() (atomic Counter). Displayed as "ID #" + 5-digit zero-pad to
   // admin/sales_admin only. Never changes; gaps are fine; ids are never reused.
@@ -9903,6 +9908,13 @@ app.post("/api/leads", auth, async function(req, res) {
         && req.user.role !== "admin" && req.user.role !== "sales_admin") {
       return res.status(403).json({ error: "Only admin / sales_admin may create EOI or Deal records directly. Use the lead status-change flow instead." });
     }
+    // Developer hard-require (N1) — a directly-created EOI/Deal needs a developer
+    // (developerId OR developerPending).
+    if (statusIn === "EOI" || statusIn === "DoneDeal") {
+      if (!normId(req.body.developerId) && !String((req.body && req.body.developerPending) || "").trim()) {
+        return res.status(400).json({ error: "developer_required", message: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name." });
+      }
+    }
     // Admin / sales_admin / manager / team_leader / integration keys may leave
     // agentId empty — those leads stay unassigned until an admin routes them.
     //
@@ -10099,6 +10111,8 @@ app.post("/api/leads", auth, async function(req, res) {
       isVIP:            false,
       eoiDeposit:       req.body.eoiDeposit || "",
       eoiDate:          req.body.eoiDate || "",
+      developerId:      normId(req.body.developerId),                       // N1
+      developerPending: String(req.body.developerPending || "").trim(),     // N1
       // Phase R-12 Part 3 — defaults handled by validateAndNormalizeExternalDeal:
       // when dealType is absent the schema default ("internal") + defaulted
       // sub-doc kick in; when present the helper has already normalized.
@@ -11240,15 +11254,35 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         req.body.closingCompanyId = normId(req.body.closingCompanyId);
       }
     }
-    // Developer (D4 -> R2/Option 1) — writable by ANY role that can edit the
-    // lead. The top-level scope gate above already enforces ownership (sales need
-    // a live slice / split; TL/manager/director need the lead in their reportsTo
-    // subtree; viewer/hr are blocked). The 505 developers are pre-vetted, so no
-    // extra role gate — unlike closingCompanyId, which stays admin/SA. normId
-    // turns a populated object / empty string into a clean id-or-null (invalid
-    // ids -> null, no CastError / dangling ref).
-    if (req.body.developerId !== undefined) {
-      req.body.developerId = normId(req.body.developerId);
+    // Approval fields (N1 — close the pre-existing gap) — eoiApproved /
+    // dealApproved may be written ONLY by admin / sales_admin (the approve
+    // buttons are gated to them on the FE; the backend had NO gate). Strip
+    // silently for any other role so a crafted PUT can't self-approve.
+    if ((req.body.eoiApproved !== undefined || req.body.dealApproved !== undefined)
+        && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      delete req.body.eoiApproved;
+      delete req.body.dealApproved;
+    }
+    // Developer (D4 -> R2 -> N1) — developerId / developerPending are writable by
+    // any deal-editing role (the scope gate above enforces ownership). normId
+    // sanitizes the id; developerPending is trimmed ("" clears it). APPROVAL LOCK
+    // (N1, symmetric): once the lead is admin-approved (eoiApproved for an EOI
+    // lead, dealApproved for a DoneDeal lead), non-admin/SA roles can no longer
+    // change either field — they must ask an admin. Admin/SA always pass; the
+    // lock re-opens automatically when an admin un-approves.
+    if (req.body.developerId !== undefined || req.body.developerPending !== undefined) {
+      if (req.body.developerId !== undefined) req.body.developerId = normId(req.body.developerId);
+      if (req.body.developerPending !== undefined) req.body.developerPending = String(req.body.developerPending || "").trim();
+      if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+        var devLockLead = await Lead.findById(req.params.id).select("status eoiApproved dealApproved").lean();
+        if (devLockLead) {
+          var devLocked = (devLockLead.status === "EOI"      && devLockLead.eoiApproved  === true)
+                       || (devLockLead.status === "DoneDeal" && devLockLead.dealApproved === true);
+          if (devLocked) {
+            return res.status(403).json({ error: "developer_locked", message: "Developer is locked after admin approval. Contact admin to change." });
+          }
+        }
+      }
     }
     // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
     // pattern as `locked` above: the Add/Edit Deal modal is admin-only on
@@ -11463,6 +11497,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     var trackedBody = req.body.agentId || req.body.status || req.body.callbackTime !== undefined || req.body.notes !== undefined || req.body.lastFeedback !== undefined || req.body.locked !== undefined;
     if (trackedBody) {
       oldLead = await Lead.findById(req.params.id).lean();
+    }
+    // Developer hard-require (N1) — converting to EOI/DoneDeal needs a developer:
+    // developerId OR developerPending, taken from the incoming body when present,
+    // else from the existing lead. Fires only on the status transition itself
+    // (oldLead.status !== new). developerId here is already normId-sanitized above.
+    if ((req.body.status === "EOI" || req.body.status === "DoneDeal") && oldLead && oldLead.status !== req.body.status) {
+      var convDevId   = (req.body.developerId !== undefined) ? req.body.developerId : oldLead.developerId;
+      var convDevPend = (req.body.developerPending !== undefined) ? String(req.body.developerPending || "").trim() : String(oldLead.developerPending || "").trim();
+      if (!convDevId && !convDevPend) {
+        return res.status(400).json({ error: "developer_required", message: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name." });
+      }
     }
     // Approve-push pre-read: capture prior approve flags + name ONLY when an
     // approve flag is present in the body (not in trackedBody, so the toggle-only
@@ -23803,6 +23848,59 @@ app.delete("/api/developers/:id", auth, strictAdminOnly, async function(req, res
   } catch(e) {
     console.error("[DELETE /api/developers/:id]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "developer_delete_failed" });
+  }
+});
+
+// POST /api/leads/:id/resolve-developer (N1) — admin/SA resolves a lead's
+// pending developer at approval time. Three actions:
+//   link   { developerId }  -> set Lead.developerId, clear developerPending
+//   add    { newName }      -> create (or reuse) a Developer, set it, clear pending
+//   reject {}               -> clear developerPending only (developerId untouched)
+app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: "Lead not found" });
+    var action = String((req.body && req.body.action) || "");
+
+    if (action === "link") {
+      var developerId = String((req.body && req.body.developerId) || "");
+      if (!mongoose.Types.ObjectId.isValid(developerId)) return res.status(400).json({ error: "developerId required" });
+      var devLink = await Developer.findById(developerId).lean();
+      if (!devLink) return res.status(404).json({ error: "developer not found" });
+      lead.developerId = devLink._id;
+      lead.developerPending = "";
+      await lead.save();
+      return res.json({ lead: lead.toObject(), developer: devLink });
+    }
+
+    if (action === "add") {
+      var newName = String((req.body && req.body.newName) || "").trim();
+      if (!newName) return res.status(400).json({ error: "newName required" });
+      var normalizedName = normalizeDeveloperName(newName);
+      if (!normalizedName) return res.status(400).json({ error: "name must contain letters or numbers" });
+      // Create or reuse an existing Developer with the same normalizedName.
+      var devAdd = await Developer.findOne({ normalizedName: normalizedName });
+      if (!devAdd) {
+        try { devAdd = await Developer.create({ name: newName, normalizedName: normalizedName }); }
+        catch(ce){ if (ce && ce.code === 11000) { devAdd = await Developer.findOne({ normalizedName: normalizedName }); } else throw ce; }
+      }
+      lead.developerId = devAdd._id;
+      lead.developerPending = "";
+      await lead.save();
+      return res.json({ lead: lead.toObject(), developer: devAdd && devAdd.toObject ? devAdd.toObject() : devAdd });
+    }
+
+    if (action === "reject") {
+      lead.developerPending = "";
+      await lead.save();
+      return res.json({ lead: lead.toObject() });
+    }
+
+    return res.status(400).json({ error: "invalid action — expected link | add | reject" });
+  } catch(e) {
+    console.error("[POST /api/leads/:id/resolve-developer]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "resolve_developer_failed" });
   }
 });
 
