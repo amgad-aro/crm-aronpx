@@ -11240,16 +11240,15 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         req.body.closingCompanyId = normId(req.body.closingCompanyId);
       }
     }
-    // Developer (D4) — admin/sales_admin only, same defense-in-depth as
-    // closingCompanyId above. The side-panel dropdown is admin/SA-gated on the
-    // FE; strip the field for any other role. normId turns a populated object /
-    // empty string into a clean id-or-null (invalid ids → null, no dangling ref).
+    // Developer (D4 -> R2/Option 1) — writable by ANY role that can edit the
+    // lead. The top-level scope gate above already enforces ownership (sales need
+    // a live slice / split; TL/manager/director need the lead in their reportsTo
+    // subtree; viewer/hr are blocked). The 505 developers are pre-vetted, so no
+    // extra role gate — unlike closingCompanyId, which stays admin/SA. normId
+    // turns a populated object / empty string into a clean id-or-null (invalid
+    // ids -> null, no CastError / dangling ref).
     if (req.body.developerId !== undefined) {
-      if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-        delete req.body.developerId;
-      } else {
-        req.body.developerId = normId(req.body.developerId);
-      }
+      req.body.developerId = normId(req.body.developerId);
     }
     // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
     // pattern as `locked` above: the Add/Edit Deal modal is admin-only on
