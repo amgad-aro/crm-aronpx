@@ -1328,6 +1328,27 @@ Developer.collection.createIndex({ normalizedName: 1 }, { unique: true }).catch(
 // developer names survive). "" when the input has no letters/digits.
 function normalizeDeveloperName(s){ return String(s||"").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ""); }
 
+// ===== DEVELOPER REQUEST (R1 — sales-requests-a-new-developer workflow) =====
+// A sales user (or any non-admin who can edit a deal) can request a developer
+// that's missing from the managed list. Admin reviews from Settings -> Developers
+// and approves (creates the Developer + links the deal), rejects (with reason),
+// or merges into an existing Developer. normalizedName mirrors Developer's so the
+// submit pre-check can detect "already exists" / "already requested".
+var DeveloperRequest = mongoose.model("DeveloperRequest", new mongoose.Schema({
+  requestedName:         { type: String, required: true },
+  normalizedName:        { type: String, required: true, index: true },
+  note:                  { type: String, default: "" },
+  requestedBy:           { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  requestedByName:       { type: String, default: "" },   // denormalized for display if the user is later deleted
+  leadId:                { type: mongoose.Schema.Types.ObjectId, ref: "Lead", default: null }, // deal context (optional)
+  status:                { type: String, enum: ["pending","approved","rejected","merged"], default: "pending", index: true },
+  reviewedBy:            { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  reviewedAt:            { type: Date, default: null },
+  rejectionReason:       { type: String, default: "" },
+  mergedIntoDeveloperId: { type: mongoose.Schema.Types.ObjectId, ref: "Developer", default: null }
+}, { timestamps: true }));
+DeveloperRequest.collection.createIndex({ status: 1, createdAt: -1 }).catch(function(){});
+
 // ===== COUNTER (Feature A — atomic sequence for permanent Lead IDs) =====
 // Generic named-counter collection. _id is the counter name (e.g. "leadId");
 // seq is bumped atomically via $inc so concurrent Lead creates (e.g. Facebook
@@ -17038,6 +17059,11 @@ async function getVisibleNotifications(req, baseQuery, limit) {
     if (n.type === "offsite_approved" || n.type === "offsite_rejected") {
       return String(n.leadId || "") === selfId;
     }
+    // Developer-request outcomes (R1) — like off-site approved/rejected, they
+    // target the REQUESTER, whose userId is carried in leadId.
+    if (n.type === "developer_request_approved" || n.type === "developer_request_rejected" || n.type === "developer_request_merged") {
+      return String(n.leadId || "") === selfId;
+    }
 
     // Company-wide admin announcement — visible to every role (no scoping).
     if (n.type === "announcement") return true;
@@ -23780,6 +23806,211 @@ app.delete("/api/developers/:id", auth, strictAdminOnly, async function(req, res
     res.status(500).json({ error: e && e.message ? e.message : "developer_delete_failed" });
   }
 });
+
+// ===== DEVELOPER REQUESTS (R1 — sales-requests-a-new-developer workflow) =====
+// Fire a developer-request OUTCOME notification to the requester. Mirrors
+// fireOffSiteNotification: one row, visibility derived (getVisibleNotifications)
+// from leadId === requester. fromName carries the request _id for reference.
+async function fireDeveloperRequestNotification(reqDoc, action, opts) {
+  try {
+    var typeMap = { approve: "developer_request_approved", reject: "developer_request_rejected", merge: "developer_request_merged" };
+    var nType = typeMap[action];
+    if (!nType || !reqDoc) return;
+    await Notification.create({
+      type:      nType,
+      leadId:    String(reqDoc.requestedBy),               // target user (requester) — visibility scoping
+      leadName:  reqDoc.requestedName || "",
+      agentName: (opts && opts.adminName) || "",
+      status:    (opts && opts.canonicalName) || "",        // merged-into developer name (merge only)
+      reason:    action === "reject" ? ((opts && opts.reason) || "") : "",
+      fromName:  String(reqDoc._id)
+    });
+    try { broadcast("notification_updated", {}); } catch (e) {}
+  } catch (e) {
+    console.error("[fireDeveloperRequestNotification]", e && e.message);
+  }
+}
+
+// Lightweight lead-access gate for referencing a deal on a request. Admin/SA see
+// all; others must own the lead (top-level agentId), hold a live assignments[]
+// slice, or be the split agent. Intentionally lighter than the full single-lead
+// frozen-slice logic — the request is just context for admin review, and only
+// admin can actually set developerId (via approve/merge).
+function canReferenceLead(user, lead) {
+  if (!lead) return false;
+  if (user.role === "admin" || user.role === "sales_admin") return true;
+  var uid = String(user.id);
+  var topAgent = lead.agentId && lead.agentId._id ? lead.agentId._id : lead.agentId;
+  if (String(topAgent || "") === uid) return true;
+  var split2 = lead.splitAgent2Id && lead.splitAgent2Id._id ? lead.splitAgent2Id._id : lead.splitAgent2Id;
+  if (String(split2 || "") === uid) return true;
+  return (lead.assignments || []).some(function(a){
+    if (!a || a.removedAt) return false;
+    var aid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+    return String(aid || "") === uid;
+  });
+}
+
+// POST /api/developer-requests — any authenticated user submits a request.
+app.post("/api/developer-requests", auth, async function(req, res) {
+  try {
+    var requestedName = String((req.body && req.body.requestedName) || "").trim();
+    if (!requestedName) return res.status(400).json({ error: "requestedName required" });
+    var normalizedName = normalizeDeveloperName(requestedName);
+    if (!normalizedName) return res.status(400).json({ error: "name must contain letters or numbers" });
+
+    // Already a managed developer? Tell the caller to pick it from the dropdown.
+    var existingDev = await Developer.findOne({ normalizedName: normalizedName }).lean();
+    if (existingDev) return res.status(409).json({ error: "already_exists", message: "\"" + existingDev.name + "\" already exists — pick it from the dropdown.", developer: existingDev });
+
+    // Already requested and still pending?
+    var existingReq = await DeveloperRequest.findOne({ normalizedName: normalizedName, status: "pending" }).lean();
+    if (existingReq) return res.status(409).json({ error: "already_requested", message: "Already requested by " + (existingReq.requestedByName || "someone") + " — pending review.", request: existingReq });
+
+    var leadId = null;
+    if (req.body && req.body.leadId) {
+      if (!mongoose.Types.ObjectId.isValid(req.body.leadId)) return res.status(400).json({ error: "invalid leadId" });
+      var lead = await Lead.findById(req.body.leadId).select("agentId splitAgent2Id assignments").lean();
+      if (!lead) return res.status(404).json({ error: "lead not found" });
+      if (!canReferenceLead(req.user, lead)) return res.status(403).json({ error: "no access to that deal" });
+      leadId = req.body.leadId;
+    }
+
+    var doc = await DeveloperRequest.create({
+      requestedName:   requestedName,
+      normalizedName:  normalizedName,
+      note:            String((req.body && req.body.note) || "").trim(),
+      requestedBy:     req.user.id,
+      requestedByName: req.user.name || "",
+      leadId:          leadId
+    });
+    res.json(doc.toObject());
+  } catch(e) {
+    console.error("[POST /api/developer-requests]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_request_create_failed" });
+  }
+});
+
+// GET /api/developer-requests?status=pending|approved|rejected|merged|all (admin).
+app.get("/api/developer-requests", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var status = String(req.query.status || "pending");
+    var q = {};
+    if (status !== "all") q.status = status;
+    var rows = await DeveloperRequest.find(q)
+      .sort({ createdAt: -1 })
+      .populate("requestedBy", "name role")
+      .populate("leadId", "name leadId project")
+      .populate("mergedIntoDeveloperId", "name")
+      .lean();
+    res.json({ data: rows });
+  } catch(e) {
+    console.error("[GET /api/developer-requests]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_requests_list_failed" });
+  }
+});
+
+// GET /api/developer-requests/count — pending count for the admin bell badge.
+app.get("/api/developer-requests/count", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var pending = await DeveloperRequest.countDocuments({ status: "pending" });
+    res.json({ pending: pending });
+  } catch(e) {
+    console.error("[GET /api/developer-requests/count]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_requests_count_failed" });
+  }
+});
+
+// POST /api/developer-requests/:id/approve (admin). Creates the Developer (or
+// reuses an existing one with the same normalizedName), links the deal, notifies.
+app.post("/api/developer-requests/:id/approve", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var reqDoc = await DeveloperRequest.findById(req.params.id);
+    if (!reqDoc) return res.status(404).json({ error: "not found" });
+    if (reqDoc.status !== "pending") return res.status(409).json({ error: "Already reviewed (" + reqDoc.status + ")" });
+
+    // Create or reuse the Developer (someone may have added it meanwhile).
+    var dev = await Developer.findOne({ normalizedName: reqDoc.normalizedName });
+    if (!dev) {
+      try { dev = await Developer.create({ name: reqDoc.requestedName, normalizedName: reqDoc.normalizedName }); }
+      catch(ce){ if (ce && ce.code === 11000) { dev = await Developer.findOne({ normalizedName: reqDoc.normalizedName }); } else throw ce; }
+    }
+
+    var leadUpdated = false;
+    if (reqDoc.leadId && dev) {
+      await Lead.updateOne({ _id: reqDoc.leadId }, { $set: { developerId: dev._id } });
+      leadUpdated = true;
+    }
+
+    reqDoc.status = "approved";
+    reqDoc.reviewedBy = req.user.id;
+    reqDoc.reviewedAt = new Date();
+    await reqDoc.save();
+
+    await fireDeveloperRequestNotification(reqDoc, "approve", { adminName: req.user.name });
+    res.json({ developer: dev ? dev.toObject() : null, request: reqDoc.toObject(), leadUpdated: leadUpdated });
+  } catch(e) {
+    console.error("[POST /api/developer-requests/:id/approve]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_request_approve_failed" });
+  }
+});
+
+// POST /api/developer-requests/:id/reject (admin). Body { reason }.
+app.post("/api/developer-requests/:id/reject", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var reqDoc = await DeveloperRequest.findById(req.params.id);
+    if (!reqDoc) return res.status(404).json({ error: "not found" });
+    if (reqDoc.status !== "pending") return res.status(409).json({ error: "Already reviewed (" + reqDoc.status + ")" });
+
+    reqDoc.status = "rejected";
+    reqDoc.reviewedBy = req.user.id;
+    reqDoc.reviewedAt = new Date();
+    reqDoc.rejectionReason = String((req.body && req.body.reason) || "").trim();
+    await reqDoc.save();
+
+    await fireDeveloperRequestNotification(reqDoc, "reject", { adminName: req.user.name, reason: reqDoc.rejectionReason });
+    res.json(reqDoc.toObject());
+  } catch(e) {
+    console.error("[POST /api/developer-requests/:id/reject]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_request_reject_failed" });
+  }
+});
+
+// POST /api/developer-requests/:id/merge (admin). Body { developerId } — link the
+// deal to an existing canonical developer instead of creating a new one.
+app.post("/api/developer-requests/:id/merge", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var developerId = String((req.body && req.body.developerId) || "");
+    if (!mongoose.Types.ObjectId.isValid(developerId)) return res.status(400).json({ error: "invalid developerId" });
+    var reqDoc = await DeveloperRequest.findById(req.params.id);
+    if (!reqDoc) return res.status(404).json({ error: "not found" });
+    if (reqDoc.status !== "pending") return res.status(409).json({ error: "Already reviewed (" + reqDoc.status + ")" });
+    var dev = await Developer.findById(developerId).lean();
+    if (!dev) return res.status(404).json({ error: "developer not found" });
+
+    var leadUpdated = false;
+    if (reqDoc.leadId) {
+      await Lead.updateOne({ _id: reqDoc.leadId }, { $set: { developerId: dev._id } });
+      leadUpdated = true;
+    }
+
+    reqDoc.status = "merged";
+    reqDoc.reviewedBy = req.user.id;
+    reqDoc.reviewedAt = new Date();
+    reqDoc.mergedIntoDeveloperId = dev._id;
+    await reqDoc.save();
+
+    await fireDeveloperRequestNotification(reqDoc, "merge", { adminName: req.user.name, canonicalName: dev.name });
+    res.json({ request: reqDoc.toObject(), developer: dev, leadUpdated: leadUpdated });
+  } catch(e) {
+    console.error("[POST /api/developer-requests/:id/merge]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_request_merge_failed" });
+  }
+});
+// ===== END DEVELOPER REQUESTS =====
 
 // --- Expenses --------------------------------------------------------------
 // Cairo-local year-scoping: build a UTC range that maps to Y/01/01 00:00 →
