@@ -296,6 +296,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // informational tag — NO impact on commission/tax/payout math. Visible/
   // editable to admin + sales_admin only. Indexed for DealsPage/Reports filters.
   closingCompanyId:{type:mongoose.Schema.Types.ObjectId,ref:"ClosingCompany",default:null,index:true},
+  // Developer (managed entity, D2) — the real-estate developer a deal belongs
+  // to (e.g. El Masria Group, MNHD). ObjectId ref Developer; optional, set by
+  // admin/sales_admin on the deal side panel (D4). Purely an informational tag —
+  // NO impact on commission/tax/payout math (like closingCompanyId above).
+  // Indexed for DealsPage / Commissions / Reports filters.
+  developerId:{type:mongoose.Schema.Types.ObjectId,ref:"Developer",default:null,index:true},
   // Permanent sequential Lead ID (Feature A) — minted on creation via
   // nextLeadId() (atomic Counter). Displayed as "ID #" + 5-digit zero-pad to
   // admin/sales_admin only. Never changes; gaps are fine; ids are never reused.
@@ -1303,6 +1309,24 @@ ClosingCompany.collection.createIndex({ name: 1 }, { unique: true }).catch(funct
 // seedClosingCompany() at boot; used as the DoneDeal default for
 // Lead.closingCompanyId (Phase 2).
 var ARO_CLOSING_COMPANY_ID = null;
+
+// ===== DEVELOPER (managed entity, D2) =====
+// The real-estate developer a deal belongs to (e.g. "El Masria Group", "MNHD").
+// Referenced by Lead.developerId. Purely an informational tag — no math impact.
+// Uniqueness is enforced on normalizedName (lowercase, ALL whitespace +
+// punctuation stripped) so "Elmasria", "El Masria", and "El-Masria" collapse to
+// one entity. The unique index on normalizedName is the insert/rename race
+// backstop; the app layer computes the key and pre-checks for a friendly error.
+var Developer = mongoose.model("Developer", new mongoose.Schema({
+  name:           { type: String, required: true },
+  normalizedName: { type: String, required: true }
+}, { timestamps: true }));
+Developer.collection.createIndex({ normalizedName: 1 }, { unique: true }).catch(function(){});
+
+// normalizeDeveloperName — the canonical dedupe key. Lowercases, then drops
+// every non-alphanumeric codepoint (Unicode-aware via \p{L}\p{N}, so Arabic
+// developer names survive). "" when the input has no letters/digits.
+function normalizeDeveloperName(s){ return String(s||"").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ""); }
 
 // ===== COUNTER (Feature A — atomic sequence for permanent Lead IDs) =====
 // Generic named-counter collection. _id is the counter name (e.g. "leadId");
@@ -23639,6 +23663,91 @@ app.delete("/api/closing-companies/:id", auth, strictAdminOnly, async function(r
   } catch(e) {
     console.error("[DELETE /api/closing-companies/:id]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "closing_company_delete_failed" });
+  }
+});
+
+// --- Developers (managed entity, D2) ---------------------------------------
+// Mirrors closing-companies. GET is open to any authenticated user (the deal
+// side panel + Commissions/Deals/Reports dropdowns need to resolve names).
+// Mutations are strictAdminOnly. Name uniqueness is case/space/punctuation-
+// insensitive via normalizeDeveloperName; the unique normalizedName index is
+// the E11000 backstop for the insert/rename race. DELETE refuses (409) when any
+// Lead references the developer, returning the linked-deal count so the admin
+// reassigns those deals first.
+app.get("/api/developers", auth, async function(req, res) {
+  try {
+    var rows = await Developer.find({}).sort({ name: 1 }).lean();
+    res.json({ data: rows });
+  } catch(e) {
+    console.error("[GET /api/developers]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developers_list_failed" });
+  }
+});
+
+app.post("/api/developers", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var name = String((req.body && req.body.name) || "").trim();
+    if (!name) return res.status(400).json({ error: "name required" });
+    var normalizedName = normalizeDeveloperName(name);
+    if (!normalizedName) return res.status(400).json({ error: "name must contain letters or numbers" });
+    var clash = await Developer.findOne({ normalizedName: normalizedName }).lean();
+    if (clash) return res.status(400).json({ error: "A developer with that name already exists" });
+    var doc = await Developer.create({ name: name, normalizedName: normalizedName });
+    res.json(doc.toObject());
+  } catch(e) {
+    if (e && e.code === 11000) return res.status(400).json({ error: "A developer with that name already exists" });
+    console.error("[POST /api/developers]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_create_failed" });
+  }
+});
+
+app.patch("/api/developers/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var doc = await Developer.findById(req.params.id);
+    if (!doc) return res.status(404).json({ error: "not found" });
+    var name = String((req.body && req.body.name) || "").trim();
+    if (!name) return res.status(400).json({ error: "name cannot be empty" });
+    var normalizedName = normalizeDeveloperName(name);
+    if (!normalizedName) return res.status(400).json({ error: "name must contain letters or numbers" });
+    var clash = await Developer.findOne({
+      _id: { $ne: req.params.id },
+      normalizedName: normalizedName
+    }).lean();
+    if (clash) return res.status(400).json({ error: "A developer with that name already exists" });
+    doc.name = name;
+    doc.normalizedName = normalizedName;
+    await doc.save();
+    res.json(doc.toObject());
+  } catch(e) {
+    if (e && e.code === 11000) return res.status(400).json({ error: "A developer with that name already exists" });
+    console.error("[PATCH /api/developers/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_update_failed" });
+  }
+});
+
+// Hard delete ONLY when no Lead references the developer; otherwise 409 with the
+// linked-deal count. The human-readable message is placed in `error` (apiFetch
+// surfaces only that field) so the FE can show it verbatim; `reason`/`dealCount`
+// are extras for any future machine handling.
+app.delete("/api/developers/:id", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "invalid id" });
+    var doc = await Developer.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: "not found" });
+    var dealCount = await Lead.countDocuments({ developerId: req.params.id });
+    if (dealCount > 0) {
+      return res.status(409).json({
+        error: "Cannot delete — " + dealCount + " deal(s) are linked to this developer. Reassign them first.",
+        reason: "in_use",
+        dealCount: dealCount
+      });
+    }
+    await Developer.findByIdAndDelete(req.params.id);
+    res.json({ action: "deleted" });
+  } catch(e) {
+    console.error("[DELETE /api/developers/:id]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "developer_delete_failed" });
   }
 });
 

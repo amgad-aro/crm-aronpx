@@ -18218,6 +18218,16 @@ var SettingsPage = function(p) {
   var [ccSaving,setCcSaving] = useState(false);
   var [ccError,setCcError] = useState("");
   var [ccMsg,setCcMsg] = useState("");
+  // Developers (D2) — admin-only lookup CRUD. Mirrors the closing-companies
+  // state shape; add-new uses devName, inline rename uses devEditId/devEditName.
+  var [developers,setDevelopers] = useState([]);
+  var [devLoaded,setDevLoaded] = useState(false);
+  var [devName,setDevName] = useState("");
+  var [devEditId,setDevEditId] = useState(null);
+  var [devEditName,setDevEditName] = useState("");
+  var [devSaving,setDevSaving] = useState(false);
+  var [devError,setDevError] = useState("");
+  var [devMsg,setDevMsg] = useState("");
   useEffect(function(){
     if (activeTab !== "branches" || !canManageBranches) return;
     var cancelled = false;
@@ -18246,6 +18256,23 @@ var SettingsPage = function(p) {
       .finally(function(){ if (!cancelled) setCcLoaded(true); });
     return function(){ cancelled = true; };
   },[activeTab,ccCanManage,p.token]);
+  // Load developers when the Developers tab opens (admin-only). Same shape as
+  // the closing-companies effect: GET returns { data: rows }; tolerate a bare
+  // array too for safety.
+  var devCanManage = !!(p.cu && p.cu.role === "admin");
+  useEffect(function(){
+    if (activeTab !== "developers" || !devCanManage) return;
+    var cancelled = false;
+    apiFetch("/api/developers","GET",null,p.token)
+      .then(function(data){
+        if (cancelled) return;
+        var rows = (data && Array.isArray(data.data)) ? data.data : (Array.isArray(data) ? data : []);
+        setDevelopers(rows);
+      })
+      .catch(function(err){ if (!cancelled) setDevError((err && err.message) || "Failed to load developers"); })
+      .finally(function(){ if (!cancelled) setDevLoaded(true); });
+    return function(){ cancelled = true; };
+  },[activeTab,devCanManage,p.token]);
 
   // Rotation tab — pull server-side per-agent active + today-received counts so
   // the tier badges reflect ALL of an agent's leads (incl. re-rotated older ones
@@ -18528,6 +18555,7 @@ var SettingsPage = function(p) {
     {id:"audit",       label:"Audit Log"},
     canManageBranches && {id:"branches", label:"Branches"},
     isOwner && {id:"closingCompanies", label:"Closing Companies"},
+    isOwner && {id:"developers", label:"Developers"},
     isOwner && {id:"officeLocation", label:"Office Location"},
     isOwner && {id:"permissions",    label:"Permissions"},
     isOwner && {id:"workShifts",     label:"Work Shifts"}
@@ -20545,6 +20573,107 @@ var SettingsPage = function(p) {
                         {!c.isDefault && editing && <button type="button" onClick={cancelEdit} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Cancel</button>}
                         {!c.isDefault && !editing && <button type="button" onClick={function(){startEdit(c);}} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Edit</button>}
                         {!c.isDefault && !editing && <button type="button" onClick={function(){removeCompany(c);}} disabled={ccSaving} style={btnDanger}>Delete</button>}
+                      </div>
+                    </div>;
+                  })}
+                </div>
+          )}
+        </div>;
+      })()}
+
+      {activeTab==="developers" && isOwner && (function(){
+        var inputStyle = {padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:8,fontSize:13,background:"#fff",fontFamily:"inherit",width:"100%",boxSizing:"border-box"};
+        var btnPrimary = {fontSize:12,padding:"8px 16px",border:"0.5px solid rgba(24,95,165,0.3)",background:"#185FA5",color:"#fff",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnGhost = {fontSize:12,padding:"8px 14px",border:"0.5px solid rgba(0,0,0,0.1)",background:"#fff",color:"#1a1a1a",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var btnDanger = {fontSize:12,padding:"4px 10px",border:"0.5px solid rgba(163,45,45,0.3)",background:"#fff",color:"#A32D2D",borderRadius:8,cursor:"pointer",fontWeight:500,fontFamily:"inherit"};
+        var sortDev = function(list){ return list.slice().sort(function(a,b){ return String(a.name||"").localeCompare(String(b.name||"")); }); };
+        var addDeveloper = async function(){
+          setDevError(""); setDevMsg("");
+          var nm = (devName||"").trim();
+          if (!nm) { setDevError("Name is required"); return; }
+          setDevSaving(true);
+          try {
+            var saved = await apiFetch("/api/developers","POST",{name:nm},p.token,p.csrfToken);
+            setDevelopers(sortDev([saved].concat(developers)));
+            setDevName(""); setDevMsg("Developer added");
+            setTimeout(function(){ setDevMsg(""); }, 2500);
+          } catch(err){ setDevError((err&&err.message)||"Add failed"); }
+          finally { setDevSaving(false); }
+        };
+        var startEdit = function(c){ setDevEditId(c._id); setDevEditName(c.name||""); setDevError(""); setDevMsg(""); };
+        var cancelEdit = function(){ setDevEditId(null); setDevEditName(""); };
+        var saveEdit = async function(c){
+          setDevError(""); setDevMsg("");
+          var nm = (devEditName||"").trim();
+          if (!nm) { setDevError("Name cannot be empty"); return; }
+          setDevSaving(true);
+          try {
+            var saved = await apiFetch("/api/developers/"+c._id,"PATCH",{name:nm},p.token,p.csrfToken);
+            setDevelopers(sortDev(developers.map(function(x){ return String(x._id)===String(saved._id)?saved:x; })));
+            cancelEdit(); setDevMsg("Developer renamed");
+            setTimeout(function(){ setDevMsg(""); }, 2500);
+          } catch(err){ setDevError((err&&err.message)||"Rename failed"); }
+          finally { setDevSaving(false); }
+        };
+        var removeDeveloper = async function(c){
+          setDevError(""); setDevMsg("");
+          if (!window.confirm("Delete developer \""+(c.name||"")+"\"? This cannot be undone.")) return;
+          setDevSaving(true);
+          try {
+            await apiFetch("/api/developers/"+c._id,"DELETE",null,p.token,p.csrfToken);
+            setDevelopers(developers.filter(function(x){ return String(x._id)!==String(c._id); }));
+            setDevMsg("Developer deleted");
+            setTimeout(function(){ setDevMsg(""); }, 2500);
+          } catch(err){
+            // On a 409 the backend puts the friendly "X deal(s) are linked…" text
+            // in err.message (apiFetch surfaces only `error`); show it verbatim.
+            setDevError((err&&err.message)||"Delete failed");
+          }
+          finally { setDevSaving(false); }
+        };
+        return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Developers</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:18}}>Real-estate developers a deal can belong to (e.g. El Masria Group, MNHD). This is purely a label on deals; it has no effect on commission, tax, or payouts. Names are matched case- and spacing-insensitively, so the same developer can't be added twice under different spellings.</div>
+
+          {/* Add form */}
+          <div style={{background:"#F7F7F5",border:"0.5px solid rgba(0,0,0,0.08)",borderRadius:10,padding:14,marginBottom:18}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:10}}>Add developer</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{flex:"1 1 240px",minWidth:200}}>
+                <input style={inputStyle} value={devName} onChange={function(e){setDevName(e.target.value);}} placeholder="e.g. El Masria Group"
+                  onKeyDown={function(e){ if(e.key==="Enter"){ e.preventDefault(); addDeveloper(); } }}/>
+              </div>
+              <button type="button" onClick={addDeveloper} disabled={devSaving} style={Object.assign({},btnPrimary,{opacity:devSaving?0.6:1,cursor:devSaving?"not-allowed":"pointer"})}>
+                {devSaving ? "Saving…" : "Add developer"}
+              </button>
+              {devMsg   && <span style={{fontSize:12,color:"#0F6E56",background:"#EAF6F0",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{devMsg}</span>}
+              {devError && <span style={{fontSize:12,color:"#A32D2D",background:"#FCEBEB",padding:"4px 10px",borderRadius:8,fontWeight:500}}>{devError}</span>}
+            </div>
+          </div>
+
+          {/* List */}
+          {!devLoaded ? <div style={{fontSize:12,color:"#666"}}>Loading…</div> : (
+            developers.length === 0
+              ? <div style={{fontSize:12,color:"#666",padding:"12px 0"}}>No developers yet.</div>
+              : <div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 200px",gap:10,padding:"10px 0",borderBottom:"0.5px solid rgba(0,0,0,0.1)",fontSize:11,color:"#666",textTransform:"uppercase",letterSpacing:"0.3px"}}>
+                    <div>Name</div>
+                    <div style={{textAlign:"right"}}>Action</div>
+                  </div>
+                  {developers.map(function(c){
+                    var editing = String(devEditId||"")===String(c._id);
+                    return <div key={c._id} style={{display:"grid",gridTemplateColumns:"1fr 200px",gap:10,padding:"12px 0",borderBottom:"0.5px solid rgba(0,0,0,0.06)",alignItems:"center",fontSize:13}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        {editing
+                          ? <input style={Object.assign({},inputStyle,{maxWidth:280})} value={devEditName} onChange={function(e){setDevEditName(e.target.value);}}
+                              onKeyDown={function(e){ if(e.key==="Enter"){ e.preventDefault(); saveEdit(c); } if(e.key==="Escape"){ cancelEdit(); } }} autoFocus/>
+                          : <span style={{fontWeight:500,color:"#1a1a1a"}}>{c.name}</span>}
+                      </div>
+                      <div style={{textAlign:"right",display:"flex",gap:6,justifyContent:"flex-end",alignItems:"center"}}>
+                        {editing && <button type="button" onClick={function(){saveEdit(c);}} disabled={devSaving} style={Object.assign({},btnPrimary,{padding:"4px 12px",opacity:devSaving?0.6:1})}>Save</button>}
+                        {editing && <button type="button" onClick={cancelEdit} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Cancel</button>}
+                        {!editing && <button type="button" onClick={function(){startEdit(c);}} style={Object.assign({},btnGhost,{padding:"4px 10px"})}>Edit</button>}
+                        {!editing && <button type="button" onClick={function(){removeDeveloper(c);}} disabled={devSaving} style={btnDanger}>Delete</button>}
                       </div>
                     </div>;
                   })}
