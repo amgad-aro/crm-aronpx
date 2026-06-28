@@ -903,6 +903,15 @@ var StatusModal = function(p) {
   var [potInstalment, setPotInstalment] = useState("");
   var [err, setErr] = useState("");
   var [saving, setSaving] = useState(false);
+  // Developer (N2) — REQUIRED for EOI/DoneDeal on the LEADS flow only (gated by
+  // p.requireDeveloper; the Daily-Request StatusModal does not pass it, so DRs
+  // are unaffected). devSelId = chosen developerId (dropdown); devPendName =
+  // typed new-developer name. Mutually exclusive (one is always ""). devList =
+  // the 505 managed developers.
+  var [devSelId, setDevSelId] = useState("");
+  var [devPendName, setDevPendName] = useState("");
+  var [devPendOpen, setDevPendOpen] = useState(false);
+  var [devList, setDevList] = useState([]);
   var sc = STATUSES(p.t);
   var ns = sc.find(function(s){return s.value===p.newStatus;});
   var st = p.newStatus;
@@ -920,7 +929,21 @@ var StatusModal = function(p) {
     setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setEoiDocFiles([]); setRejectNote("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
     setFbVisibility("private"); setFbTargetAgentId("");
+    setDevSelId(""); setDevPendName(""); setDevPendOpen(false);   // N2
   },[p.show]);
+  // Developer list (N2) — load the 505 managed developers when the modal opens
+  // for an EOI/DoneDeal transition on the leads flow (requireDeveloper + token).
+  useEffect(function(){
+    if (!p.show || !(isEOI||isDoneDeal) || !p.requireDeveloper || !p.token) return;
+    var cancelled = false;
+    apiFetch("/api/developers","GET",null,p.token).then(function(data){
+      if (cancelled) return;
+      var rows = (data && Array.isArray(data.data)) ? data.data : (Array.isArray(data) ? data : []);
+      setDevList(rows);
+    }).catch(function(){ /* non-fatal: dropdown shows no options */ });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.show, isEOI, isDoneDeal, p.requireDeveloper, p.token]);
 
   var fmtNum = function(val, set){ return function(e){ var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,""); set(r?Number(r).toLocaleString():""); setErr(""); }; };
 
@@ -931,12 +954,14 @@ var StatusModal = function(p) {
     if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
     if (isReject && !rejectNote.trim())  { setErr("Feedback is required"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
+    if ((isDoneDeal||isEOI) && p.requireDeveloper && !devSelId && !devPendName.trim()){ setErr("Please pick a developer or enter a new name"); return; }   // N2
     if (needsBudgetFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
     if (needsBudgetFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
     if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, unitType: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: (isEOI||isDoneDeal) ? eoiDocFiles : [] }
+      ? { project: dealProject, unitType: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: (isEOI||isDoneDeal) ? eoiDocFiles : [],
+          developerId: (p.requireDeveloper && devSelId) ? devSelId : "", developerPending: (p.requireDeveloper && !devSelId) ? devPendName.trim() : "" }   // N2
       : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
         : {};
@@ -1069,6 +1094,25 @@ var StatusModal = function(p) {
           onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setDealBudget(r?Number(r).toLocaleString():"");setErr("");}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box", direction:"ltr" }}/>
       </div>
+      {/* Developer (N2) — REQUIRED. Pick from the 505 managed developers OR type a
+          new name (mutually exclusive). Leads flow only (p.requireDeveloper). */}
+      {p.requireDeveloper&&<div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏗️ Developer <span style={{color:C.danger}}>*</span></label>
+        {!devPendOpen && <SearchableSelect
+          value={devSelId}
+          emptyLabel="— Select developer —"
+          placeholder="Search developers…"
+          width="100%" maxWidth={9999} fontSize={13}
+          options={(devList||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
+          onChange={function(val){ setDevSelId(val); if(val) setDevPendName(""); setErr(""); }}/>}
+        {devPendOpen && <input type="text" value={devPendName} placeholder="New developer name"
+          onChange={function(e){ setDevPendName(e.target.value); setDevSelId(""); setErr(""); }}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>}
+        <button type="button" onClick={function(){ if(devPendOpen){ setDevPendOpen(false); setDevPendName(""); } else { setDevPendOpen(true); setDevSelId(""); } setErr(""); }}
+          style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline" }}>
+          {devPendOpen ? "← Pick from the list instead" : "Can't find the developer? Enter a new name"}
+        </button>
+      </div>}
       {isEOI&&<div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 EOI Date</label>
         <input type="date" value={eoiDateInput} onChange={function(e){setEoiDateInput(e.target.value);}}
@@ -1091,7 +1135,7 @@ var StatusModal = function(p) {
     {err&&<div style={{ color:C.danger, fontSize:12, marginBottom:12, padding:"8px 12px", background:"#FEF2F2", borderRadius:8 }}>⚠️ {err}</div>}
     <div style={{ display:"flex", gap:10 }}>
       <Btn outline onClick={p.onClose} style={{ flex:1 }}>{p.t.cancel}</Btn>
-      <Btn onClick={submit} loading={saving} style={{ flex:1 }}>{p.t.save}</Btn>
+      <Btn onClick={submit} loading={saving} disabled={(isDoneDeal||isEOI) && p.requireDeveloper && !devSelId && !devPendName.trim()} style={{ flex:1 }}>{p.t.save}</Btn>
     </div>
   </Modal>;
 };
@@ -5642,6 +5686,8 @@ var LeadsPage = function(p) {
         if(extra.project)    upData.project    = extra.project;
         if(extra.unitType)   upData.unitType   = extra.unitType;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
+        if(extra.developerId)      upData.developerId      = extra.developerId;      // N2
+        if(extra.developerPending) upData.developerPending = extra.developerPending; // N2
         if(extra.deposit && !routeFeedbackViaApi && !dropFeedback) {
           upData.notes = (upData.notes?upData.notes+" | ":"")+"Down Payment: "+extra.deposit+" EGP | Installments: "+extra.instalment+" EGP";
         }
@@ -5944,7 +5990,7 @@ var LeadsPage = function(p) {
       </div>
       <Btn outline onClick={function(){setShowStatusPicker(false);}} style={{ width:"100%" }}>{t.cancel}</Btn>
     </Modal>}
-    <StatusModal show={showStatusComment} t={t} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} cu={p.cu} users={p.users} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
+    <StatusModal show={showStatusComment} t={t} token={p.token} requireDeveloper={true} newStatus={pendingStatus?pendingStatus.newStatus:null} lead={selected} cu={p.cu} users={p.users} onClose={function(){setShowStatusComment(false);}} onConfirm={confirmStatus}/>
 
     {feedbackModal && <Modal show={true} onClose={function(){ if(!fbSaving) setFeedbackModal(null); }} title="📝 Add Feedback">
       <FeedbackComposer id="standalone" cu={p.cu} lead={feedbackModal.lead} users={p.users}
