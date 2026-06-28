@@ -239,6 +239,12 @@ var canSeeClosingCompany = function(u){ return !!(u && (u.role === "admin" || u.
 // server-side scope enforce access upstream). So any authenticated user who can
 // render such a row may see its ID; no need to re-gate by role here.
 var canSeeLeadIds = function(u){ return !!u; };
+// Developer (D4) — like the Lead ID rule above: the developer is just an
+// attribute of a Deal/Commission row the viewer is already authorized to see,
+// so anyone authenticated may SEE it. EDITING (the side-panel dropdown) is
+// admin + sales_admin only, mirroring the closing-company edit gate.
+var canSeeDeveloper  = function(u){ return !!u; };
+var canEditDeveloper = function(u){ return !!(u && (u.role === "admin" || u.role === "sales_admin")); };
 // Format a numeric leadId as "ID #01000" (5-digit zero-padded). Returns
 // "ID pending" for leads minted before the backfill (leadId still null) so the
 // admin/SA UI shows a clear placeholder instead of a blank.
@@ -11685,6 +11691,10 @@ var DealsPage = function(p) {
   // Closing Companies (Feature B) — list for the side-panel dropdown + name
   // resolution on cards/table. Admin/SA only; non-fatal if it fails to load.
   var [dealClosingCompanies,setDealClosingCompanies] = useState([]);
+  // Developers (D4) — list for the side-panel dropdown + name resolution after a
+  // PUT (which returns a raw developerId, not populated). Admin/SA only (edit
+  // gate); display elsewhere uses the populated developerId.name from the API.
+  var [dealDevelopers,setDealDevelopers] = useState([]);
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
@@ -11721,6 +11731,20 @@ var DealsPage = function(p) {
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token]);
+  // Developers (D4) — fetch once for the dropdown + name map (admin/SA only).
+  useEffect(function(){
+    if (!p.token || !canEditDeveloper(p.cu)) return;
+    var cancelled = false;
+    apiFetch("/api/developers","GET",null,p.token)
+      .then(function(data){
+        if (cancelled) return;
+        var rows = (data && Array.isArray(data.data)) ? data.data : (Array.isArray(data) ? data : []);
+        setDealDevelopers(rows);
+      })
+      .catch(function(){ /* non-fatal: cards fall back to populated name or — */ });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token]);
   var pLeadsMapD = useMemo(function(){
     var m = {}; (p.leads||[]).forEach(function(l){ m[gid(l)] = l; }); return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -11749,6 +11773,11 @@ var DealsPage = function(p) {
   // display name via the fetched companies map, falling back to the populated name.
   var ccIdOf=function(d){ var cc=d&&d.closingCompanyId; return cc?String(cc._id||cc):""; };
   var ccNameOf=function(d){ var cc=d&&d.closingCompanyId; if(cc&&typeof cc==="object"&&cc.name) return cc.name; var id=ccIdOf(d); if(!id) return ""; var hit=(dealClosingCompanies||[]).find(function(x){return String(x._id)===id;}); return hit?hit.name:""; };
+  // Developer (D4) — developerId may arrive populated ({_id,name}) from the
+  // list/deals endpoints or as a raw id from a PUT response; resolve the display
+  // name via the populated object first, then the fetched developers map.
+  var devIdOf=function(d){ var dv=d&&d.developerId; return dv?String(dv._id||dv):""; };
+  var devNameOf=function(d){ var dv=d&&d.developerId; if(dv&&typeof dv==="object"&&dv.name) return dv.name; var id=devIdOf(d); if(!id) return ""; var hit=(dealDevelopers||[]).find(function(x){return String(x._id)===id;}); return hit?hit.name:""; };
   // Split-deal credit rule mirrors the backend my-stats reducer: for any
   // non-admin caller, a split deal counts as FULL (1.0) when both agents are
   // visible in p.users (server-scoped subtree), else 0.5. Sales p.users is
@@ -11912,9 +11941,11 @@ var DealsPage = function(p) {
   // Desktop table header columns, role-filtered. Single source of truth for
   // both the <th> render and the inline-panel row's colSpan (dealColCount), so
   // the accordion row always spans the full table width per role and never
-  // drifts. After Feature B's "Closing Company" column (admin/sales_admin only):
-  // admin=13, sales_admin=11, director/manager/team_leader=9, sales=7.
-  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,canSeeClosingCompany(p.cu)?"Closing Company":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
+  // drifts. After Feature B's "Closing Company" column (admin/sales_admin only)
+  // and D4's "Developer" column (all roles): admin=14, sales_admin=12,
+  // director/manager/team_leader=10, sales=8. (dealColCount is derived, so these
+  // are documentation only — the colSpan always tracks dealHeaderCols.length.)
+  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,canSeeClosingCompany(p.cu)?"Closing Company":null,canSeeDeveloper(p.cu)?"Developer":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
   var dealColCount=dealHeaderCols.length;
 
   // Deal Documents (images + PDFs) — mirrors EOIPage handleDocUpload/deleteDoc,
@@ -12057,6 +12088,26 @@ var DealsPage = function(p) {
           }} style={{ width:"100%", maxWidth:260, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, boxSizing:"border-box" }}>
             {(dealClosingCompanies||[]).length===0 && <option value={ccIdOf(selectedDeal)}>{ccNameOf(selectedDeal)||"ARO"}</option>}
             {(dealClosingCompanies||[]).map(function(co){ return <option key={co._id} value={String(co._id)}>{co.name}</option>; })}
+          </select>
+        </div>}
+
+        {/* Developer (D4) — admin/SA can set/change the deal's developer. Writes
+            Lead.developerId via PUT; the response isn't populated, so value +
+            label resolve via devIdOf / the developers map. "— None —" clears it. */}
+        {canEditDeveloper(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
+          <select value={devIdOf(selectedDeal)} onChange={async function(e){
+            var val=e.target.value;
+            try{
+              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{developerId:val||null},p.token);
+              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
+              setSelectedDeal(updated);
+              setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;}):prev;});
+            }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
+          }} style={{ width:"100%", maxWidth:260, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, boxSizing:"border-box" }}>
+            <option value="">— None —</option>
+            {(dealDevelopers||[]).length===0 && devIdOf(selectedDeal) && <option value={devIdOf(selectedDeal)}>{devNameOf(selectedDeal)}</option>}
+            {(dealDevelopers||[]).map(function(dv){ return <option key={dv._id} value={String(dv._id)}>{dv.name}</option>; })}
           </select>
         </div>}
 
@@ -12521,6 +12572,7 @@ var DealsPage = function(p) {
             <span style={{ color:C.textLight }}>📢 {d.source||"-"}</span>
           </div>}
           {canSeeClosingCompany(p.cu)&&<div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>🏢 Closed via: <span style={{ fontWeight:600, color:C.text }}>{ccNameOf(d)||"—"}</span></div>}
+          {canSeeDeveloper(p.cu)&&devNameOf(d)&&<div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>🏗️ Developer: <span style={{ fontWeight:600, color:C.text }}>{devNameOf(d)}</span></div>}
           {isOnlyAdmin&&<div style={{ display:"flex", gap:8, marginTop:10, paddingTop:10, borderTop:"1px solid #E8ECF1" }}>
             {p.navigateToCommission&&<button onClick={function(e){e.stopPropagation();p.navigateToCommission(gid(d));}} title="View Commission"
               style={{ flex:1, height:34, borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>💰</button>}
@@ -12646,6 +12698,7 @@ var DealsPage = function(p) {
               })()}
             </td>}
             {canSeeClosingCompany(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{ccNameOf(d)||"—"}</td>}
+            {canSeeDeveloper(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{devNameOf(d)||"—"}</td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
               <div>{getAg(d)}</div>
               {(function(){var sp=getDealSplitFromObj(d);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
@@ -25357,7 +25410,10 @@ var CommissionsPage = function(p) {
             <span style={{ fontSize:15, fontWeight:700, color:C.text, textDecoration: isCancelled ? "line-through" : "none" }}>
               {snap.customerName || "(unknown)"}
             </span>
-            {snap.developer && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontWeight:700 }}>{snap.developer}</span>}
+            {/* Developer (D4) — prefer the live linked name (c.developer.name, joined
+                on the commissions endpoint via the lead's developerId); fall back to
+                the frozen snapshot.developer for deals not yet linked (Option A). */}
+            {((c.developer && c.developer.name) || snap.developer) && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8", fontWeight:700 }}>{(c.developer && c.developer.name) || snap.developer}</span>}
             {snap.isSplitDeal && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#F5F3FF", color:"#7C3AED", fontWeight:700 }}>🤝 Split</span>}
             {/* Phase R-12 Part 6 — External badge. Distinct violet tint to
                 differentiate from the amber/green/gray status badges below.
@@ -26721,6 +26777,7 @@ var CommissionsPage = function(p) {
                           <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Customer</th>
                           <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Type</th>
                           <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Closing Company</th>
+                          <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Developer</th>
                           {sortTh("Revenue", "revenue")}
                           {sortTh("Broker", "brokerPayouts")}
                           {sortTh("Team", "teamPayouts")}
@@ -26734,17 +26791,18 @@ var CommissionsPage = function(p) {
                             <td style={{ padding:"8px 12px", fontWeight:600, color:C.text }}>{d.customerName}</td>
                             <td style={{ padding:"8px 12px" }}>{typeBadge(d.type)}</td>
                             <td style={{ padding:"8px 12px", color:C.textLight }}>{d.closingCompany || "—"}</td>
+                            <td style={{ padding:"8px 12px", color:C.textLight }}>{d.developer || "—"}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end" }}>{fmtMoneyAr(d.revenue)}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end", color: Number(d.brokerPayouts || 0) > 0 ? "#5B21B6" : C.textLight }}>{fmtMoneyAr(d.brokerPayouts)}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end", color: Number(d.teamPayouts || 0) > 0 ? "#B45309" : C.textLight }}>{fmtMoneyAr(d.teamPayouts)}</td>
                             <td style={{ padding:"8px 12px", textAlign:"end", fontWeight:700, color: neg ? "#B91C1C" : C.success }}>{fmtMoneyAr(d.aroNet)}</td>
                           </tr>;
                         })}
-                        {sorted.length === 0 && <tr><td colSpan={7} style={{ padding:"16px 12px", textAlign:"center", color:C.textLight }}>No {pbdFilter} deals for this year</td></tr>}
+                        {sorted.length === 0 && <tr><td colSpan={8} style={{ padding:"16px 12px", textAlign:"center", color:C.textLight }}>No {pbdFilter} deals for this year</td></tr>}
                       </tbody>
                       <tfoot>
                         <tr>
-                          <td colSpan={3} style={Object.assign({}, stickyFoot, { padding:"10px 12px", fontWeight:700, color:C.text })}>Total</td>
+                          <td colSpan={4} style={Object.assign({}, stickyFoot, { padding:"10px 12px", fontWeight:700, color:C.text })}>Total</td>
                           <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:C.text })}>{fmtMoneyAr(foot.revenue)}</td>
                           <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#5B21B6" })}>{fmtMoneyAr(foot.brokerPayouts)}</td>
                           <td style={Object.assign({}, stickyFoot, { padding:"10px 12px", textAlign:"end", fontWeight:700, color:"#B45309" })}>{fmtMoneyAr(foot.teamPayouts)}</td>

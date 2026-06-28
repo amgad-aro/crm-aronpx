@@ -8413,7 +8413,7 @@ app.get("/api/leads", auth, async function(req, res) {
     var limit = hasLimit ? parseInt(req.query.limit) : 0;
     var skip = hasLimit ? (page - 1) * limit : 0;
 
-    var leadsQuery = Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").populate("closingCompanyId", "name").sort({ createdAt: -1 });
+    var leadsQuery = Lead.find(query).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").populate("closingCompanyId", "name").populate("developerId", "name").sort({ createdAt: -1 });
     if (hasLimit) leadsQuery = leadsQuery.skip(skip).limit(limit);
     var leads = await leadsQuery.lean();
     // Skip the second round-trip when the page already contains the entire
@@ -9499,7 +9499,7 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
 // Field projection — same heavy-strip as the bootstrap (eoiImage,
 // eoiDocuments, dealImages); the side-panel hydrates the full doc via
 // /api/leads/:id (existing endpoint) when a row opens.
-var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId leadId";
+var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId developerId leadId";
 
 app.get("/api/eois", auth, async function(req, res) {
   try {
@@ -9667,6 +9667,7 @@ app.get("/api/deals", auth, async function(req, res) {
       .select(DEAL_LIST_FIELDS)            // already excludes base64 image/doc fields
       .populate("agentId", "name title")
       .populate("closingCompanyId", "name")   // Feature B — for the "Closed via" display
+      .populate("developerId", "name")        // Developer (D4) — for the developer tag/column
       // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
       // (server.js index block). Deal docs embed base64 (up to ~15 MB each), so a
       // blocking sort over the matched set trips the 32 MB cap — see that comment.
@@ -9690,7 +9691,7 @@ app.get("/api/deals", auth, async function(req, res) {
 // ===== SINGLE LEAD GET (with per-agent overlay) =====
 app.get("/api/leads/:id", auth, async function(req, res) {
   try {
-    var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").populate("closingCompanyId", "name").lean();
+    var lead = await Lead.findById(req.params.id).populate("agentId", "name title teamId reportsTo").populate("assignments.agentId", "name title").populate("closingCompanyId", "name").populate("developerId", "name").lean();
     if (!lead) return res.status(404).json({ error: "Not found" });
     // Hydrate offloaded EOI documents (file-storage stopgap). lead is lean, so
     // both the sales `obj` copy and the admin return path inherit the merge.
@@ -11216,6 +11217,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         delete req.body.closingCompanyId;
       } else {
         req.body.closingCompanyId = normId(req.body.closingCompanyId);
+      }
+    }
+    // Developer (D4) — admin/sales_admin only, same defense-in-depth as
+    // closingCompanyId above. The side-panel dropdown is admin/SA-gated on the
+    // FE; strip the field for any other role. normId turns a populated object /
+    // empty string into a clean id-or-null (invalid ids → null, no dangling ref).
+    if (req.body.developerId !== undefined) {
+      if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+        delete req.body.developerId;
+      } else {
+        req.body.developerId = normId(req.body.developerId);
       }
     }
     // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
@@ -22379,14 +22391,16 @@ app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
         // the numeric display id, while r.leadId on the commission is the lead's
         // _id (ObjectId). Attached as r.leadDisplayId to avoid that name clash.
         var ccLeads = await Lead.find({ _id: { $in: commLeadIds } })
-          .select("closingCompanyId leadId").populate("closingCompanyId", "name").lean();
-        var ccByLead = {}, ldByLead = {};
+          .select("closingCompanyId developerId leadId").populate("closingCompanyId", "name").populate("developerId", "name").lean();
+        var ccByLead = {}, ldByLead = {}, devByLead = {};
         ccLeads.forEach(function(l){
-          ccByLead[String(l._id)] = l.closingCompanyId || null;
-          ldByLead[String(l._id)] = (typeof l.leadId === "number") ? l.leadId : null;
+          ccByLead[String(l._id)]  = l.closingCompanyId || null;
+          devByLead[String(l._id)] = l.developerId || null;   // Developer (D4)
+          ldByLead[String(l._id)]  = (typeof l.leadId === "number") ? l.leadId : null;
         });
         rows.forEach(function(r){
           r.closingCompany = r.leadId ? (ccByLead[String(r.leadId)] || null) : null;
+          r.developer      = r.leadId ? (devByLead[String(r.leadId)] || null) : null;   // Developer (D4) — live name for the card pill
           r.leadDisplayId  = r.leadId ? (ldByLead[String(r.leadId)] != null ? ldByLead[String(r.leadId)] : null) : null;
         });
       }
@@ -23392,11 +23406,14 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
     var ccFilter = String(req.query.closingCompanyId || "").trim();
     var ccFilterValid = mongoose.Types.ObjectId.isValid(ccFilter);
     var pbdLeadIds = docs.map(function(x){ return x.leadId; }).filter(Boolean);
-    var ccByLeadPBD = {};
+    var ccByLeadPBD = {}, devByLeadPBD = {};
     if (pbdLeadIds.length) {
       var ccLeadsPBD = await Lead.find({ _id: { $in: pbdLeadIds } })
-        .select("closingCompanyId").populate("closingCompanyId", "name").lean();
-      ccLeadsPBD.forEach(function(l){ ccByLeadPBD[String(l._id)] = l.closingCompanyId || null; });
+        .select("closingCompanyId developerId").populate("closingCompanyId", "name").populate("developerId", "name").lean();
+      ccLeadsPBD.forEach(function(l){
+        ccByLeadPBD[String(l._id)]  = l.closingCompanyId || null;
+        devByLeadPBD[String(l._id)] = l.developerId || null;   // Developer (D4)
+      });
     }
 
     var deals = [];
@@ -23471,6 +23488,9 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       // closingCompanyId filter is active, skip non-matching deals BEFORE
       // accumulating totals so both the rows and the totals reflect the filter.
       var ccDocPBD = d.leadId ? (ccByLeadPBD[String(d.leadId)] || null) : null;
+      // Developer (D4) — prefer the live linked name; fall back to the frozen
+      // snapshot.developer free-text for deals not yet linked (Option A).
+      var devDocPBD = d.leadId ? (devByLeadPBD[String(d.leadId)] || null) : null;
       if (ccFilterValid) {
         var ccIdPBD = ccDocPBD ? String(ccDocPBD._id) : "";
         if (ccIdPBD !== ccFilter) continue;
@@ -23483,6 +23503,7 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
         customerName:  snap.customerName || "(unknown)",
         type:          isAmbD ? "ambassador" : (es.isExternal ? "external" : "internal"),
         closingCompany: ccDocPBD ? (ccDocPBD.name || "") : "",
+        developer:      devDocPBD ? (devDocPBD.name || "") : (snap.developer || ""),
         revenue:       round2(revenue),
         brokerPayouts: round2(brokerPayouts),
         teamPayouts:   round2(teamPayouts),
