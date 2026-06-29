@@ -9938,7 +9938,11 @@ app.post("/api/leads", auth, async function(req, res) {
       var targetOnCreate = await User.findById(agentId).lean();
       if (!targetOnCreate) return res.status(400).json({ error: "Target agent not found" });
       if (targetOnCreate.active === false) return res.status(400).json({ error: "Target agent is inactive" });
-      if (["sales","team_leader","manager"].indexOf(targetOnCreate.role) < 0) {
+      // Frozen-at-create (DoneDeal/EOI) leads never enter rotation, so a
+      // managerial/admin agent is a legitimate owner here. The eligible-role
+      // gate applies ONLY to normal rotatable leads — `frozenAtCreate` was
+      // computed above from the inbound status/eoiStatus/globalStatus.
+      if (["sales","team_leader","manager"].indexOf(targetOnCreate.role) < 0 && !frozenAtCreate) {
         return res.status(400).json({ error: "ineligible_role", message: "Target agent role ("+targetOnCreate.role+") cannot be assigned leads" });
       }
     }
