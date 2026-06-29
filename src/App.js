@@ -12405,7 +12405,7 @@ var DealsPage = function(p) {
       <div style={{ background:"#F0FDF4", borderBottom:"1px solid #BBF7D0", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0 }}>
-            <button onClick={function(){setSelectedDeal(null);}} style={{ background:"transparent", border:"1px solid "+C.border, borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, flexShrink:0 }}><X size={11}/></button>
+            <button onClick={function(e){ e.stopPropagation(); setSelectedDeal(null); }} style={{ background:"transparent", border:"1px solid "+C.border, borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:C.textLight, flexShrink:0 }}><X size={11}/></button>
             <div style={{ width:36, height:36, borderRadius:"50%", background:"#DCFCE7", color:"#15803D", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, flexShrink:0 }}>{(selectedDeal.name||"?").charAt(0).toUpperCase()}</div>
             <div style={{ minWidth:0 }}>
               <div style={{ color:"#15803D", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
@@ -12947,7 +12947,7 @@ var DealsPage = function(p) {
         var prog=stagesProgress(gid(d));
         var stages=getStages(gid(d));
         var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
-        return <div key={gid(d)} onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ background:isSel?"#EFF6FF":"#fff", border:"2px solid "+(isSel?"#3B82F6":"#E8ECF1"), borderRadius:14, padding:14, cursor:"pointer" }}>
+        return <div key={gid(d)} data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ background:isSel?"#EFF6FF":"#fff", border:"2px solid "+(isSel?"#3B82F6":"#E8ECF1"), borderRadius:14, padding:14, cursor:"pointer" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, gap:8 }}>
             <div style={{ fontSize:15, fontWeight:700 }}>
               {d.name}
