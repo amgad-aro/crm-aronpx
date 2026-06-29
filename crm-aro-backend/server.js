@@ -23864,6 +23864,9 @@ app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async functio
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     var action = String((req.body && req.body.action) || "");
+    // Snapshot the free-text pending name before any branch clears it — used in
+    // the audit-trail Activity entry below so we can trace what was resolved.
+    var pendingBefore = String(lead.developerPending || "");
 
     if (action === "link") {
       var developerId = String((req.body && req.body.developerId) || "");
@@ -23873,6 +23876,8 @@ app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async functio
       lead.developerId = devLink._id;
       lead.developerPending = "";
       await lead.save();
+      // Audit trail (actor=userId, time=createdAt; see Activity schema).
+      try { await Activity.create({ userId: req.user.id, leadId: lead._id, type: "note", note: "Developer resolved: linked pending '" + pendingBefore + "' to existing developer '" + (devLink.name || "") + "'", clientName: lead.name || "", clientPhone: lead.phone || "" }); } catch(e){}
       return res.json({ lead: lead.toObject(), developer: devLink });
     }
 
@@ -23890,12 +23895,16 @@ app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async functio
       lead.developerId = devAdd._id;
       lead.developerPending = "";
       await lead.save();
+      // Audit trail (actor=userId, time=createdAt; see Activity schema).
+      try { await Activity.create({ userId: req.user.id, leadId: lead._id, type: "note", note: "Developer resolved: created new developer '" + ((devAdd && devAdd.name) ? devAdd.name : newName) + "' from pending", clientName: lead.name || "", clientPhone: lead.phone || "" }); } catch(e){}
       return res.json({ lead: lead.toObject(), developer: devAdd && devAdd.toObject ? devAdd.toObject() : devAdd });
     }
 
     if (action === "reject") {
       lead.developerPending = "";
       await lead.save();
+      // Audit trail (actor=userId, time=createdAt; see Activity schema).
+      try { await Activity.create({ userId: req.user.id, leadId: lead._id, type: "note", note: "Developer resolved: rejected pending name '" + pendingBefore + "'", clientName: lead.name || "", clientPhone: lead.phone || "" }); } catch(e){}
       return res.json({ lead: lead.toObject() });
     }
 
