@@ -23916,12 +23916,20 @@ app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async functio
 // legacy empty-string "" all as pending — mirroring the FE's eoiDevIdOf
 // (App.js: `d.developerId ? ... : ""`), which the prior `null`/$exists $or
 // missed for "" and dropped those leads from the bell.
+// Active-only: a cancelled EOI/Deal never clears developerPending (the cancel
+// handlers don't touch developer fields), so without these guards an orphaned
+// pending name on an archived/cancelled lead would linger in the bell forever.
+// Exclude archived leads and the "EOI Cancelled" / "Deal Cancelled" terminal
+// states so the bell shows only live, actionable resolutions.
 // count + list; the FE bell routes each row to its Deals/EOI side panel.
 app.get("/api/leads/with-pending-developer", auth, salesAdminOnly, async function(req, res) {
   try {
     var rows = await Lead.find({
       developerPending: { $nin: ["", null] },
-      developerId: { $not: { $type: "objectId" } }
+      developerId: { $not: { $type: "objectId" } },
+      archived: { $ne: true },
+      eoiStatus: { $ne: "EOI Cancelled" },
+      dealStatus: { $ne: "Deal Cancelled" }
     })
       .select("name status developerPending developerId leadId agentId eoiApproved dealApproved eoiStatus lastActivityTime")
       .populate("agentId", "name")
