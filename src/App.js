@@ -12252,11 +12252,6 @@ var DealsPage = function(p) {
     }).catch(function(){});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedDeal && selectedDeal._id]);
-  // Request-a-developer (R2) — reset the inline form when the open deal changes.
-  useEffect(function(){
-    setDevReqOpen(false); setDevReqName(""); setDevReqNote(""); setDevReqMsg(""); setDevReqError("");
-  },[selectedDeal && selectedDeal._id]);
-
   // Reset hydration tracker when the panel closes so the next open re-hydrates.
   useEffect(function(){ if (!selectedDeal) setPanelHydratedDealId(null); },[selectedDeal]);
 
@@ -12271,13 +12266,6 @@ var DealsPage = function(p) {
   });
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
   var [dealDeveloperFilter,setDealDeveloperFilter]=useState(""); // Developer (D5) — "" = all
-  // Request-a-developer (R2) — non-admin inline form on the deal side panel.
-  var [devReqOpen,setDevReqOpen]=useState(false);
-  var [devReqName,setDevReqName]=useState("");
-  var [devReqNote,setDevReqNote]=useState("");
-  var [devReqSaving,setDevReqSaving]=useState(false);
-  var [devReqMsg,setDevReqMsg]=useState("");     // success message
-  var [devReqError,setDevReqError]=useState("");
   // Phase R-12 Part 4 — All / Internal / External filter pill state. Scoped
   // to the current Active|Cancelled tab (counts and filter both). Default
   // "all". Pre-Part-2 leads default to dealType "internal" so the External
@@ -12514,8 +12502,7 @@ var DealsPage = function(p) {
         {/* Developer (D4 -> R2/Option 1) — searchable picker for ANY deal-editing
             role (the 505 developers are pre-vetted). Writes Lead.developerId via
             PUT; the response isn't populated, so value + label resolve via devIdOf
-            / the developers map. "— None —" clears it. Below it, a request link for
-            when a developer is genuinely missing (admin reviews — R1). */}
+            / the developers map. "— None —" clears it. */}
         {canEditDeals(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
           {/* N4 — admin/SA opening a deal whose developer is still pending
@@ -12532,8 +12519,7 @@ var DealsPage = function(p) {
               }
               if(devObj && devObj._id){ setDealDevelopers(function(prev){ var has=(prev||[]).some(function(x){ return String(x._id)===String(devObj._id); }); return has?(prev||[]):(prev||[]).concat([devObj]); }); }
             }}/>
-          : <>
-          <SearchableSelect
+          : <SearchableSelect
             value={devIdOf(selectedDeal)}
             emptyLabel="— None —"
             placeholder="Search developers…"
@@ -12553,41 +12539,7 @@ var DealsPage = function(p) {
                 setSelectedDeal(updated);
                 setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;}):prev;});
               }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
-            }}/>
-          {/* Request a new developer (R2) — below the dropdown, for all deal-editing
-              roles. Pick from the list first; request only when genuinely missing. */}
-          <div style={{ marginTop:10 }}>
-            {devReqMsg && <div style={{ fontSize:12, color:"#15803D", background:"#DCFCE7", padding:"6px 10px", borderRadius:8 }}>{devReqMsg}</div>}
-            {!devReqOpen && !devReqMsg && <button type="button" onClick={function(){ setDevReqOpen(true); setDevReqName(""); setDevReqNote(""); setDevReqError(""); }} style={{ background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline" }}>Don't see the developer? Request a new one</button>}
-            {devReqOpen && <div style={{ marginTop:2 }}>
-              <input value={devReqName} onChange={function(e){ setDevReqName(e.target.value); }} placeholder="Developer name" style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, boxSizing:"border-box", marginBottom:6 }}/>
-              <textarea value={devReqNote} onChange={function(e){ setDevReqNote(e.target.value); }} placeholder="Why do you need this? (optional)" rows={2} style={{ width:"100%", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, boxSizing:"border-box", resize:"vertical", marginBottom:6, fontFamily:"inherit" }}/>
-              {devReqError && <div style={{ fontSize:12, color:"#B91C1C", background:"#FEE2E2", padding:"6px 10px", borderRadius:8, marginBottom:6 }}>{devReqError}</div>}
-              <div style={{ display:"flex", gap:8 }}>
-                <button type="button" disabled={devReqSaving} onClick={async function(){
-                  var nm=(devReqName||"").trim();
-                  setDevReqError("");
-                  if(!nm){ setDevReqError("Please enter a developer name."); return; }
-                  setDevReqSaving(true);
-                  try{
-                    await apiFetch("/api/developer-requests","POST",{ requestedName:nm, note:(devReqNote||"").trim(), leadId:gid(selectedDeal) },p.token);
-                    setDevReqOpen(false); setDevReqName(""); setDevReqNote("");
-                    setDevReqMsg("Request sent to admin. You'll be notified when reviewed.");
-                    setTimeout(function(){ setDevReqMsg(""); }, 6000);
-                  }catch(ex){
-                    var code=(ex&&ex.message)||"";
-                    setDevReqError(
-                      code==="already_exists" ? "That developer already exists — pick it from the dropdown above."
-                      : code==="already_requested" ? "This developer has already been requested and is pending admin review."
-                      : (code||"Request failed. Please try again.")
-                    );
-                  }finally{ setDevReqSaving(false); }
-                }} style={{ flex:1, padding:"7px 12px", borderRadius:8, border:"none", background:C.info, color:"#fff", fontSize:12, fontWeight:600, cursor:devReqSaving?"wait":"pointer", opacity:devReqSaving?0.6:1 }}>{devReqSaving?"Sending…":"Submit request"}</button>
-                <button type="button" onClick={function(){ setDevReqOpen(false); setDevReqError(""); }} style={{ padding:"7px 12px", borderRadius:8, border:"1px solid "+C.border, background:"#fff", fontSize:12, cursor:"pointer", color:C.textLight }}>Cancel</button>
-              </div>
-            </div>}
-          </div>
-          </>}
+            }}/>}
         </div>}
 
         {/* Commission Claim Date - sales admin only */}
