@@ -13551,7 +13551,12 @@ async function autoAssignQueuedLead(leadId) {
     // Queued leads are always first-assignment (rotationCount=0), so the
     // count-based picker always lands in the "rotCount < 2" branch: try Tier 1
     // first, fall through to combined Tier 2+3.
-    var tryPool = function(ids, lastIdx){
+    // ignoreCap=true bypasses the per-agent daily cap so a brand-new lead's first
+    // assignment always lands a Tier 1 seat via round-robin even when every Tier 1
+    // agent is at their dailyLeadCap. The T2+T3 fallback call passes ignoreCap=false
+    // so the cap still governs that pool. (Rotation — autoRotateLead — is separate
+    // and keeps respecting the cap.)
+    var tryPool = function(ids, lastIdx, ignoreCap){
       if (!Array.isArray(ids) || !ids.length) return null;
       var n = ids.length;
       var start = ((lastIdx + 1) % n + n) % n;
@@ -13565,7 +13570,8 @@ async function autoAssignQueuedLead(leadId) {
         // Per-agent daily cap. null/undefined = unlimited. 0 = paused. Counted
         // from today's Rotation entries in agentHistory[] (same source as
         // autoRotateLead's cap + the FE "X/Y today" counter).
-        if (u.dailyLeadCap != null) {
+        // Skipped entirely when ignoreCap is set (Tier-1 first-assignment).
+        if (!ignoreCap && u.dailyLeadCap != null) {
           var received = todayCountMap.get(uid) || 0;
           if (received >= u.dailyLeadCap) continue;
         }
@@ -13579,11 +13585,11 @@ async function autoAssignQueuedLead(leadId) {
       var s = String(id);
       if (!seen23[s]) { seen23[s] = true; combined23.push(s); }
     });
-    var pick = tryPool(settings.tiers.tier1.agents, settings.tiers.tier1.lastIdx);
+    var pick = tryPool(settings.tiers.tier1.agents, settings.tiers.tier1.lastIdx, true);
     var poolKey = null;
     if (pick) { poolKey = "tier1"; }
     else {
-      pick = tryPool(combined23, settings.combined23LastIdx);
+      pick = tryPool(combined23, settings.combined23LastIdx, false);
       if (pick) poolKey = "combined23";
     }
     if (!pick) return { ok: false, error: "exhausted" };
