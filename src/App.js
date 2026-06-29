@@ -2076,6 +2076,159 @@ var buildDealItems = function(leads, dailyRequests, cu, myTeamUsers) {
   return items;
 };
 
+// ===== PENDING DEVELOPER RESOLUTION (N4) =====
+// Shared admin/SA block for a lead whose developer is still pending — sales
+// typed a free-text name at conversion (developerPending set, developerId
+// null). Rendered inside the Deals + EOI side panels. Three actions hit
+// POST /api/leads/:id/resolve-developer { action: link | add | reject }:
+//   link   -> pick one of the managed developers (SearchableSelect)
+//   add    -> create/reuse a Developer from the pending name, as-is
+//   reject -> clear the pending name (confirm first); sales re-enters later
+// onResolved(updatedLead, developerObjOrNull) lets the host panel patch its
+// selected-lead + list state and inject a freshly-added developer into its
+// dropdown options. The response lead is UNPOPULATED, so the host merges only
+// the two developer fields (preserving its already-populated agentId etc.).
+var PendingDevResolver = function(p){
+  var [mode, setMode] = useState("");       // "" | "link" | "reject"
+  var [linkId, setLinkId] = useState("");
+  var [busy, setBusy] = useState(false);
+  var [err, setErr] = useState("");
+  var pendingName = (p.lead && p.lead.developerPending) || "";
+  var devOpts = (p.developers||[]).map(function(d){ return { value:String(d._id), label:d.name }; });
+
+  var run = function(body){
+    setBusy(true); setErr("");
+    apiFetch("/api/leads/"+gid(p.lead)+"/resolve-developer","POST",body,p.token)
+      .then(function(r){
+        setBusy(false); setMode(""); setLinkId("");
+        if(p.onResolved) p.onResolved((r&&r.lead)||null, (r&&r.developer)||null);
+      })
+      .catch(function(ex){ setBusy(false); setErr((ex&&ex.message)||"Action failed"); });
+  };
+
+  return <div style={{ marginTop:2, padding:12, background:"#FEF3C7", border:"1px solid "+C.warning, borderRadius:8 }}>
+    <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginBottom:10 }}>
+      <AlertCircle size={16} color="#B45309" style={{ flexShrink:0, marginTop:1 }}/>
+      <div style={{ fontSize:12.5, color:"#92400E", lineHeight:1.4 }}>
+        <span style={{ fontWeight:700 }}>Pending developer:</span> "{pendingName}" <span style={{ color:"#B45309" }}>(typed by sales)</span>
+        <div style={{ fontSize:11, color:"#B45309", marginTop:2 }}>Resolve before approving the deal.</div>
+      </div>
+    </div>
+    {err && <div style={{ fontSize:12, color:"#B91C1C", background:"#FEE2E2", padding:"6px 10px", borderRadius:8, marginBottom:8 }}>{err}</div>}
+
+    {mode==="" && <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+      <button type="button" disabled={busy} onClick={function(){ setErr(""); setLinkId(""); setMode("link"); }} style={{ flex:"1 1 auto", padding:"7px 10px", borderRadius:8, border:"none", background:C.info, color:"#fff", fontSize:12, fontWeight:600, cursor:busy?"wait":"pointer", opacity:busy?0.6:1 }}>🔗 Link to existing</button>
+      <button type="button" disabled={busy} onClick={function(){ run({ action:"add", newName: pendingName }); }} style={{ flex:"1 1 auto", padding:"7px 10px", borderRadius:8, border:"none", background:C.success, color:"#fff", fontSize:12, fontWeight:600, cursor:busy?"wait":"pointer", opacity:busy?0.6:1 }}>{busy?"Working…":"➕ Add as new"}</button>
+      <button type="button" disabled={busy} onClick={function(){ setErr(""); setMode("reject"); }} style={{ flex:"1 1 auto", padding:"7px 10px", borderRadius:8, border:"1px solid "+C.danger, background:"#fff", color:C.danger, fontSize:12, fontWeight:600, cursor:busy?"wait":"pointer", opacity:busy?0.6:1 }}>✕ Reject</button>
+    </div>}
+
+    {mode==="link" && <div>
+      <div style={{ fontSize:11, fontWeight:700, color:"#92400E", marginBottom:6 }}>Pick the matching developer</div>
+      <SearchableSelect value={linkId} onChange={setLinkId} options={devOpts} emptyLabel="— Select developer —" placeholder="Search developers…" width="100%" maxWidth={9999} fontSize={12}/>
+      <div style={{ display:"flex", gap:8, marginTop:8 }}>
+        <button type="button" disabled={busy||!linkId} onClick={function(){ run({ action:"link", developerId: linkId }); }} style={{ flex:1, padding:"7px 12px", borderRadius:8, border:"none", background:C.info, color:"#fff", fontSize:12, fontWeight:600, cursor:(busy||!linkId)?"not-allowed":"pointer", opacity:(busy||!linkId)?0.6:1 }}>{busy?"Linking…":"Confirm link"}</button>
+        <button type="button" disabled={busy} onClick={function(){ setMode(""); setLinkId(""); setErr(""); }} style={{ padding:"7px 12px", borderRadius:8, border:"1px solid "+C.border, background:"#fff", fontSize:12, cursor:"pointer", color:C.textLight }}>Cancel</button>
+      </div>
+    </div>}
+
+    {mode==="reject" && <div>
+      <div style={{ fontSize:12, color:"#92400E", marginBottom:8, lineHeight:1.4 }}>Clear pending developer name? Sales will need to enter a new one.</div>
+      <div style={{ display:"flex", gap:8 }}>
+        <button type="button" disabled={busy} onClick={function(){ run({ action:"reject" }); }} style={{ flex:1, padding:"7px 12px", borderRadius:8, border:"none", background:C.danger, color:"#fff", fontSize:12, fontWeight:600, cursor:busy?"wait":"pointer", opacity:busy?0.6:1 }}>{busy?"Clearing…":"Yes, clear it"}</button>
+        <button type="button" disabled={busy} onClick={function(){ setMode(""); setErr(""); }} style={{ padding:"7px 12px", borderRadius:8, border:"1px solid "+C.border, background:"#fff", fontSize:12, cursor:"pointer", color:C.textLight }}>Cancel</button>
+      </div>
+    </div>}
+  </div>;
+};
+
+// ===== PENDING DEVELOPER BELL (N4) =====
+// Admin/SA discoverability bell. Self-fetches GET /api/leads/with-pending-developer
+// (mirrors the self-contained CallbackBell, NOT the Notification-row bells) on
+// mount, every 60s, on cbBust (WS lead events), and on open. Each row routes to
+// the lead's Deals (DoneDeal) or EOI side panel via p.onRowClick(pageKey, lead).
+var PendingDevBell = function(p){
+  var [rows, setRows] = useState([]);
+  var ref = useRef(null);
+
+  useEffect(function(){
+    if(!p.show) return;
+    var fn=function(e){ if(ref.current&&!ref.current.contains(e.target)) p.setShow(false); };
+    document.addEventListener("mousedown",fn);
+    return function(){ document.removeEventListener("mousedown",fn); };
+  },[p.show]);
+
+  useEffect(function(){
+    if(!p.token) return;
+    var cancelled=false;
+    var load=function(){
+      apiFetch("/api/leads/with-pending-developer","GET",null,p.token)
+        .then(function(r){ if(!cancelled) setRows((r&&Array.isArray(r.data))?r.data:[]); })
+        .catch(function(){});
+    };
+    load();
+    var t=setInterval(load,60000);
+    return function(){ cancelled=true; clearInterval(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust]);
+
+  // Open-refetch — fresh count the moment the admin opens the bell (covers a
+  // resolution the admin just made in a side panel, which has no WS bump).
+  useEffect(function(){
+    if(!p.show||!p.token) return;
+    var cancelled=false;
+    apiFetch("/api/leads/with-pending-developer","GET",null,p.token)
+      .then(function(r){ if(!cancelled) setRows((r&&Array.isArray(r.data))?r.data:[]); })
+      .catch(function(){});
+    return function(){ cancelled=true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.show]);
+
+  var count = rows.length;
+
+  return <div style={{ position:"relative" }} ref={ref}>
+    <button onClick={function(){
+      var opening=!p.show;
+      p.setShow(opening);
+      if(opening && p.closeOthers) p.closeOthers();
+    }} style={{ width:36, height:36, borderRadius:9, border:"1px solid #E8ECF1", background:count>0?"#FEF3C7":"#fff", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+      <Building size={15} color={count>0?"#B45309":C.textLight}/>
+      {count>0&&<span style={{ position:"absolute", top:-2, right:-2, minWidth:17, height:17, borderRadius:9, background:C.warning, color:"#fff", fontSize:9, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 4px", border:"2px solid #fff" }}>{count>9?"9+":count}</span>}
+    </button>
+    {p.show&&<div className="crm-notif-panel" style={{ position:"absolute", top:46, right:0, width:360, maxWidth:"95vw", background:"#fff", borderRadius:16, boxShadow:"0 16px 48px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.04)", zIndex:200, maxHeight:460, display:"flex", flexDirection:"column" }}>
+      <div style={{ padding:"14px 18px", borderBottom:"1px solid #F1F5F9", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <Building size={16} color="#B45309"/>
+          <span style={{ fontWeight:700, fontSize:14, color:C.text }}>Pending developers</span>
+          {count>0&&<span style={{ background:"#FEF3C7", color:"#B45309", padding:"2px 8px", borderRadius:10, fontSize:11, fontWeight:600 }}>{count}</span>}
+        </div>
+        <button onClick={function(){ p.setShow(false); }} style={{ background:"none", border:"none", cursor:"pointer", color:C.textLight, display:"flex", padding:4 }}><X size={15}/></button>
+      </div>
+      <div style={{ overflowY:"auto", flex:1 }}>
+        {count===0&&<div style={{ padding:32, textAlign:"center", color:C.textLight, fontSize:13 }}>
+          <div style={{ fontSize:28, marginBottom:8 }}>✅</div>No pending developers
+        </div>}
+        {rows.map(function(n){
+          var agName = n.agentId&&n.agentId.name ? n.agentId.name : "—";
+          var isDeal = n.status==="DoneDeal";
+          return <div key={String(n._id)} onClick={function(){
+            p.setShow(false);
+            if(p.onRowClick) p.onRowClick(isDeal?"deals":"eoi", n);
+          }} style={{ padding:"11px 18px", borderBottom:"1px solid #F8FAFC", cursor:"pointer", background:"#fff", transition:"background 0.15s" }}
+            onMouseEnter={function(e){ e.currentTarget.style.background="#FFFBEB"; }}
+            onMouseLeave={function(e){ e.currentTarget.style.background="#fff"; }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:13, fontWeight:600, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{n.name||"(no name)"}</span>
+              <span style={{ flexShrink:0, fontSize:10, fontWeight:700, padding:"2px 7px", borderRadius:8, background:isDeal?"#DCFCE7":"#FFF7ED", color:isDeal?"#15803D":"#EA580C" }}>{isDeal?"Deal":"EOI"}</span>
+            </div>
+            <div style={{ fontSize:12, color:"#B45309", marginTop:3, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>🏗️ "{n.developerPending}"</div>
+            <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>👤 {agName}</div>
+          </div>;
+        })}
+      </div>
+    </div>}
+  </div>;
+};
+
 // ===== HEADER =====
 var Header = function(p) {
   var t = p.t; var isOnlyAdmin = p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin");
@@ -2298,6 +2451,15 @@ var Header = function(p) {
           </div>
         </div>}
       </div>}
+
+      {/* BELL 5 — Pending developers (N4, isolated component). Admin/SA only.
+          Self-fetches /api/leads/with-pending-developer; rows route to the
+          lead's Deals/EOI side panel for resolution. */}
+      {(p.cu&&(p.cu.role==="admin"||p.cu.role==="sales_admin")) && <PendingDevBell
+        token={p.token} cbBust={p.cbBust}
+        show={p.showPendingDev} setShow={p.setShowPendingDev}
+        onRowClick={p.onPendingDevClick}
+        closeOthers={function(){ if(p.setShowNotif)p.setShowNotif(false); if(p.setShowDealNotif)p.setShowDealNotif(false); if(p.setShowRotNotif)p.setShowRotNotif(false); if(p.setShowOffSiteNotif)p.setShowOffSiteNotif(false); }}/>}
 
       {/* BELL 1 — Callbacks (isolated component). Not rendered for HR — never mounts, so no callbacks fetch/poll. */}
       {p.cu.role!=="hr" && p.cu.role!=="office_boy" && <CallbackBell t={p.t} token={p.token} cbBust={p.cbBust} cu={p.cu} myTeamUsers={p.myTeamUsers} showNotif={p.showNotif} setShowNotif={p.setShowNotif} setShowDealNotif={p.setShowDealNotif} setShowRotNotif={p.setShowRotNotif} onLeadClick={p.onLeadClick} onDRClick={p.onDRClick}/>}
@@ -11227,6 +11389,22 @@ var EOIPage = function(p) {
   var [panelHydratedEoiId,setPanelHydratedEoiId]=useState(null);
   var isEoiHydrated = !!(selectedEOI && selectedEOI._id && panelHydratedEoiId === String(selectedEOI._id));
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
+  // Developers (N4) — EOI panel parity with Deals. R2 added the picker to the
+  // Deals panel only; the EOI panel needs the same list for the "Link to
+  // existing" resolver + the normal developer dropdown. GET /api/developers is
+  // open to any auth; the dropdown/resolver stay admin/SA-gated in the JSX.
+  var [eoiDevelopers,setEoiDevelopers]=useState([]);
+  useEffect(function(){
+    if(!p.token) return;
+    var cancelled=false;
+    apiFetch("/api/developers","GET",null,p.token)
+      .then(function(data){ if(cancelled) return; var rows=(data&&Array.isArray(data.data))?data.data:(Array.isArray(data)?data:[]); setEoiDevelopers(rows); })
+      .catch(function(){ /* non-fatal */ });
+    return function(){ cancelled=true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token]);
+  var eoiDevIdOf=function(d){ var dv=d&&d.developerId; return dv?String(dv._id||dv):""; };
+  var eoiDevNameOf=function(d){ var dv=d&&d.developerId; if(dv&&typeof dv==="object"&&dv.name) return dv.name; var id=eoiDevIdOf(d); if(!id) return ""; var hit=(eoiDevelopers||[]).find(function(x){ return String(x._id)===id; }); return hit?hit.name:""; };
 
   // Deep-link: open the side panel when a caller (e.g. the Deals & EOI notifications bell) navigated here with a lead.
   useEffect(function(){
@@ -11468,6 +11646,44 @@ var EOIPage = function(p) {
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>;})}
         </div>
+
+        {/* Developer (N4) — EOI panel parity with the Deals panel. When admin/SA
+            opens an EOI whose developer is still pending, show the resolution
+            block; otherwise the normal picker (writes Lead.developerId via PUT,
+            subject to the approval lock for non-admin roles). */}
+        {canEditDeals(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
+          {(canEditDeveloper(p.cu) && selectedEOI.developerPending && !eoiDevIdOf(selectedEOI))
+          ? <PendingDevResolver lead={selectedEOI} developers={eoiDevelopers} token={p.token} onResolved={function(updatedLead, devObj){
+              if(updatedLead){
+                var patch={ developerId: updatedLead.developerId, developerPending: updatedLead.developerPending||"" };
+                setSelectedEOI(function(prev){ return prev?Object.assign({}, prev, patch):prev; });
+                setEoiAllData(function(prev){ return Array.isArray(prev)?prev.map(function(l){ return gid(l)===gid(updatedLead)?Object.assign({},l,patch):l; }):prev; });
+                if(p.setLeads) p.setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(updatedLead)?Object.assign({},l,patch):l; }); });
+              }
+              if(devObj && devObj._id){ setEoiDevelopers(function(prev){ var has=(prev||[]).some(function(x){ return String(x._id)===String(devObj._id); }); return has?(prev||[]):(prev||[]).concat([devObj]); }); }
+            }}/>
+          : <SearchableSelect
+              value={eoiDevIdOf(selectedEOI)}
+              emptyLabel="— None —"
+              placeholder="Search developers…"
+              width="100%" maxWidth={9999} fontSize={12}
+              options={(function(){
+                var base=(eoiDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; });
+                var cur=eoiDevIdOf(selectedEOI);
+                if(cur && !base.some(function(o){ return o.value===cur; })) base.unshift({ value:cur, label:eoiDevNameOf(selectedEOI)||cur });
+                return base;
+              })()}
+              onChange={async function(val){
+                try{
+                  await apiFetch("/api/leads/"+gid(selectedEOI),"PUT",{developerId:val||null},p.token);
+                  var patch={ developerId: val||null };
+                  setSelectedEOI(function(prev){ return prev?Object.assign({}, prev, patch):prev; });
+                  setEoiAllData(function(prev){ return Array.isArray(prev)?prev.map(function(l){ return gid(l)===gid(selectedEOI)?Object.assign({},l,patch):l; }):prev; });
+                  if(p.setLeads) p.setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(selectedEOI)?Object.assign({},l,patch):l; }); });
+                }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
+              }}/>}
+        </div>}
 
         {/* EOI Image */}
         <div style={{ marginTop:12 }}>
@@ -12221,7 +12437,7 @@ var DealsPage = function(p) {
                     var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",upd,p.token);
                     p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
                     setSelectedDeal(updated);
-                  }catch(e){}
+                  }catch(e){ alert((e&&e.message)||"Update failed"); }  // N4 — surface the pending-developer approval gate (was a silent no-op)
                 }} style={{ background:selectedDeal.dealApproved?C.success+"22":"transparent", border:"1px solid "+(selectedDeal.dealApproved?C.success:C.border), borderRadius:8, padding:"4px 10px", cursor:"pointer", color:selectedDeal.dealApproved?C.success:C.textLight, fontSize:11, fontWeight:700 }}>
                   {selectedDeal.dealApproved?"✅ Approved":"⏳ Approve"}
                 </button>
@@ -12302,6 +12518,21 @@ var DealsPage = function(p) {
             when a developer is genuinely missing (admin reviews — R1). */}
         {canEditDeals(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
+          {/* N4 — admin/SA opening a deal whose developer is still pending
+              (sales typed a free-text name at conversion, no developerId yet):
+              swap the picker for the resolution block. link/add/reject clears
+              the pending state and the normal dropdown returns below. */}
+          {(canEditDeveloper(p.cu) && selectedDeal.developerPending && !devIdOf(selectedDeal))
+          ? <PendingDevResolver lead={selectedDeal} developers={dealDevelopers} token={p.token} onResolved={function(updatedLead, devObj){
+              if(updatedLead){
+                var patch={ developerId: updatedLead.developerId, developerPending: updatedLead.developerPending||"" };
+                setSelectedDeal(function(prev){ return prev?Object.assign({}, prev, patch):prev; });
+                setDealAllData(function(prev){ return Array.isArray(prev)?prev.map(function(l){ return gid(l)===gid(updatedLead)?Object.assign({},l,patch):l; }):prev; });
+                p.setLeads(function(prev){ return prev.map(function(l){ return gid(l)===gid(updatedLead)?Object.assign({},l,patch):l; }); });
+              }
+              if(devObj && devObj._id){ setDealDevelopers(function(prev){ var has=(prev||[]).some(function(x){ return String(x._id)===String(devObj._id); }); return has?(prev||[]):(prev||[]).concat([devObj]); }); }
+            }}/>
+          : <>
           <SearchableSelect
             value={devIdOf(selectedDeal)}
             emptyLabel="— None —"
@@ -12356,6 +12587,7 @@ var DealsPage = function(p) {
               </div>
             </div>}
           </div>
+          </>}
         </div>}
 
         {/* Commission Claim Date - sales admin only */}
@@ -28513,6 +28745,7 @@ export default function CRMApp() {
   var pushTouchStartY=useRef(null);  // swipe-up gesture start Y
   var [showDealNotif,setShowDealNotif]=useState(false);
   var [showRotNotif,setShowRotNotif]=useState(false);
+  var [showPendingDev,setShowPendingDev]=useState(false);   // N4 — pending-developer bell dropdown
   // STEP 4-2 — bumped (debounced) on every lead/DR WS event. CallbackBell +
   // DashboardPage's callback cards read this in their fetch effect
   // deps so they refresh in real time without scanning the (soon-to-shrink)
@@ -29561,7 +29794,7 @@ export default function CRMApp() {
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
         ⚠️ You are offline — data will not be saved until connection is restored
       </div>}
-      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} token={token} cbBust={cbBust} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
+      <Header title={titles[currentPage]||""} t={t} leads={scopedLeads} token={token} cbBust={cbBust} lang={lang} setLang={function(l){setLang(l);try{localStorage.setItem("crm_lang",l);}catch(e){}}} showNotif={showNotif} setShowNotif={setShowNotif} search={search} setSearch={setSearch} isMobile={isMobile} onMenu={function(){setSidebarOpen(true);}} onLeadClick={function(l){nav("leads",l);}} onDRClick={function(){setPage("dailyReq");}} onDRItemClick={function(r){nav("dailyReq",r);}} onDealNotifClick={function(pg,lead){nav(pg,lead);}} onRotNotifClick={function(lead){nav("leads",lead);}} navigateToCommission={navigateToCommission} dealNotifs={dealNotifs} setDealNotifs={setDealNotifs} showDealNotif={showDealNotif} setShowDealNotif={setShowDealNotif} cu={currentUser} isAdmin={isAdmin} showRotNotif={showRotNotif} setShowRotNotif={setShowRotNotif} showPendingDev={showPendingDev} setShowPendingDev={setShowPendingDev} onPendingDevClick={function(pg,lead){nav(pg,lead);}} rotNotifs={rotNotifs} setRotNotifs={setRotNotifs} unseenRot={rotNotifs.filter(function(n){return !n.seen;}).length} onRotNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onRotClearAll={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"rotation"},token).then(function(){loadNotifications(token);}).catch(function(){});}} dailyRequests={scopedDailyReqs} myTeamUsers={myTeamUsers} unseenDeals={dealNotifs.filter(function(n){return !n.seen;}).length} onDealNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"deal"},token).then(function(){loadNotifications(token);}).catch(function(){});}} offSiteNotifs={offSiteNotifs} showOffSiteNotif={showOffSiteNotif} setShowOffSiteNotif={setShowOffSiteNotif} unseenOffSite={offSiteNotifs.filter(function(n){return !n.seen;}).length} onOffSiteNotifSeen={function(){apiFetch("/api/notifications/mark-seen","PUT",{type:"offsite_pending,offsite_approved,offsite_rejected"},token).then(function(){loadNotifications(token);}).catch(function(){});}} onOffSiteNotifClick={function(n){var canApprove=hasAttendancePerm(currentUser&&currentUser.role,"approveOffSiteRequests",attendanceSettings);if(n&&n.type==="offsite_pending"&&canApprove){setPage("offsiteRequests");}else{setPage("attendance");}}}/>
       <div style={{ flex:1 }}>{renderPage()}</div>
     </div>
     {pushBanner && <div
