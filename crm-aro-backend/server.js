@@ -23911,13 +23911,17 @@ app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async functio
 // free-text developerPending (a deal-editor typed a new name at conversion) AND
 // no linked developerId yet — i.e. the exact "neither resolved" state the
 // resolution UI acts on. $nin:["",null] matches a non-empty string and excludes
-// missing/null; the developerId $or covers both null and a never-set field.
+// missing/null. "Resolved" means developerId is a REAL ObjectId; the
+// `$not:{$type:"objectId"}` clause treats null, a never-set field, AND a
+// legacy empty-string "" all as pending — mirroring the FE's eoiDevIdOf
+// (App.js: `d.developerId ? ... : ""`), which the prior `null`/$exists $or
+// missed for "" and dropped those leads from the bell.
 // count + list; the FE bell routes each row to its Deals/EOI side panel.
 app.get("/api/leads/with-pending-developer", auth, salesAdminOnly, async function(req, res) {
   try {
     var rows = await Lead.find({
       developerPending: { $nin: ["", null] },
-      $or: [{ developerId: null }, { developerId: { $exists: false } }]
+      developerId: { $not: { $type: "objectId" } }
     })
       .select("name status developerPending developerId leadId agentId eoiApproved dealApproved eoiStatus lastActivityTime")
       .populate("agentId", "name")
