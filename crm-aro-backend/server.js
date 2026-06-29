@@ -9912,7 +9912,7 @@ app.post("/api/leads", auth, async function(req, res) {
     // (developerId OR developerPending).
     if (statusIn === "EOI" || statusIn === "DoneDeal") {
       if (!normId(req.body.developerId) && !String((req.body && req.body.developerPending) || "").trim()) {
-        return res.status(400).json({ error: "developer_required", message: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name." });
+        return res.status(400).json({ error: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name.", code: "developer_required" });
       }
     }
     // Admin / sales_admin / manager / team_leader / integration keys may leave
@@ -11279,7 +11279,11 @@ app.put("/api/leads/:id", auth, async function(req, res) {
           var devLocked = (devLockLead.status === "EOI"      && devLockLead.eoiApproved  === true)
                        || (devLockLead.status === "DoneDeal" && devLockLead.dealApproved === true);
           if (devLocked) {
-            return res.status(403).json({ error: "developer_locked", message: "Developer is locked after admin approval. Contact admin to change." });
+            // N4 cosmetic fix — apiFetch surfaces response.error as the thrown
+            // message (FE side-panel dropdown alerts it). Put the FRIENDLY
+            // sentence in `error` and keep the machine code in `code` so the
+            // user sees prose, not "developer_locked".
+            return res.status(403).json({ error: "Developer is locked after admin approval. Contact admin to change.", code: "developer_locked" });
           }
         }
       }
@@ -11506,7 +11510,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       var convDevId   = (req.body.developerId !== undefined) ? req.body.developerId : oldLead.developerId;
       var convDevPend = (req.body.developerPending !== undefined) ? String(req.body.developerPending || "").trim() : String(oldLead.developerPending || "").trim();
       if (!convDevId && !convDevPend) {
-        return res.status(400).json({ error: "developer_required", message: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name." });
+        return res.status(400).json({ error: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name.", code: "developer_required" });
       }
     }
     // Approve-push pre-read: capture prior approve flags + name ONLY when an
@@ -11515,7 +11519,25 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // transition without re-pushing when an already-approved deal is re-saved.
     var approvePre = null;
     if (req.body.eoiApproved !== undefined || req.body.dealApproved !== undefined) {
-      approvePre = await Lead.findById(req.params.id).select("name eoiApproved dealApproved").lean();
+      approvePre = await Lead.findById(req.params.id).select("name eoiApproved dealApproved developerId developerPending").lean();
+    }
+    // Approval require (N4) — admin/SA must RESOLVE a pending developer BEFORE
+    // approving. Block the approve transition (false->true) while the lead still
+    // carries a free-text developerPending with no linked developerId — the exact
+    // "neither resolved" state the side-panel resolution UI clears (link/add/
+    // reject). Effective developer state = body override when present, else the
+    // stored lead (req.body.developerId is already normId-sanitized above).
+    // Approve flags are already admin/SA-only here (stripped for other roles).
+    if (approvePre) {
+      var _apvEoiTransition  = req.body.eoiApproved  === true && approvePre.eoiApproved  !== true;
+      var _apvDealTransition = req.body.dealApproved === true && approvePre.dealApproved !== true;
+      if (_apvEoiTransition || _apvDealTransition) {
+        var apvDevId   = (req.body.developerId !== undefined) ? req.body.developerId : approvePre.developerId;
+        var apvDevPend = (req.body.developerPending !== undefined) ? String(req.body.developerPending || "").trim() : String((approvePre.developerPending) || "").trim();
+        if (!apvDevId && apvDevPend) {
+          return res.status(400).json({ error: "Resolve the pending developer before approving.", code: "developer_pending_unresolved" });
+        }
+      }
     }
     // CallbackBell auto-clear (2026-05-18 rebuild): when this PUT logs new
     // feedback / status_change activity AND the lead already has a scheduled
@@ -23907,6 +23929,31 @@ app.post("/api/leads/:id/resolve-developer", auth, salesAdminOnly, async functio
   } catch(e) {
     console.error("[POST /api/leads/:id/resolve-developer]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "resolve_developer_failed" });
+  }
+});
+
+// GET /api/leads/with-pending-developer (N4) — admin/SA discoverability feed for
+// the pending-developer bell. Returns every lead still carrying an UNRESOLVED
+// free-text developerPending (a deal-editor typed a new name at conversion) AND
+// no linked developerId yet — i.e. the exact "neither resolved" state the
+// resolution UI acts on. $nin:["",null] matches a non-empty string and excludes
+// missing/null; the developerId $or covers both null and a never-set field.
+// count + list; the FE bell routes each row to its Deals/EOI side panel.
+app.get("/api/leads/with-pending-developer", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var rows = await Lead.find({
+      developerPending: { $nin: ["", null] },
+      $or: [{ developerId: null }, { developerId: { $exists: false } }]
+    })
+      .select("name status developerPending developerId leadId agentId eoiApproved dealApproved eoiStatus lastActivityTime")
+      .populate("agentId", "name")
+      .sort({ lastActivityTime: -1 })
+      .limit(500)
+      .lean();
+    res.json({ count: rows.length, data: rows });
+  } catch(e) {
+    console.error("[GET /api/leads/with-pending-developer]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "with_pending_developer_failed" });
   }
 });
 
