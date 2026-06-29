@@ -882,6 +882,35 @@ var DocumentsUpload = function(p) {
   </div>;
 };
 
+// Shared quick-pick row for the upcoming-callback datetime field. Rendered in
+// every status that binds cbTime (CallBack / NoAnswer / Potential / HotCase /
+// MeetingDone). Each button writes a NAIVE-LOCAL "YYYY-MM-DDTHH:MM" string built
+// from the browser-local clock — byte-identical to what the datetime-local input
+// emits — so the save path and the BE's lexicographic range comparisons stay
+// untouched. NO .toISOString()/UTC/timezone math (see storage contract above).
+// p.value = current cbTime (for active highlight); p.onPick(v) sets it.
+var QuickCbButtons = function(p) {
+  var pad2 = function(n){return n<10?"0"+n:""+n;};
+  var fmt = function(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())+"T"+pad2(d.getHours())+":"+pad2(d.getMinutes());};
+  var quick = [
+    { label:"After 1hr",      make:function(){var d=new Date();d.setHours(d.getHours()+1);return d;} },
+    { label:"After 2hr",      make:function(){var d=new Date();d.setHours(d.getHours()+2);return d;} },
+    { label:"After 3hr",      make:function(){var d=new Date();d.setHours(d.getHours()+3);return d;} },
+    { label:"8 PM",           make:function(){var d=new Date();d.setHours(20,0,0,0);return d;} },
+    { label:"Tomorrow 12 PM", make:function(){var d=new Date();d.setDate(d.getDate()+1);d.setHours(12,0,0,0);return d;} },
+    { label:"Tomorrow 3 PM",  make:function(){var d=new Date();d.setDate(d.getDate()+1);d.setHours(15,0,0,0);return d;} },
+    { label:"Next week",      make:function(){var d=new Date();d.setDate(d.getDate()+7);return d;} }
+  ];
+  return <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
+    {quick.map(function(q){
+      var v = fmt(q.make());
+      var active = p.value===v;
+      return <button key={q.label} type="button" onClick={function(){p.onPick(v);}}
+        style={{ flex:"1 1 0", minWidth:88, padding:"7px 10px", borderRadius:9, border:"1px solid "+(active?"#3B82F6":"#E2E8F0"), background:active?"#EFF6FF":"#fff", color:active?"#1D4ED8":"#334155", fontSize:12, fontWeight:600, cursor:"pointer" }}>{q.label}</button>;
+    })}
+  </div>;
+};
+
 // Status change requires mandatory comment
 var StatusModal = function(p) {
   var [comment, setComment] = useState("");
@@ -991,33 +1020,20 @@ var StatusModal = function(p) {
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Callback <span style={{color:C.danger}}>*</span></label>
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
-      {/* Quick-pick row, CallBack only — fills cbTime in the same datetime-local
-          format ("YYYY-MM-DDTHH:MM") the manual picker emits, so the existing
+      {/* Shared quick-pick row — shown for both statuses that bind cbTime here
+          (CallBack / NoAnswer). Fills cbTime in the same naive-local
+          "YYYY-MM-DDTHH:MM" format the manual picker emits, so the existing
           submit / save path is untouched. The manual picker stays visible above
           for any timing the quick options don't cover. */}
-      {st==="CallBack"&&(function(){
-        var pad2 = function(n){return n<10?"0"+n:""+n;};
-        var fmt = function(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())+"T"+pad2(d.getHours())+":"+pad2(d.getMinutes());};
-        var quick = [
-          { label:"After 1hr", make:function(){var d=new Date();d.setHours(d.getHours()+1);return d;} },
-          { label:"After 2hr", make:function(){var d=new Date();d.setHours(d.getHours()+2);return d;} },
-          { label:"8 PM",      make:function(){var d=new Date();d.setHours(20,0,0,0);return d;} }
-        ];
-        return <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
-          {quick.map(function(q){
-            var v = fmt(q.make());
-            var active = cbTime===v;
-            return <button key={q.label} type="button" onClick={function(){setCbTime(v);setErr("");}}
-              style={{ flex:"1 1 0", minWidth:88, padding:"7px 10px", borderRadius:9, border:"1px solid "+(active?"#3B82F6":"#E2E8F0"), background:active?"#EFF6FF":"#fff", color:active?"#1D4ED8":"#334155", fontSize:12, fontWeight:600, cursor:"pointer" }}>{q.label}</button>;
-          })}
-        </div>;
-      })()}
+      <QuickCbButtons value={cbTime} onPick={function(v){setCbTime(v);setErr("");}}/>
     </div>}
 
     {/* Potential / HotCase / MeetingDone: date + comment required */}
     {needsComment&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>📅 Upcoming Callback <span style={{color:C.danger}}>*</span></label>
       <input type="datetime-local" value={cbTime} onChange={function(e){setCbTime(e.target.value);setErr("");}} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+      {/* Same shared quick-pick row — Potential / HotCase / MeetingDone all bind cbTime. */}
+      <QuickCbButtons value={cbTime} onPick={function(v){setCbTime(v);setErr("");}}/>
     </div>}
     {needsComment&&<div style={{ marginBottom:12 }}>
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💬 Feedback <span style={{color:C.danger}}>*</span></label>
