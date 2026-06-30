@@ -458,16 +458,16 @@ Lead.collection.createIndex({ "assignments.agentId": 1, "assignments.callbackTim
 Lead.collection.createIndex({ hadMeeting: 1, agentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ agentId: 1, meetingDoneAt: 1 }).catch(function(){});
 
-// Safety-net unique index on phone. Partial filter skips empty strings so the
-// constraint only applies to rows with a real phone value. If pre-existing
-// duplicates cause creation to fail, log and continue — the app-level guard in
-// POST /api/leads / FB webhook still blocks new duplicates.
-Lead.collection.createIndex(
-  { phone: 1 },
-  { unique: true, partialFilterExpression: { phone: { $type: "string", $gt: "" } }, name: "uniq_phone" }
-).catch(function(e){
-  console.error("[phone unique index] not created:", e && e.message ? e.message : e);
-});
+// Non-unique lookup index on phone — keeps $or:[{phone},{phone2}] lookups fast.
+// Phase 1 (2026-06-30): phone is NO LONGER unique. A returning customer's second
+// purchase is its own independent lead, so duplicate phones are allowed. The old
+// unique "uniq_phone" index is dropped manually in Atlas (Phase 2); until then it
+// still lives in the cluster and keeps enforcing uniqueness, which is what makes
+// this code-only deploy safe and reversible. NOTE: do not reuse the "uniq_phone"
+// name here and do not just flip unique:false — createIndex conflicts on an
+// existing index and the error is swallowed by .catch(), so it would silently
+// do nothing. A new index name is required.
+Lead.collection.createIndex({ phone: 1 }, { name: "phone_lookup" }).catch(function(){});
 
 var Activity = mongoose.model("Activity", new mongoose.Schema({
   userId:{type:mongoose.Schema.Types.ObjectId,ref:"User",required:true},
@@ -9946,8 +9946,11 @@ app.post("/api/leads", auth, async function(req, res) {
         return res.status(400).json({ error: "ineligible_role", message: "Target agent role ("+targetOnCreate.role+") cannot be assigned leads" });
       }
     }
-    // Duplicate phone guard — covers manual entry, Google Sheets, and Make.com integrations.
-    // All three hit this endpoint, so one check here satisfies every creation path.
+    // Phone is required on every manual creation path (manual entry, Google
+    // Sheets, Make.com — all hit this endpoint). Phase 1 (2026-06-30): duplicate
+    // phones are now ALLOWED — a returning customer's second purchase is its own
+    // independent lead. The duplicate 409 guard that used to live below was
+    // removed. (Inbound + FB webhooks still dedupe by phone, by design.)
     var phoneIn = String(req.body.phone || "").trim();
     if (!phoneIn) return res.status(400).json({ error: "Phone is required", code: "phone_required" });
     // Phase A2 (2026-05-05): source is now required server-side. The schema
@@ -9960,27 +9963,6 @@ app.post("/api/leads", auth, async function(req, res) {
     // the persisted value matches the dropdown bucket.
     var normalizedSource = normalizeSource(req.body.source);
     if (!normalizedSource) return res.status(400).json({ error: "source is required", code: "source_required" });
-    var dup = await findLeadByPhone(phoneIn);
-    if (dup) {
-      var dupAgentName = (dup.agentId && dup.agentId.name) ? dup.agentId.name : "Unassigned";
-      return res.status(409).json({
-        error: "Phone " + phoneIn + " already exists (owned by " + dupAgentName + ")",
-        code: "duplicate_phone",
-        existingLeadId: String(dup._id)
-      });
-    }
-    // Also block if phone2 is supplied and clashes with an existing lead.
-    var phone2In = String(req.body.phone2 || "").trim();
-    if (phone2In) {
-      var dup2 = await findLeadByPhone(phone2In);
-      if (dup2) {
-        return res.status(409).json({
-          error: "Phone2 " + phone2In + " already exists in the system",
-          code: "duplicate_phone",
-          existingLeadId: String(dup2._id)
-        });
-      }
-    }
     var initialStatus = req.body.status || "NewLead";
     var stampsMeeting = initialStatus === "MeetingDone";
     // Phase R-12 Part 3 — external-deal field validation. Strips for non-admin
@@ -14216,6 +14198,13 @@ app.get("/api/rotation/diagnostics", auth, async function(req, res) {
 // Admin cleanup: remove duplicate leads by phone, keep oldest
 app.post("/api/admin/cleanup-duplicates", auth, adminOnly, async function(req, res) {
   try {
+    // Phase 1 (2026-06-30): DISABLED. Duplicate phones are now allowed — a
+    // returning customer's second purchase is its own independent lead. This
+    // tool grouped leads by phone and deleted every "extra", which would now
+    // destroy legitimate deals AND orphan their commissions/notifications (it
+    // uses raw Lead.deleteMany, bypassing cascadeCommissionCancel). Neutralized
+    // to a no-op; the original body below is intentionally left unreachable.
+    return res.status(410).json({ error: "disabled", message: "cleanup-duplicates is disabled: duplicate phones are now allowed for returning customers" });
     var allLeads = await Lead.find({}).lean();
     var phoneMap = {};
     allLeads.forEach(function(l) {
