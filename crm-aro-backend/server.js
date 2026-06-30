@@ -11192,7 +11192,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // or empty strings. Prevents CastError on findByIdAndUpdate and prevents
     // the String(object) !== String(id) false-positive reassignment below.
     req.body.agentId       = normId(req.body.agentId);
-    req.body.splitAgent2Id = normId(req.body.splitAgent2Id);
+    // Only normalize splitAgent2Id when the client actually SENT it. normId()
+    // coerces undefined -> null, which would defeat the `=== undefined` partial-PUT
+    // guard below (~11445) and silently re-wipe the split on every non-split save
+    // (status change, developer/closing-company/lock toggle, Edit-Deal form…).
+    // Leaving an absent field undefined lets that guard PRESERVE the existing
+    // split; an explicit null/"" from the split modal still normalizes and clears.
+    if (req.body.splitAgent2Id !== undefined) req.body.splitAgent2Id = normId(req.body.splitAgent2Id);
     // The 🔒 lock is restricted to admin / sales_admin / team_leader / manager.
     // Silently drop the field from other roles so a sales client can't bypass
     // the UI gate — the rest of the PUT still applies.

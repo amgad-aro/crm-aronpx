@@ -23509,7 +23509,19 @@ var KPIsPage = function(p) {
           <div style={{ fontSize:12, fontWeight:600 }}>{d.name}</div>
           <div style={{ fontSize:10, color:C.textLight }}>{d.project||"-"}</div>
         </div>
-        <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{parseBudget(d.budget)>0?(parseBudget(d.budget)/1000000).toFixed(2)+"M":d.budget||"-"}</div>
+        {(function(){
+          // Change 1 — credit the viewer their SPLIT SHARE (50%) of a split deal,
+          // mirroring the quarter-revenue Total above and the Deals-page row.
+          // splitMultiplier returns 0.5 when the partner is outside the viewer's
+          // scope; the full deal value shows as a "من" subline.
+          var full=parseBudget(d.budget);
+          var credited=full*getProjectWeight(d.project,d)*splitMultiplier(d, visibleUserIds);
+          var showFull=credited>0&&Math.abs(credited-full)>=1;
+          return <div>
+            <div style={{ fontSize:13, fontWeight:700, color:C.success }}>{credited>0?(credited/1000000).toFixed(2)+"M":d.budget||"-"}</div>
+            {showFull&&<div style={{ fontSize:9, color:C.textLight, fontWeight:500 }}>من {(full/1000000).toFixed(2)}M</div>}
+          </div>;
+        })()}
       </div>;})}
     </Card>}
   </div>;
