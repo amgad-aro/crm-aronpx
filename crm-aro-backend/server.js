@@ -11433,6 +11433,16 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
+    // Split deal: preserve the existing split on partial PUTs. normId at ~11195
+    // turns an ABSENT splitAgent2Id into null, which $set would otherwise write —
+    // silently wiping the split (and flipping the deal from half to full toward
+    // target) on any save that didn't re-send the field (status change, VIP/lock
+    // toggle, developer, closing company, commission-claim, the Edit-Deal form).
+    // Only the split modal sends splitAgent2Id, including an explicit null to
+    // CLEAR — so gate on `=== undefined` (not sent at all): a real clear keeps the
+    // field present and still applies. Drop splitAgent2Name too, so we never leave
+    // an inconsistent half-state (name set, id gone).
+    if (req.body.splitAgent2Id === undefined) { delete update.splitAgent2Id; delete update.splitAgent2Name; }
     // Protect array fields from being overwritten via $set — these are append-only
     delete update.agentHistory;
     delete update.assignments;
