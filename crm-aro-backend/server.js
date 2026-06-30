@@ -13769,25 +13769,63 @@ async function sweepAutoRotation() {
     // `lead.createdAt && ...` guard skips the age check when createdAt is absent).
     var stopDays = Number(settings.rotationStopAfterDays) || 45;
     var ageCutoff = new Date(Date.now() - stopDays*24*60*60*1000);
-    // Sort by lastSweptAt asc (never-swept = null first) so every tick advances
-    // through the un-swept tail; combined with the end-of-tick stamp below this
-    // guarantees full coverage over ceil(activePool / batch) ticks. Batch capped
-    // at 400 to bound per-tick memory/time (no full-pool load). assignments[] is
-    // NOT selected (its agentHistory is the heavy payload) — autoRotateLead
-    // re-fetches the full doc itself; the RotationRunLog detail below uses the
-    // retained top-level fields only.
-    var candidates = await Lead.find({
-      agentId: { $ne: null },
-      archived: false,
-      locked: { $ne: true },
-      rotationStopped: { $ne: true },
-      $or: [
-        { createdAt: { $gte: ageCutoff } },
-        { createdAt: { $exists: false } },
-        { createdAt: null }
-      ]
-    }).select("_id name status callbackTime lastActivityTime agentId lastRotationAt")
-      .populate("agentId", "name").sort({ lastSweptAt: 1 }).allowDiskUse(true).limit(400).lean();
+    // RECENT-FIRST bucket cutoff — leads created within the last 7 days are
+    // "recent / in-cycle" and get first crack at the Tier 1 daily cap each tick;
+    // everything else is the "old / dormant" bucket. Ordering ONLY — both buckets
+    // still rotate (see the two-key sort below). Distinct from ageCutoff (45d hard
+    // exclusion) above; recentCutoff (7d) never excludes anything, it only sorts.
+    var recentCutoff = new Date(Date.now() - 7*24*60*60*1000);
+    // Two-key sort: recentBucket DESC (recent leads first), then lastSweptAt ASC
+    // WITHIN each bucket. The second key is the anti-starvation guarantee — old
+    // leads are still ordered by the never-swept-first cursor inside their own
+    // bucket, so after the recent ones the remaining (400 - R) slots always go to
+    // the least-recently-swept OLD leads; none are permanently excluded and the
+    // whole old bucket is covered over ceil(oldPool / (400 - R)) ticks. The
+    // end-of-tick lastSweptAt stamp (below) advances the cursor for BOTH buckets.
+    // recentBucket is a computed field so the sort is in-memory (allowDiskUse).
+    // The light $project runs BEFORE the $sort so the heavy arrays
+    // (assignments[]/agentHistory[]) are dropped first — the sort carries only the
+    // 7 fields the loop reads + the lastSweptAt sort key (preserves ef3c8de's
+    // memory win; autoRotateLead re-fetches the full doc itself).
+    // agentId is reshaped to { _id, name } via a post-$limit $lookup that replicates
+    // the previous .populate("agentId","name") (the loop reads cand.agentId.name);
+    // the $lookup runs on only the 400 limited docs, same as populate did. The
+    // final $project drops the helper fields so the output shape matches the old
+    // .select(...) exactly: { _id,name,status,callbackTime,lastActivityTime,agentId,lastRotationAt }.
+    var candidates = await Lead.aggregate([
+      { $match: {
+          agentId: { $ne: null },
+          archived: false,
+          locked: { $ne: true },
+          rotationStopped: { $ne: true },
+          $or: [
+            { createdAt: { $gte: ageCutoff } },
+            { createdAt: { $exists: false } },
+            { createdAt: null }
+          ]
+      } },
+      { $project: {
+          _id:1, name:1, status:1, callbackTime:1, lastActivityTime:1,
+          agentId:1, lastRotationAt:1, lastSweptAt:1,
+          recentBucket: { $cond: [ { $gte: ["$createdAt", recentCutoff] }, 1, 0 ] }
+      } },
+      { $sort: { recentBucket: -1, lastSweptAt: 1 } },
+      { $limit: 400 },
+      { $lookup: {
+          from: "users",
+          let: { aid: "$agentId" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$_id", "$$aid"] } } },
+            { $project: { _id: 1, name: 1 } }
+          ],
+          as: "agentDoc"
+      } },
+      { $addFields: { agentId: { $let: {
+          vars: { d: { $arrayElemAt: ["$agentDoc", 0] } },
+          in: { $cond: [ "$$d", { _id: "$$d._id", name: "$$d.name" }, "$agentId" ] }
+      } } } },
+      { $project: { agentDoc: 0, recentBucket: 0, lastSweptAt: 0 } }
+    ]).allowDiskUse(true);
 
     if (!candidates.length) {
       await persistRotationRun(runStartedAt, 0, 0, 0, {}, [], []);
