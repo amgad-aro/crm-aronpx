@@ -11651,9 +11651,11 @@ var EOIPage = function(p) {
             opens an EOI whose developer is still pending, show the resolution
             block; otherwise the normal picker (writes Lead.developerId via PUT,
             subject to the approval lock for non-admin roles). */}
-        {canEditDeals(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+        {canSeeDeveloper(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
-          {(canEditDeveloper(p.cu) && selectedEOI.developerPending && !eoiDevIdOf(selectedEOI))
+          {!canEditDeveloper(p.cu)
+          ? <div style={{ fontSize:13, fontWeight:600, color:C.text }}>{eoiDevNameOf(selectedEOI)||selectedEOI.developerPending||"— None —"}</div>
+          : (selectedEOI.developerPending && !eoiDevIdOf(selectedEOI))
           ? <PendingDevResolver lead={selectedEOI} developers={eoiDevelopers} token={p.token} onResolved={function(updatedLead, devObj){
               if(updatedLead){
                 var patch={ developerId: updatedLead.developerId, developerPending: updatedLead.developerPending||"" };
@@ -12503,13 +12505,15 @@ var DealsPage = function(p) {
             role (the 505 developers are pre-vetted). Writes Lead.developerId via
             PUT; the response isn't populated, so value + label resolve via devIdOf
             / the developers map. "— None —" clears it. */}
-        {canEditDeals(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+        {canSeeDeveloper(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
           {/* N4 — admin/SA opening a deal whose developer is still pending
               (sales typed a free-text name at conversion, no developerId yet):
               swap the picker for the resolution block. link/add/reject clears
               the pending state and the normal dropdown returns below. */}
-          {(canEditDeveloper(p.cu) && selectedDeal.developerPending && !devIdOf(selectedDeal))
+          {!canEditDeveloper(p.cu)
+          ? <div style={{ fontSize:13, fontWeight:600, color:C.text }}>{devNameOf(selectedDeal)||selectedDeal.developerPending||"— None —"}</div>
+          : (selectedDeal.developerPending && !devIdOf(selectedDeal))
           ? <PendingDevResolver lead={selectedDeal} developers={dealDevelopers} token={p.token} onResolved={function(updatedLead, devObj){
               if(updatedLead){
                 var patch={ developerId: updatedLead.developerId, developerPending: updatedLead.developerPending||"" };

@@ -11237,30 +11237,23 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       delete req.body.eoiApproved;
       delete req.body.dealApproved;
     }
-    // Developer (D4 -> R2 -> N1) — developerId / developerPending are writable by
-    // any deal-editing role (the scope gate above enforces ownership). normId
-    // sanitizes the id; developerPending is trimmed ("" clears it). APPROVAL LOCK
-    // (N1, symmetric): once the lead is admin-approved (eoiApproved for an EOI
-    // lead, dealApproved for a DoneDeal lead), non-admin/SA roles can no longer
-    // change either field — they must ask an admin. Admin/SA always pass; the
-    // lock re-opens automatically when an admin un-approves.
+    // Developer (Change 2) — a STANDALONE change to developerId / developerPending
+    // (the expanded-card dropdown, which PUTs a bare {developerId}) is restricted to
+    // Owner / Admin / Sales Admin. The Owner is an admin-role protected account, so
+    // the admin||sales_admin pair (== salesAdminOnly) covers all three. Reject every
+    // other role with 403 — defense in depth for the FE dropdown gate, so the API
+    // can't be bypassed. CARVE-OUT: the EOI/DoneDeal CONVERSION path (StatusModal)
+    // sets the REQUIRED developer for any deal-editor in the SAME PUT that flips
+    // status to EOI/DoneDeal — sales must still be able to convert, so allow the
+    // developer write when this PUT is that transition. apiFetch surfaces `error`
+    // to the FE alert; `code` is the machine tag.
+    var isDevConversionPut = req.body.status === "EOI" || req.body.status === "DoneDeal";
     if (req.body.developerId !== undefined || req.body.developerPending !== undefined) {
+      if (!isDevConversionPut && req.user.role !== "admin" && req.user.role !== "sales_admin") {
+        return res.status(403).json({ error: "Only the owner, an admin, or a sales admin can change the developer.", code: "developer_forbidden" });
+      }
       if (req.body.developerId !== undefined) req.body.developerId = normId(req.body.developerId);
       if (req.body.developerPending !== undefined) req.body.developerPending = String(req.body.developerPending || "").trim();
-      if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
-        var devLockLead = await Lead.findById(req.params.id).select("status eoiApproved dealApproved").lean();
-        if (devLockLead) {
-          var devLocked = (devLockLead.status === "EOI"      && devLockLead.eoiApproved  === true)
-                       || (devLockLead.status === "DoneDeal" && devLockLead.dealApproved === true);
-          if (devLocked) {
-            // N4 cosmetic fix — apiFetch surfaces response.error as the thrown
-            // message (FE side-panel dropdown alerts it). Put the FRIENDLY
-            // sentence in `error` and keep the machine code in `code` so the
-            // user sees prose, not "developer_locked".
-            return res.status(403).json({ error: "Developer is locked after admin approval. Contact admin to change.", code: "developer_locked" });
-          }
-        }
-      }
     }
     // Phase R-12 Part 3 — external-deal field gate. Same defense-in-depth
     // pattern as `locked` above: the Add/Edit Deal modal is admin-only on
