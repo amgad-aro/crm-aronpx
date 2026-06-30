@@ -14369,7 +14369,7 @@ var BrokersPage = function(p) {
 
 var UsersPage = function(p) {
   var t=p.t; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
-  var [nU,setNU]=useState({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:"",startingDate:""});
+  var [nU,setNU]=useState({name:"",username:"",password:"",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:"",startingDate:""});
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
@@ -14412,7 +14412,7 @@ var UsersPage = function(p) {
   var getRoleLabel=function(u){if(u.role==="manager"&&u.reportsTo)return "Team Leader";if(u.role==="manager")return "Manager";return u.role==="admin"?"Admin":"Sales";};
   var rl={admin:t.admin,sales_admin:"Sales Admin",director:"Sales Director",manager:t.salesManager,team_leader:"Team Leader",sales:t.salesAgent,viewer:t.viewer,office_boy:"Office Boy"};
   var changePassword=async function(){if(!pwForm.newPass||!pwForm.confirmPass)return;if(pwForm.newPass!==pwForm.confirmPass){setPwMsg(t.passwordMismatch);return;}setPwSaving(true);try{await apiFetch("/api/users/"+pwModal.userId,"PUT",{password:pwForm.newPass},p.token);setPwMsg(t.passwordSuccess);setTimeout(function(){setPwModal(null);setPwMsg("");setPwForm({newPass:"",confirmPass:""});},1500);}catch(e){setPwMsg(t.passwordError);}setPwSaving(false);};
-  var add=async function(){if(!nU.name||!nU.username)return;setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"sales123",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
+  var add=async function(){if(!nU.name||!nU.username)return;if(!nU.password||!nU.password.trim()){alert("Please enter a password");return;}setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
   var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};

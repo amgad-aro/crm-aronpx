@@ -7771,7 +7771,10 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
       return res.status(400).json({ error: "Invalid role" });
     }
 
-    var hashed = await bcrypt.hash(req.body.password || "sales123", 10);
+    if (!req.body.password || !String(req.body.password).trim()) {
+      return res.status(400).json({ error: "password_required", message: "Password is required" });
+    }
+    var hashed = await bcrypt.hash(req.body.password, 10);
     var teamId = req.body.teamId || "";
     var teamName = req.body.teamName || "";
     var monthlyTarget = req.body.monthlyTarget ? Number(req.body.monthlyTarget) : 15;
