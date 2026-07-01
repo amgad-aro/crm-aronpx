@@ -8524,7 +8524,16 @@ app.get("/api/leads", auth, async function(req, res) {
             obj.status = assignStatus || obj.status;
           }
           obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-          obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+          // Budget on a frozen deal is a deal-level value (set at conversion),
+          // NOT a per-agent slice value — same reasoning as the status-overlay
+          // suppression above. The slice budget defaults to "" and is only
+          // written by non-admin saves, so overlaying it on EOI/DoneDeal leads
+          // clobbered the real top-level Lead.budget with "" (the agent's Deals
+          // row showed "-" while admin saw the true amount). Lead-phase leads
+          // keep the per-agent slice budget unchanged.
+          if (!isEoiOrDoneDeal(l)) {
+            obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+          }
           obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
           obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
           obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
@@ -9764,7 +9773,13 @@ app.get("/api/leads/:id", auth, async function(req, res) {
           obj.status = assignStatus || obj.status;
         }
         obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-        obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        // Frozen-deal budget is deal-level (see the list endpoint's guard) —
+        // don't overlay it from the per-agent slice, which defaults to "" and
+        // would clobber the true Lead.budget on admin-closed deals. Lead-phase
+        // leads keep the slice budget unchanged.
+        if (!isEoiOrDoneDeal(lead)) {
+          obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+        }
         obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
         obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
         obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;

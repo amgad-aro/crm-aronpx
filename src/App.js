@@ -560,7 +560,13 @@ var scopeWsLeadForViewer = function(rawLead, currentUser) {
       obj.status = assignStatus || obj.status;
     }
     obj.notes = myAssign.notes !== undefined ? myAssign.notes : "";
-    obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+    // Mirror the backend guard (server.js list/single): a frozen deal's budget
+    // is deal-level, so keep top-level Lead.budget instead of the per-agent
+    // slice (which defaults to "" and would render the row as "-"). Uses the
+    // same isEoiOrDoneDeal boolean that already gates the status overlay above.
+    if (!isEoiOrDoneDeal) {
+      obj.budget = myAssign.budget !== undefined ? myAssign.budget : obj.budget;
+    }
     obj.callbackTime = myAssign.callbackTime !== undefined ? myAssign.callbackTime : obj.callbackTime;
     obj.lastFeedback = myAssign.lastFeedback !== undefined ? myAssign.lastFeedback : "";
     obj.nextCallAt = myAssign.nextCallAt !== undefined ? myAssign.nextCallAt : obj.nextCallAt;
