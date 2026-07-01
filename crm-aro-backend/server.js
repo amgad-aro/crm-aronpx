@@ -9640,7 +9640,7 @@ app.get("/api/eois", auth, async function(req, res) {
 //
 // Field projection same as EOI list (heavy fields stripped; panel hydrates
 // via /api/leads/:id). Role-scoped via buildLeadSearchScopeQuery.
-var DEAL_LIST_FIELDS = EOI_LIST_FIELDS;
+var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
 
 app.get("/api/deals", auth, async function(req, res) {
   try {
