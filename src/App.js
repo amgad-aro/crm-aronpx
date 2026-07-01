@@ -12288,25 +12288,54 @@ var DealsPage = function(p) {
   var curYear=new Date().getFullYear(); var curQ=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
   var dealYears=[curYear,curYear-1,curYear-2,curYear-3];
   var [dealQ,setDealQ]=useState(curQ); var [dealYear,setDealYear]=useState(curYear);
-  // Deal-type counts on the current Active|Cancelled tab, scoped to the
-  // currently-selected Quarter + year (NOT the full tab scope). Uses the SAME
-  // quarter/year predicate as filteredDeals below (lines copied verbatim) so
-  // the pill badges agree with the rendered list's period. Deliberately
-  // excludes the deal-type/date-range/search/agent filters so each pill shows
-  // its own bucket total within the period (not a self-filtered subset).
+  // toYMD — local calendar date as "YYYY-MM-DD" from a Date. Uses LOCAL getters
+  // to stay consistent with the Deal Date column, the sort, and the period/range
+  // gates (all read getDealDate locally). Returns "" for an Invalid/empty date so
+  // such a deal is NOT range-excluded (included rather than silently dropped).
+  // Defined here (above dealsInPeriod) so both date-scoped filters can call it.
+  var toYMD=function(dt){var x=(dt instanceof Date)?dt:new Date(dt);if(isNaN(x.getTime()))return"";var y=x.getFullYear(),mo=x.getMonth()+1,da=x.getDate();return y+"-"+(mo<10?"0"+mo:mo)+"-"+(da<10?"0"+da:da);};
+  // Deal-type pill counts on the current Active|Cancelled tab. Date scope MIRRORS
+  // filteredDeals: when a manual From/To range is set it takes precedence (the
+  // Quarter + Year gates are skipped and the date-only range is applied instead);
+  // otherwise the selected Quarter + Year gates apply. Deliberately excludes the
+  // deal-type / search / agent / developer filters so each pill shows its own
+  // bucket total within the active date scope (not a self-filtered subset).
   var dealsInPeriod = deals.filter(function(d){
-    if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
-    if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
+    var hasManualRange = !!(dateFrom || dateTo);
+    if(!hasManualRange){
+      if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
+      if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
+    } else {
+      var ds = toYMD(getDealDate(d));
+      if(ds){
+        if(dateFrom && ds < dateFrom) return false;
+        if(dateTo   && ds > dateTo)   return false;
+      }
+    }
     return true;
   });
   var dealsInternalCount = dealsInPeriod.filter(function(d){ return (d.dealType||"internal")==="internal"; }).length;
   var dealsExternalCount = dealsInPeriod.filter(function(d){ return d.dealType==="external"; }).length;
   var dealsAmbassadorCount = dealsInPeriod.filter(function(d){ return d.dealType==="ambassador"; }).length; // Phase R-14
   var filteredDeals=deals.filter(function(d){
-    if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
-    if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
-    if(dateFrom&&new Date(d.updatedAt||d.createdAt)<new Date(dateFrom)) return false;
-    if(dateTo&&new Date(d.updatedAt||d.createdAt)>new Date(dateTo+"T23:59:59")) return false;
+    // PRECEDENCE: a manual From/To range takes full control of date filtering.
+    // When set, it is the ONLY date filter applied (cross-quarter / cross-year
+    // ranges allowed) and the Quarter + Year gates are skipped entirely.
+    var hasManualRange = !!(dateFrom || dateTo);
+    if(!hasManualRange){
+      if(dealQ!=="all"){var dd=getDealDate(d);if(!dd)return false;var m=new Date(dd).getMonth();var q=m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";if(q!==dealQ)return false;}
+      if(new Date(getDealDate(d)||0).getFullYear()!==dealYear) return false;
+    } else {
+      // Compare the SAME date the column/sort/period gate use (getDealDate), as
+      // a TZ-free date-only string. dateFrom/dateTo are already "YYYY-MM-DD" from
+      // the type="date" inputs, so string comparison is correct and both bounds
+      // are inclusive of their calendar day. Empty/invalid deal date → include.
+      var ds = toYMD(getDealDate(d));
+      if(ds){
+        if(dateFrom && ds < dateFrom) return false;
+        if(dateTo   && ds > dateTo)   return false;
+      }
+    }
     if(dealSearch){var q2=dealSearch.toLowerCase();var nm=d.name?d.name.toLowerCase():"";var pr=d.project?d.project.toLowerCase():"";var ph=d.phone||"";if(!nm.includes(q2)&&!pr.includes(q2)&&!ph.includes(q2))return false;}
     if(dealAgent){var aid=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;var sid=d.splitAgent2Id&&d.splitAgent2Id._id?d.splitAgent2Id._id:d.splitAgent2Id;if(String(aid||"")!==dealAgent&&String(sid||"")!==dealAgent)return false;}
     if(dealTypeFilter==="internal" && (d.dealType||"internal")!=="internal") return false;
@@ -12732,7 +12761,7 @@ var DealsPage = function(p) {
           <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
         </div>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>:<div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
@@ -12748,7 +12777,7 @@ var DealsPage = function(p) {
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
