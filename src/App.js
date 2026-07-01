@@ -12355,11 +12355,27 @@ var DealsPage = function(p) {
     if (lead && lead.stages && typeof lead.stages==="object" && Object.keys(lead.stages).length>0) return lead.stages;
     try{return JSON.parse(localStorage.getItem("crm_stages_"+lid)||"{}");}catch(e){return {};}
   };
+  // resolveStages — read the deal's OWN backend stages (present on both merge
+  // branches: /api/deals carries stages via DEAL_LIST_FIELDS, and the bootstrap
+  // lead carries it via the summary projection which keeps stages). Falls back
+  // to per-browser localStorage ONLY when the deal has no backend stages. This
+  // decouples the render from the oscillating p.leads cache (100-newest vs
+  // all-leads) that made deals outside the newest-100 flip 3/3 -> 0/3.
+  var resolveStages=function(d){
+    if (d && d.stages && typeof d.stages==="object" && Object.keys(d.stages).length>0) return d.stages;
+    try{return JSON.parse(localStorage.getItem("crm_stages_"+gid(d))||"{}")||{};}catch(e){return {};}
+  };
+  // Count completed stages straight from a stages object (no p.leads lookup).
+  var stagesProgressFrom=function(s){ s=s||{}; return [s.contract,s.payment1,s.payment2].filter(Boolean).length; };
   var saveStages=async function(lid,stages){
     try{localStorage.setItem("crm_stages_"+lid,JSON.stringify(stages));}catch(e){}
     try{
       var updated=await apiFetch("/api/leads/"+lid,"PUT",{stages:stages},p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===lid?updated:l;});});
+      // Patch the Deals-page row source too — most deals aren't in p.leads (only
+      // the newest-100 bootstrap), so without this the row keeps rendering the
+      // stale d.stages until a refetch. Mirrors the row-patch at 12537/12562/12585.
+      setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===lid?Object.assign({},l,{stages:(updated&&updated.stages)||stages}):l;}):prev;});
     }catch(e){ /* keep local copy on failure */ }
   };
   var [stagesForm,setStagesForm]=useState({contract:false,contractDate:"",payment1:false,payment1Date:"",payment1Amount:"",payment2:false,payment2Date:"",payment2Amount:""});
@@ -12374,7 +12390,7 @@ var DealsPage = function(p) {
   };
 
   var openStages=function(d){
-    var s=getStages(gid(d));
+    var s=resolveStages(d)||{};
     setStagesForm({
       contract:s.contract||false, contractDate:s.contractDate||"",
       payment1:s.payment1||false, payment1Date:s.payment1Date||"", payment1Amount:s.payment1Amount||"",
@@ -12796,9 +12812,9 @@ var DealsPage = function(p) {
     {/* Stages Modal */}
     {stagesModal&&<Modal show={true} onClose={function(){setStagesModal(null);}} title={"📋 Deal Stages — "+stagesModal.name}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#DCFCE7", borderRadius:10, fontSize:12, color:"#15803D", fontWeight:600 }}>
-        {stagesProgress(gid(stagesModal))}/3 stages completed
+        {stagesProgressFrom(resolveStages(stagesModal))}/3 stages completed
         <div style={{ height:6, background:"#BBF7D0", borderRadius:3, marginTop:6 }}>
-          <div style={{ height:"100%", width:(stagesProgress(gid(stagesModal))/3*100)+"%", background:C.success, borderRadius:3, transition:"width 0.4s" }}/>
+          <div style={{ height:"100%", width:(stagesProgressFrom(resolveStages(stagesModal))/3*100)+"%", background:C.success, borderRadius:3, transition:"width 0.4s" }}/>
         </div>
       </div>
 
@@ -12989,8 +13005,8 @@ var DealsPage = function(p) {
       {filteredDeals.length===0&&<div style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</div>}
       {filteredDeals.map(function(d){
         var bv=parseBudget(d.budget);
-        var prog=stagesProgress(gid(d));
-        var stages=getStages(gid(d));
+        var stages=resolveStages(d)||{};
+        var prog=stagesProgressFrom(stages);
         var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
         return <div key={gid(d)} data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ background:isSel?"#EFF6FF":"#fff", border:"2px solid "+(isSel?"#3B82F6":"#E8ECF1"), borderRadius:14, padding:14, cursor:"pointer" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, gap:8 }}>
@@ -13072,8 +13088,8 @@ var DealsPage = function(p) {
         {filteredDeals.length===0&&<tr><td colSpan={dealColCount} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
           var bv=parseBudget(d.budget);
-          var prog=stagesProgress(gid(d));
-          var stages=getStages(gid(d));
+          var stages=resolveStages(d)||{};
+          var prog=stagesProgressFrom(stages);
           var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
           return <Fragment key={gid(d)}><tr data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>
