@@ -11,6 +11,7 @@ var WebSocketLib = require("ws");
 var Resend = require("resend").Resend;
 var rateLimit = require("express-rate-limit");
 var { sendPushNotification } = require("./notifications");
+var b2 = require("./b2");
 
 // Coerce anything the frontend sends for an ObjectId-typed field into a
 // 24-hex string or null. Handles: empty string, populated {_id, name, ...}
@@ -374,23 +375,92 @@ var LeadArtifactArchive = mongoose.model("LeadArtifactArchive", new mongoose.Sch
   reason:       { type: String, default: "" },
 }, { timestamps: true }));
 
-// Merge a lead's offloaded eoiDocuments back into the object so the EOI side panel
-// renders unchanged. Archived docs first, then any newly-uploaded live docs still
-// on the Lead. Accepts a lean/plain object OR a Mongoose doc (converted via
-// toObject) — ALWAYS use the return value. No-op (one indexed lookup) for the
-// leads with no sidecar. EVERY endpoint that returns a Lead the EOI panel may
-// render must funnel through this: res.json(await mergeEoiArchive(lead)).
-async function mergeEoiArchive(leadObj) {
+// B2 signed-URL TTL for read resolution (seconds). Panels are open minutes; 1h
+// is ample. Overridable via env for tuning.
+var B2_SIGN_TTL = Number(process.env.B2_SIGN_TTL || 3600);
+
+// Resolve a single artifact reference (string) to something the FE can render:
+//   - "" / non-string            → returned as-is
+//   - "data:..." inline base64   → passed through unchanged (LEGACY, pre-B2)
+//   - "http(s)://..."            → passed through (defensive; already a URL)
+//   - anything else              → treated as a B2 object KEY → signed GET URL
+// Signing failures (or unconfigured storage) fall back to the raw value so a
+// read never crashes.
+async function signArtifactRef(val) {
+  if (!val || typeof val !== "string") return val;
+  if (val.indexOf("data:") === 0) return val;      // legacy inline base64
+  if (/^https?:\/\//i.test(val)) return val;        // already a URL
+  var signed = await b2.getSignedReadUrl(val, B2_SIGN_TTL);
+  return signed || val;                             // fall back to the key on failure
+}
+
+// Resolve one eoiDocuments[]/dealDocuments[] entry. Entries are either legacy
+// strings/{url:"data:..."} or new {key, name, contentType, size, storage:"b2"}.
+// Output always exposes a renderable `.url` (and keeps `contentType`/`name` so a
+// later FE change can detect PDFs by metadata instead of the data-URL string).
+async function resolveDocEntry(entry) {
+  if (!entry) return entry;
+  if (typeof entry === "string") return await signArtifactRef(entry);
+  var out = Object.assign({}, entry);
+  if (out.key) {
+    // New B2 entry — mint a signed URL from the stored key.
+    out.url = (await b2.getSignedReadUrl(out.key, B2_SIGN_TTL)) || out.url || "";
+  } else if (out.url) {
+    // Legacy entry — pass base64 through, sign if it somehow holds a key.
+    out.url = await signArtifactRef(out.url);
+  }
+  return out;
+}
+
+// Prepare a Lead object for any endpoint that returns a doc the EOI/Deal panel
+// may render. Two responsibilities:
+//   1) Merge the lead's offloaded eoiDocuments from the LeadArtifactArchive
+//      sidecar (archived docs first, then live) — kept until the sidecar is
+//      retired in a later phase.
+//   2) Resolve every artifact field (eoiImage, eoiDocuments[], dealImages[],
+//      legacy dealImage, dealDocuments[]) from B2 keys to signed URLs, while
+//      passing legacy base64 through untouched (backward-compatible, permanent).
+// Accepts a lean/plain object OR a Mongoose doc (converted via toObject) —
+// ALWAYS use the return value:  res.json(await resolveArtifacts(lead)).
+async function resolveArtifacts(leadObj) {
   if (!leadObj) return leadObj;
   if (typeof leadObj.toObject === "function") leadObj = leadObj.toObject();
   if (!leadObj._id) return leadObj;
+  // 1) Sidecar merge (unchanged behavior).
   try {
     var arch = await LeadArtifactArchive.findOne({ leadId: leadObj._id }).select("eoiDocuments").lean();
     if (arch && Array.isArray(arch.eoiDocuments) && arch.eoiDocuments.length) {
       leadObj.eoiDocuments = arch.eoiDocuments.concat(leadObj.eoiDocuments || []);
     }
-  } catch (e) { console.error("[mergeEoiArchive]", e && e.message); }
+  } catch (e) { console.error("[resolveArtifacts] archive merge:", e && e.message); }
+  // 2) Sign B2 keys / pass base64 through.
+  try {
+    if (leadObj.eoiImage) leadObj.eoiImage = await signArtifactRef(leadObj.eoiImage);
+    if (leadObj.dealImage) leadObj.dealImage = await signArtifactRef(leadObj.dealImage); // legacy singular
+    if (Array.isArray(leadObj.dealImages)) {
+      leadObj.dealImages = await Promise.all(leadObj.dealImages.map(signArtifactRef));
+    }
+    if (Array.isArray(leadObj.eoiDocuments)) {
+      leadObj.eoiDocuments = await Promise.all(leadObj.eoiDocuments.map(resolveDocEntry));
+    }
+    if (Array.isArray(leadObj.dealDocuments)) {
+      leadObj.dealDocuments = await Promise.all(leadObj.dealDocuments.map(resolveDocEntry));
+    }
+  } catch (e) { console.error("[resolveArtifacts] sign:", e && e.message); }
   return leadObj;
+}
+
+// Returns the B2 object key for a stored artifact entry, or null for legacy
+// base64 / URL values (nothing to delete from B2). Used by the delete endpoints.
+function artifactB2Key(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") {
+    if (entry.indexOf("data:") === 0) return null;
+    if (/^https?:\/\//i.test(entry)) return null;
+    return entry ? entry : null; // bare string = B2 key (e.g. dealImages[])
+  }
+  if (entry.key) return entry.key;
+  return null; // legacy {url:"data:..."} entry
 }
 
 // Phase II indexes — User.reportsTo + Lead.splitAgent2Id (Activity + DailyRequest
@@ -4053,6 +4123,13 @@ function leadUploadImageValidation(req, res, next) {
     if (mime && ["image/jpeg", "image/jpg", "image/png", "image/webp"].indexOf(mime) === -1) {
       return res.status(400).json({ error: "Unsupported image MIME type" });
     }
+
+    // Expose the validated buffer + authoritative content type (from magic
+    // bytes, not the client-supplied MIME) so the upload handler can push it to
+    // B2 without re-decoding. Validation above is unchanged.
+    var contentType = isJpeg ? "image/jpeg" : (isPng ? "image/png" : "image/webp");
+    var ext = isJpeg ? "jpg" : (isPng ? "png" : "webp");
+    req.uploadImage = { buffer: buffer, contentType: contentType, ext: ext };
 
     next();
   } catch (e) {
@@ -9712,7 +9789,7 @@ app.get("/api/leads/:id", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Not found" });
     // Hydrate offloaded EOI documents (file-storage stopgap). lead is lean, so
     // both the sales `obj` copy and the admin return path inherit the merge.
-    await mergeEoiArchive(lead);
+    await resolveArtifacts(lead);
     var role = req.user.role;
     var uid = String(req.user.id);
     var STALE_LEAD_MS = await getStaleLeadMs(role);
@@ -10570,14 +10647,20 @@ app.post("/api/leads/:id/upload-image", auth, leadUploadImageValidation, async f
     }
     var { imageData, imageType } = req.body; // imageType: "eoi" or "deal"
     if (!imageData) return res.status(400).json({ error: "No image data" });
+    if (!b2.isConfigured()) return res.status(503).json({ error: "file storage not configured" });
+    // Upload the validated buffer (from leadUploadImageValidation) to B2; store
+    // only the object key. B2 keys: leads/{leadId}/{category}/{uuid}.{ext}
+    var up = req.uploadImage; // { buffer, contentType, ext } — set by the validator
     if (imageType === "deal") {
-      var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { dealImages: imageData } }, { new: true }).populate("agentId", "name title");
-      return res.json(lead);
+      var dealKey = "leads/" + req.params.id + "/deal-images/" + crypto.randomUUID() + "." + up.ext;
+      await b2.putObject(dealKey, up.buffer, up.contentType);
+      var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { dealImages: dealKey } }, { new: true }).populate("agentId", "name title");
+      return res.json(await resolveArtifacts(lead));
     }
-    var field = "eoiImage";
-    var update = {}; update[field] = imageData;
-    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: update }, { new: true }).populate("agentId", "name title");
-    res.json(await mergeEoiArchive(lead));
+    var eoiKey = "leads/" + req.params.id + "/eoi-image/" + crypto.randomUUID() + "." + up.ext;
+    await b2.putObject(eoiKey, up.buffer, up.contentType);
+    var lead = await Lead.findByIdAndUpdate(req.params.id, { $set: { eoiImage: eoiKey } }, { new: true }).populate("agentId", "name title");
+    res.json(await resolveArtifacts(lead));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10623,15 +10706,17 @@ app.post("/api/leads/:id/eoi-documents", auth, async function(req, res) {
     try { buf = Buffer.from(m[2], "base64"); } catch(e){ return res.status(400).json({ error: "Invalid base64 data" }); }
     if (!buf || !buf.length) return res.status(400).json({ error: "Invalid file data" });
     if (buf.length > 6 * 1024 * 1024) return res.status(400).json({ error: "File too large (max 6MB)" });
-    if (!fileName) {
-      // Derive a simple name from the MIME + short hash
-      var ext = m[1]==="application/pdf" ? "pdf" : (m[1].split("/")[1]||"bin");
-      fileName = "document-"+Date.now()+"."+ext;
-    }
-    var entry = { url: raw, name: fileName, uploadedAt: new Date() };
+    if (!b2.isConfigured()) return res.status(503).json({ error: "file storage not configured" });
+    // Authoritative content type from the validated data-URL prefix.
+    var contentType = m[1].toLowerCase();
+    var ext = contentType === "application/pdf" ? "pdf" : (contentType.split("/")[1] === "jpeg" ? "jpg" : (contentType.split("/")[1] || "bin"));
+    if (!fileName) fileName = "document-" + Date.now() + "." + ext;
+    var key = "leads/" + req.params.id + "/eoi-docs/" + crypto.randomUUID() + "." + ext;
+    await b2.putObject(key, buf, contentType);
+    var entry = { key: key, name: fileName, contentType: contentType, size: buf.length, uploadedAt: new Date(), storage: "b2" };
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { eoiDocuments: entry } }, { new: true }).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
-    res.json(await mergeEoiArchive(lead));
+    res.json(await resolveArtifacts(lead));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10677,17 +10762,21 @@ app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
     var archDocs = (arch && arch.eoiDocuments) || [];
     var liveDocs = lead.eoiDocuments || [];
     if (!(index >= 0 && index < archDocs.length + liveDocs.length)) return res.status(400).json({ error: "Invalid index" });
+    var removedDoc; // capture the spliced entry so we can clean its B2 object
     if (index < archDocs.length) {
-      archDocs.splice(index, 1);
+      removedDoc = archDocs.splice(index, 1)[0];
       if (archDocs.length) { arch.eoiDocuments = archDocs; await arch.save(); }
       else { await LeadArtifactArchive.deleteOne({ _id: arch._id }); } // last one removed → drop the sidecar
     } else {
-      liveDocs.splice(index - archDocs.length, 1);
+      removedDoc = liveDocs.splice(index - archDocs.length, 1)[0];
       lead.eoiDocuments = liveDocs;
       await lead.save();
     }
+    // Best-effort B2 cleanup (skips legacy base64 entries; never throws).
+    var removedKey = artifactB2Key(removedDoc);
+    if (removedKey) await b2.deleteObject(removedKey);
     var populated = await Lead.findById(req.params.id).populate("agentId", "name title").lean();
-    res.json(await mergeEoiArchive(populated));
+    res.json(await resolveArtifacts(populated));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10733,15 +10822,17 @@ app.post("/api/leads/:id/deal-documents", auth, async function(req, res) {
     try { buf = Buffer.from(m[2], "base64"); } catch(e){ return res.status(400).json({ error: "Invalid base64 data" }); }
     if (!buf || !buf.length) return res.status(400).json({ error: "Invalid file data" });
     if (buf.length > 6 * 1024 * 1024) return res.status(400).json({ error: "File too large (max 6MB)" });
-    if (!fileName) {
-      // Derive a simple name from the MIME + short hash
-      var ext = m[1]==="application/pdf" ? "pdf" : (m[1].split("/")[1]||"bin");
-      fileName = "document-"+Date.now()+"."+ext;
-    }
-    var entry = { url: raw, name: fileName, uploadedAt: new Date() };
+    if (!b2.isConfigured()) return res.status(503).json({ error: "file storage not configured" });
+    // Authoritative content type from the validated data-URL prefix.
+    var contentType = m[1].toLowerCase();
+    var ext = contentType === "application/pdf" ? "pdf" : (contentType.split("/")[1] === "jpeg" ? "jpg" : (contentType.split("/")[1] || "bin"));
+    if (!fileName) fileName = "document-" + Date.now() + "." + ext;
+    var key = "leads/" + req.params.id + "/deal-docs/" + crypto.randomUUID() + "." + ext;
+    await b2.putObject(key, buf, contentType);
+    var entry = { key: key, name: fileName, contentType: contentType, size: buf.length, uploadedAt: new Date(), storage: "b2" };
     var lead = await Lead.findByIdAndUpdate(req.params.id, { $push: { dealDocuments: entry } }, { new: true }).populate("agentId", "name title");
     if (!lead) return res.status(404).json({ error: "Lead not found" });
-    res.json(lead);
+    res.json(await resolveArtifacts(lead));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10782,11 +10873,14 @@ app.post("/api/leads/:id/delete-deal-document", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     var docs = lead.dealDocuments || [];
     if (!(index >= 0 && index < docs.length)) return res.status(400).json({ error: "Invalid index" });
-    docs.splice(index, 1);
+    var removedDeal = docs.splice(index, 1)[0];
     lead.dealDocuments = docs;
     await lead.save();
+    // Best-effort B2 cleanup (skips legacy base64 entries; never throws).
+    var removedDealKey = artifactB2Key(removedDeal);
+    if (removedDealKey) await b2.deleteObject(removedDealKey);
     var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
-    res.json(populated);
+    res.json(await resolveArtifacts(populated));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10828,11 +10922,14 @@ app.post("/api/leads/:id/delete-deal-image", auth, async function(req, res) {
     if (!lead) return res.status(404).json({ error: "Lead not found" });
     var imgs = lead.dealImages || [];
     if (index < 0 || index >= imgs.length) return res.status(400).json({ error: "Invalid index" });
-    imgs.splice(index, 1);
+    var removedImg = imgs.splice(index, 1)[0];
     lead.dealImages = imgs;
     await lead.save();
+    // Best-effort B2 cleanup (skips legacy base64 entries; never throws).
+    var removedImgKey = artifactB2Key(removedImg);
+    if (removedImgKey) await b2.deleteObject(removedImgKey);
     var populated = await Lead.findById(req.params.id).populate("agentId", "name title");
-    res.json(populated);
+    res.json(await resolveArtifacts(populated));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -11010,7 +11107,7 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
       ).catch(function(){});
     }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
-    res.json(await mergeEoiArchive(lead));
+    res.json(await resolveArtifacts(lead));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -11130,7 +11227,10 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
       ).catch(function(){});
     }
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
-    res.json(lead);
+    // FE sets this response straight into the open deal panel (setSelectedDeal),
+    // which renders dealImages/dealDocuments — resolve B2 keys to signed URLs so
+    // they don't leak as raw keys (base64 passes through unchanged).
+    res.json(await resolveArtifacts(lead));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -11573,7 +11673,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     // Guard: never downgrade EOI or DoneDeal back to NewLead (prevents stale rotation overwrites)
     if (oldLead && (oldLead.status === "EOI" || oldLead.status === "DoneDeal") && req.body.status === "NewLead") {
-      return res.json(await mergeEoiArchive(oldLead));
+      return res.json(await resolveArtifacts(oldLead));
     }
     // Capture previous status when transitioning INTO EOI, so EOI cancel can restore it.
     if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
@@ -12089,7 +12189,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         }).catch(function(){});
       }
     }
-    res.json(await mergeEoiArchive(lead));
+    res.json(await resolveArtifacts(lead));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -13200,7 +13300,7 @@ app.post("/api/leads/:id/auto-rotate", auth, async function(req, res) {
     // its merged eoi-cancel response with this one, so an un-merged lead here
     // would blank an offloaded lead's docs in the open EOI panel. Endpoint-only
     // (not inside autoRotateLead) so rotation sweeps don't pay the lookup.
-    if (r.body && r.body.lead) { r.body.lead = await mergeEoiArchive(r.body.lead); }
+    if (r.body && r.body.lead) { r.body.lead = await resolveArtifacts(r.body.lead); }
     return res.status(r.status || 200).json(r.body);
   }
   // Soft-skip keys are EXPECTED outcomes (cooldown, exhausted, race lost,
