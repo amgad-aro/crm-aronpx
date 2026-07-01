@@ -11731,7 +11731,7 @@ var EOIPage = function(p) {
                 {(selectedEOI.eoiDocuments||[]).map(function(doc,idx){
                   var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
                   var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
-                  var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
+                  var isPdf = (typeof doc==="object" && doc && String(doc.contentType||"").toLowerCase()==="application/pdf") || /\.pdf$/i.test(String(name||"").split("?")[0]) || /\.pdf$/i.test(String(url||"").split("?")[0]) || (typeof url==="string" && url.indexOf("application/pdf")>=0);
                   return <div key={idx} style={{ position:"relative", width:80, height:80, flex:"0 0 auto", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#fff" }} title={name}>
                     {isPdf
                       ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
@@ -12677,7 +12677,7 @@ var DealsPage = function(p) {
                 {(selectedDeal.dealDocuments||[]).map(function(doc,idx){
                   var url = typeof doc==="string" ? doc : (doc && doc.url) || "";
                   var name = typeof doc==="object" && doc && doc.name ? doc.name : ("Document "+(idx+1));
-                  var isPdf = typeof url==="string" && url.indexOf("application/pdf")>=0;
+                  var isPdf = (typeof doc==="object" && doc && String(doc.contentType||"").toLowerCase()==="application/pdf") || /\.pdf$/i.test(String(name||"").split("?")[0]) || /\.pdf$/i.test(String(url||"").split("?")[0]) || (typeof url==="string" && url.indexOf("application/pdf")>=0);
                   return <div key={idx} style={{ position:"relative", width:80, height:80, flex:"0 0 auto", border:"1px solid #E2E8F0", borderRadius:8, overflow:"hidden", background:"#fff" }} title={name}>
                     {isPdf
                       ? <a href={url} target="_blank" rel="noreferrer" download={name} style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", textDecoration:"none", color:"#DC2626", fontSize:10, fontWeight:700, padding:4, textAlign:"center" }}><span style={{ fontSize:22 }}>📕</span><span style={{ maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name}</span></a>
