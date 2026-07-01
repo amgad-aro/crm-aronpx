@@ -2716,6 +2716,12 @@ var LeadForm = function(p) {
         }
       }
     }
+    // [F1] Deal Date is required for any DoneDeal save — mirrors the backend
+    // guarantee that a DoneDeal never carries an empty dealDate.
+    if (isDoneDealForm && !String(form.dealDate || "").trim()) {
+      alert("Deal Date is required");
+      return;
+    }
     // Commission Rate (%) — required > 0 for any DoneDeal save (Internal +
     // External). Mirrors backend rejection at POST/PUT /api/leads. BE computes
     // commissionAmount = budget × rate / 100 server-side; FE only sends rate.
@@ -2911,7 +2917,7 @@ var LeadForm = function(p) {
     {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
-    {isDoneDealForm&&<Inp label="Deal Date" type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
+    {isDoneDealForm&&<Inp label="Deal Date" type="date" req value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
     {isDoneDealForm&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
@@ -5936,9 +5942,9 @@ var LeadsPage = function(p) {
           upData.eoiDate = new Date().toISOString();
         }
       }
-      // Stamp dealDate at the actual transition moment (full ISO), not UTC
-      // midnight of today — same reason as above.
-      if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date().toISOString();
+      // Stamp dealDate on close as date-only Cairo-local (YYYY-MM-DD), unified
+      // with every other dealDate write path.
+      if(pendingStatus.newStatus === "DoneDeal") upData.dealDate = new Date(Date.now() + 3*3600*1000).toISOString().slice(0,10);
       // Notify admin when DoneDeal or EOI
       if(pendingStatus.newStatus==="DoneDeal"||pendingStatus.newStatus==="EOI"){
         var notifEntry={leadName:selected?selected.name:"",leadId:pendingStatus.leadId,agentName:p.cu.name,status:pendingStatus.newStatus,budget:extra&&extra.budget?extra.budget:""};
@@ -13675,9 +13681,9 @@ var DailyRequestsPage = function(p) {
             }
           }
         }
-        // Full ISO (not date-only) so the deal-bell "X hr ago" display
-        // measures from the actual transition moment, not UTC midnight.
-        if(isDoneDeal && !r.dealDate) upData.dealDate = new Date().toISOString();
+        // Date-only Cairo-local (YYYY-MM-DD), unified with every dealDate
+        // write path.
+        if(isDoneDeal && !r.dealDate) upData.dealDate = new Date(Date.now() + 3*3600*1000).toISOString().slice(0,10);
         r = await apiFetch("/api/daily-requests/"+gid(r),"PUT",upData,p.token);
         // Backend PUT now surfaces mirrorLeadId on the response (server.js
         // line ~8108) so we can target the mirror without scanning the full

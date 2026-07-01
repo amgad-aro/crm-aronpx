@@ -10154,6 +10154,16 @@ app.post("/api/leads", auth, async function(req, res) {
     await pushHistory(lead._id, initEntry);
     lead = await Lead.findById(lead._id).populate("agentId", "name title").populate("assignments.agentId", "name title");
     if (initialStatus === "DoneDeal") {
+      // [B1] Guarantee a DoneDeal is never created with an empty dealDate. The
+      // Lead.create above stored req.body.dealDate || "" (with the future-date
+      // guard at ~10065); if that left it empty, back-fill from the lead's own
+      // createdAt as Cairo-local date-only (YYYY-MM-DD). Runs before
+      // ensureCommissionForLead so commission quarter attribution sees it.
+      if (lead && !lead.dealDate) {
+        var createdDealDate = new Date(new Date(lead.createdAt || Date.now()).getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+        await Lead.updateOne({ _id: lead._id }, { $set: { dealDate: createdDealDate } });
+        lead.dealDate = createdDealDate;
+      }
       // Closing Company default (Feature B) — a deal created directly in
       // DoneDeal status also gets the ARO default so every closed deal carries
       // a company (mirror of the PUT DoneDeal default). Only fills when the
@@ -11047,7 +11057,8 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       }
     }
     if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
-    var todayIso = new Date().toISOString().slice(0,10);
+    // Date-only Cairo-local (YYYY-MM-DD), unified with every dealDate write path.
+    var todayIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0,10);
     var update = {
       status: "DoneDeal",
       dealDate: existing.dealDate || todayIso,
@@ -11601,8 +11612,30 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       // non-admin/SA roles (see ~10605), and this transition block never re-fires
       // once the lead is already DoneDeal — so this only ever AUTO-stamps the
       // initial close, and the !update.dealDate guard preserves any explicit
-      // admin/SA-supplied date. Full ISO mirrors the DR-mirror path (~15878).
-      if (!update.dealDate && !oldLead.dealDate) update.dealDate = new Date().toISOString();
+      // admin/SA-supplied date. Date-only Cairo-local (YYYY-MM-DD), unified
+      // with every other dealDate write path.
+      if (!update.dealDate && !oldLead.dealDate) update.dealDate = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+    }
+    // [B2] dealDate integrity for DoneDeal on PUT — date-only Cairo-local.
+    //   (a) HEAL: any PUT that leaves the lead as DoneDeal must never carry an
+    //       empty dealDate; back-fill from the lead's own createdAt. Fires even
+    //       when this is NOT a fresh transition (e.g. editing a lead that was
+    //       created empty before this fix) — the transition block above only
+    //       stamps on the first close.
+    //   (b) PROTECT: an explicit "" dealDate in the body must not blank a good
+    //       stored value (non-admin roles already had it stripped ~11230).
+    var healRefPut = oldLead;
+    var effStatusPut = (typeof req.body.status !== "undefined") ? req.body.status : (healRefPut ? healRefPut.status : undefined);
+    if (effStatusPut === undefined && req.body.dealDate !== undefined) {
+      healRefPut = await Lead.findById(req.params.id).lean();
+      effStatusPut = healRefPut ? healRefPut.status : undefined;
+    }
+    if (effStatusPut === "DoneDeal") {
+      if (update.dealDate === "") delete update.dealDate;                       // (b) PROTECT
+      if (!update.dealDate && (!healRefPut || !healRefPut.dealDate)) {          // (a) HEAL
+        var healBasePut = (healRefPut && healRefPut.createdAt) ? new Date(healRefPut.createdAt).getTime() : Date.now();
+        update.dealDate = new Date(healBasePut + 3 * 3600 * 1000).toISOString().slice(0, 10);
+      }
     }
     // Feature A — mint the permanent Lead ID the first time the lead enters EOI
     // or DoneDeal (whichever first) and only if it has none yet. oldLead is the
@@ -16859,9 +16892,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           // original closure date on every subsequent edit, so old deals don't re-surface
           // as "just closed" in the notifications panel.
           if (!existingLead || !existingLead.dealDate) {
-            // Full ISO (not date-only) so the deal-bell "X hr ago" display
-            // measures from the actual transition moment, not UTC midnight.
-            mirrorExtra.dealDate = new Date().toISOString();
+            // Date-only Cairo-local (YYYY-MM-DD), unified with every dealDate
+            // write path (the deal-bell derives its time from this field).
+            mirrorExtra.dealDate = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
           }
         }
         // GET /api/leads filters sales-role users on assignments.agentId, not
