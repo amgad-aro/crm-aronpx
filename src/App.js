@@ -16340,6 +16340,25 @@ var ReportsPage = function(p) {
 
 var LB_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
+// Leaderboard include/exclude agent filter — persisted as an array of EXCLUDED
+// agentIds so any agent NOT in the saved set defaults to INCLUDED (new agents
+// show up automatically). Display-only; never affects calculations.
+var LB_EXCL_KEY = "crm_lb_excluded_agents";
+function lbLoadExcluded(){
+  try {
+    var raw = localStorage.getItem(LB_EXCL_KEY);
+    if (!raw) return {};
+    var parsed = JSON.parse(raw);
+    var m = {};
+    if (Array.isArray(parsed)) parsed.forEach(function(id){ m[String(id)] = true; });
+    else if (parsed && typeof parsed === "object") Object.keys(parsed).forEach(function(id){ if (parsed[id]) m[String(id)] = true; });
+    return m;
+  } catch (e) { return {}; }
+}
+function lbSaveExcluded(m){
+  try { localStorage.setItem(LB_EXCL_KEY, JSON.stringify(Object.keys(m || {}))); } catch (e) {}
+}
+
 // 🏆 Sales Leaderboard tab (admin/sales_admin only — inherits the ReportsPage
 // role gate; no extra guard needed here). Two rankings from a SINGLE
 // GET /api/reports/overview/agents call:
@@ -16360,6 +16379,8 @@ var ReportsLeaderboardBody = function(p) {
   var [quarter, setQuarter] = useState("all");
   var [month, setMonth] = useState(now.getMonth());
   var [state, setState] = useState({ loading: true, data: null, error: null });
+  var [excluded, setExcluded] = useState(lbLoadExcluded);
+  var [agentsPanelOpen, setAgentsPanelOpen] = useState(false);
 
   // Month and Quarter are mutually exclusive — picking one clears the other.
   var pickMonth = function(m) { setMonth(m); if (m !== "all") setQuarter("all"); };
@@ -16391,10 +16412,30 @@ var ReportsLeaderboardBody = function(p) {
   var LB_ROLES = { sales: true, team_leader: true };
   var roster = (((state.data && state.data.agents) || []).filter(function(a){ return a && LB_ROLES[a.role]; }));
 
-  var dealRows = roster.slice().sort(function(a, b){
+  // Include/exclude filter (display-only). Picker is alphabetical for a stable
+  // list; the rankings below rank only the included agents.
+  var pickerAgents = roster.slice().sort(function(a, b){ return String(a.name || "").localeCompare(String(b.name || "")); });
+  var included = roster.filter(function(a){ return !excluded[String(a.agentId)]; });
+  var includedCount = included.length, rosterCount = roster.length;
+
+  var setExcl = function(next){ lbSaveExcluded(next); setExcluded(next); };
+  var toggleAgent = function(id){
+    var key = String(id);
+    var next = Object.assign({}, excluded);
+    if (next[key]) delete next[key]; else next[key] = true;
+    setExcl(next);
+  };
+  var selectAllAgents = function(){ setExcl({}); };
+  var clearAllAgents = function(){
+    var next = {};
+    roster.forEach(function(a){ next[String(a.agentId)] = true; });
+    setExcl(next);
+  };
+
+  var dealRows = included.slice().sort(function(a, b){
     return (b.revenue - a.revenue) || (b.deals - a.deals) || String(a.name || "").localeCompare(String(b.name || ""));
   });
-  var eoiRows = roster.slice().sort(function(a, b){
+  var eoiRows = included.slice().sort(function(a, b){
     return (b.eois - a.eois) || (b.revenue - a.revenue) || String(a.name || "").localeCompare(String(b.name || ""));
   });
 
@@ -16484,6 +16525,43 @@ var ReportsLeaderboardBody = function(p) {
         <select value={year} onChange={function(e){ setYear(Number(e.target.value)); }} style={selStyle}>
           {years.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
         </select>
+
+        <div style={{ position:"relative", display:"inline-flex", minWidth:0 }}>
+          <button type="button" onClick={function(){ setAgentsPanelOpen(function(o){ return !o; }); }}
+            style={{ padding:"5px 12px", borderRadius:8, border:"1px solid",
+              borderColor: agentsPanelOpen ? C.accent : "#E2E8F0",
+              background: agentsPanelOpen ? C.accent + "12" : "#fff",
+              color: agentsPanelOpen ? C.accent : C.textLight,
+              fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
+            ⚙️ Agents{rosterCount > 0 && includedCount < rosterCount ? " (" + includedCount + "/" + rosterCount + ")" : ""}
+          </button>
+          {agentsPanelOpen && <>
+            <div onClick={function(){ setAgentsPanelOpen(false); }} style={{ position:"fixed", inset:0, zIndex:40 }}/>
+            <div style={{ position:"absolute", top:"calc(100% + 6px)", left:0, zIndex:50,
+              width:"min(300px, 88vw)", maxWidth:"88vw", maxHeight:296, display:"flex", flexDirection:"column",
+              background:"#fff", border:"1px solid #E2E8F0", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,0.14)", overflow:"hidden" }}>
+              <div style={{ flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"9px 12px", borderBottom:"1px solid #F1F5F9", background:"#FAFBFC" }}>
+                <span style={{ fontSize:11, fontWeight:700, color:C.text, textTransform:"uppercase", letterSpacing:"0.04em" }}>Show agents</span>
+                <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+                  <button type="button" onClick={selectAllAgents} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer" }}>Select all</button>
+                  <button type="button" onClick={clearAllAgents} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }}>Clear</button>
+                </div>
+              </div>
+              <div style={{ flex:1, minHeight:0, overflowY:"auto", padding:"4px 0", WebkitOverflowScrolling:"touch" }}>
+                {pickerAgents.length === 0
+                  ? <div style={{ fontSize:12, color:C.textLight, padding:"16px 12px", textAlign:"center", fontStyle:"italic" }}>No agents in range</div>
+                  : pickerAgents.map(function(a){
+                      var checked = !excluded[String(a.agentId)];
+                      return <label key={a.agentId} style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 12px", cursor:"pointer", fontSize:13, color:C.text }}>
+                        <input type="checkbox" checked={checked} onChange={function(){ toggleAgent(a.agentId); }} style={{ cursor:"pointer", flexShrink:0 }}/>
+                        <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>{a.name || "(unknown)"}</span>
+                      </label>;
+                    })}
+              </div>
+            </div>
+          </>}
+        </div>
+
         <div style={{ flex:1, minWidth:8 }}/>
         <span style={{ fontSize:11, color:C.textLight }}>{periodLabel}</span>
       </div>
