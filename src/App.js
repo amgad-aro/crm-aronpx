@@ -12603,36 +12603,11 @@ var DealsPage = function(p) {
             }}/>}
         </div>}
 
-        {/* Commission Claim Date - sales admin only */}
-        {isOnlyAdmin&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Commission Claim</div>
-          <input type="date" value={selectedDeal.commissionClaimDate||""} onChange={async function(e){
-            try{
-              var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimDate:e.target.value},p.token);
-              p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-              setSelectedDeal(updated);
-            }catch(ex){}
-          }} style={{ width:"100%", maxWidth:220, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:12, marginBottom:6, boxSizing:"border-box" }}/>
-          <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", fontSize:12 }}>
-            <input type="checkbox" checked={selectedDeal.commissionClaimed||false} onChange={async function(e){
-              try{
-                var updated=await apiFetch("/api/leads/"+gid(selectedDeal),"PUT",{commissionClaimed:e.target.checked},p.token);
-                p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;});});
-                setSelectedDeal(updated);
-              }catch(ex){}
-            }}/>
-            <span style={{ fontWeight:600, color:selectedDeal.commissionClaimed?C.success:C.textLight }}>
-              {selectedDeal.commissionClaimed?"✅ Claimed":"☐ Mark as Claimed"}
-            </span>
-          </label>
-        </div>}
-
-        {/* Deal Images */}
+        {/* Deal Images — only shown when the deal already has contract images */}
+        {isDealHydrated && ((selectedDeal.dealImages && selectedDeal.dealImages.length) || selectedDeal.dealImage) &&
         <div style={{ marginTop:12 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 Contract Images</div>
-          {!isDealHydrated
-            ? <div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
-            : (function(){
+          {(function(){
             var imgs=selectedDeal.dealImages&&selectedDeal.dealImages.length?selectedDeal.dealImages:selectedDeal.dealImage?[selectedDeal.dealImage]:[];
             var uploadHandler=function(e){
               var file=e.target.files[0]; if(!file)return; e.target.value="";
@@ -12664,7 +12639,7 @@ var DealsPage = function(p) {
               </label>
             </div>;
           })()}
-        </div>
+        </div>}
 
         {/* Deal Documents (images + PDFs) */}
         <div style={{ marginTop:12 }}>
