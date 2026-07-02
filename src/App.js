@@ -19733,6 +19733,12 @@ var SettingsPage = function(p) {
           var infoParts = [];
           if(team) infoParts.push(team);
           infoParts.push(active+" active");
+          var groupLeftStyle = p.isMobile
+            ? {display:"flex",alignItems:"center",gap:10,flex:"1 1 100%",minWidth:0}
+            : {display:"contents"};
+          var groupRightStyle = p.isMobile
+            ? {display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",flex:"1 1 100%",justifyContent:"flex-start"}
+            : {display:"contents"};
           return <div key={uid}
             draggable={true}
             onDragStart={function(e){ setDragFrom({tier:tierKey,idx:idx}); try{e.dataTransfer.effectAllowed="move";}catch(_){} }}
@@ -19743,11 +19749,12 @@ var SettingsPage = function(p) {
             style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#fff",borderRadius:8,marginBottom:4,cursor:"grab",userSelect:"none",flexWrap:p.isMobile?"wrap":"nowrap",
               border: hover ? "1.5px solid "+meta.num : "0.5px solid rgba(0,0,0,0.05)",
               opacity: dragging?0.5:1}}>
+            <div style={groupLeftStyle}>
             <span style={{color:"#999",cursor:"grab",fontSize:13,flexShrink:0}}>⋮⋮</span>
             <div style={{width:30,height:30,borderRadius:"50%",background:meta.num,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:500,flexShrink:0}}>{initialsOf(u.name)}</div>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:500,display:"flex",alignItems:"center",gap:0,flexWrap:"wrap"}}>
-                <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
+                <span style={p.isMobile?{whiteSpace:"normal",wordBreak:"break-word"}:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.name}</span>
                 <span style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:rb.bg,color:rb.fg,marginLeft:6}}>{rb.label}</span>
                 {activeVacSet.has(String(uid)) && <span title="Currently on vacation — skipped by auto-rotation"
                   style={{fontSize:9,padding:"2px 6px",borderRadius:10,fontWeight:500,letterSpacing:"0.3px",background:"#FAEEDA",color:"#854F0B",marginLeft:6}}>On Vacation</span>}
@@ -19756,6 +19763,8 @@ var SettingsPage = function(p) {
                 {infoParts.join(" · ")}
               </div>
             </div>
+            </div>
+            <div style={groupRightStyle}>
             {/* Daily lead cap — admin-only; empty = unlimited. The under-
                 line shows today's received-via-rotation count, either as
                 "N/cap today" when a cap is set or "N today" when unlimited. */}
@@ -19792,6 +19801,7 @@ var SettingsPage = function(p) {
               style={{fontSize:11,padding:"3px 8px",borderRadius:8,background:"transparent",border:"0.5px solid rgba(163,45,45,0.3)",color:"#A32D2D",cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}
               onClick={function(e){e.stopPropagation(); removeFromAllTiers(uid);}}>Remove</button>
             <div title={online?"Online":"Offline"} style={{width:8,height:8,borderRadius:"50%",background:online?"#0F6E56":"#999",flexShrink:0}}/>
+            </div>
           </div>;
         };
 
