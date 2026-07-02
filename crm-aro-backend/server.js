@@ -4505,6 +4505,47 @@ async function getRotationSettings() {
   };
 }
 
+// Shared "rotation stopped for ANY per-lead reason" predicate builder. Returns
+// the $or array consumed by BOTH the /api/leads/counts chip count (counts[6])
+// AND the /api/leads?rotationStopped=true list filter, so the badge and the
+// rendered rows stay byte-for-byte equivalent in logic (single source of truth).
+// Each branch mirrors a per-lead stop gate in autoRotateLead:
+//   - rotationStopped: true         → 3× Not Interested permanent halt (12634)
+//   - locked: true                  → lead locked (12642)
+//   - createdAt < ageCutoff         → older than rotationStopAfterDays (12687);
+//                                       $lt naturally excludes null/missing createdAt,
+//                                       matching the code's `lead.createdAt && …` guard
+//   - current-slice noRotation      → the CURRENT holder's assignment slice has
+//                                       noRotation set (12630-12637). Precise $expr:
+//                                       slice.agentId === lead.agentId, not removed.
+//   - rotationCount >= cap (cap>0)  → maxRotationsPerLead cap (12681); only when a
+//                                       cap is configured (0 = no cap, so no branch)
+// This changes only what the counter + filter REPORT — NOT how rotation behaves.
+// Global gates (autoRotationEnabled / paused / working-hours) are collection-wide,
+// not per-lead, so they are intentionally excluded. countDocuments over an $or
+// naturally de-dupes: a lead matching several branches is still ONE document.
+function buildRotationStoppedOr(settings) {
+  var stopDays  = Number(settings && settings.rotationStopAfterDays) || 45;
+  var cap       = Number(settings && settings.maxRotationsPerLead)   || 0;
+  var ageCutoff = new Date(Date.now() - stopDays * 24 * 60 * 60 * 1000);
+  var or = [
+    { rotationStopped: true },
+    { locked: true },
+    { createdAt: { $lt: ageCutoff } },
+    { $expr: { $anyElementTrue: { $map: {
+        input: { $ifNull: ["$assignments", []] },
+        as: "a",
+        in: { $and: [
+          { $eq: ["$$a.agentId", "$agentId"] },
+          { $eq: ["$$a.noRotation", true] },
+          { $not: ["$$a.removedAt"] }
+        ] }
+    } } } }
+  ];
+  if (cap > 0) or.push({ rotationCount: { $gte: cap } });
+  return or;
+}
+
 // Is "now" within the company working-hours window? Days: Sun..Sat (3-letter).
 // Empty from/to = always open; overnight windows (22:00→06:00) supported.
 function isWithinWorkingHours(wh, d) {
@@ -8401,8 +8442,13 @@ app.get("/api/leads", auth, async function(req, res) {
     // Rotation Stopped filter — mirrors lockedOnly. admin/sales_admin only;
     // other roles silently have the param ignored so they can't bypass the
     // hidden UI control (chip is rendered behind isOnlyAdmin on the FE).
+    // Broadened: matches ANY per-lead stop reason via the shared builder (same
+    // $or the /api/leads/counts chip count uses), so the filtered rows stay in
+    // lockstep with the badge. ANDed via query.$and so the role scope ($or) is
+    // never clobbered — same pattern as the status filter below.
     if (req.query.rotationStopped === "true" && (role === "admin" || role === "sales_admin")) {
-      query.rotationStopped = true;
+      var rsSettings = await getRotationSettings();
+      query.$and = (query.$and || []).concat([{ $or: buildRotationStoppedOr(rsSettings) }]);
     }
     // Not Rotated filter — leads still held by their first agent (never
     // rotated). Mirrors rotationStopped gating. Queued/unassigned leads
@@ -9283,6 +9329,14 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     var meetingsCond = { $or: [{ hadMeeting: true }, { status: "MeetingDone" }, { status: "Meeting Done" }] };
     var interestedCond = { $or: [{ status: { $in: interestedSet } }, { "assignments.status": { $in: interestedSet } }] };
 
+    // Broadened "Rotation Stopped" chip predicate — counts leads stopped for ANY
+    // per-lead reason (3× NI / locked / age / current-slice noRotation / max cap),
+    // not just rotationStopped. Shared builder keeps this count and the
+    // /api/leads?rotationStopped=true list filter byte-for-byte equivalent.
+    // getRotationSettings() supplies rotationStopAfterDays + maxRotationsPerLead.
+    var rotStoppedSettings = await getRotationSettings();
+    var rotStoppedOr = buildRotationStoppedOr(rotStoppedSettings);
+
     var counts = await Promise.all([
       Lead.countDocuments({ $and: baseInWindowAnd }),
       Lead.countDocuments({ $and: baseInWindowAnd.concat([meetingsCond]) }),
@@ -9298,8 +9352,11 @@ app.get("/api/leads/counts", auth, async function(req, res) {
       // !== EOI/DoneDeal, and Deal Cancelled excluded unless EOI Cancelled).
       // Without these, closed deals with rotationCount=0 / rotationStopped=true
       // inflate the chip badge above the rendered row count.
+      // rotStoppedOr = ANY per-lead stop reason (shared with the list filter).
+      // EOI/DoneDeal stay EXCLUDED (chip is for stuck-but-open leads); the $or
+      // de-dupes so a lead matching several stop reasons is still counted once.
       Lead.countDocuments({ $and: baseInWindowAnd.concat([
-        { rotationStopped: true },
+        { $or: rotStoppedOr },
         { status: { $nin: ["EOI", "DoneDeal"] } },
         { $or: [
           { status: { $ne: "Deal Cancelled" } },

@@ -4949,6 +4949,27 @@ var LeadsPage = function(p) {
   // flood the endpoint — same pattern as the Sidebar fetch.
   var [leadsPageCounts, setLeadsPageCounts] = useState(null);
   var isSalesRole = p.cu && p.cu.role === "sales";
+  // Rotation thresholds used by the client-side "Rotation Stopped" mirror
+  // (leadRotationStopped below). The broadened chip counts age- and cap-based
+  // stops, which need rotationStopAfterDays + maxRotationsPerLead. The server
+  // count/list filter is the source of truth; these hydrate the FE fallback +
+  // rsLeads re-filter so rendered rows match the badge. Defaults (45 / 0) match
+  // ROTATION_DEFAULTS so the mirror is correct even before the fetch lands.
+  var [rotStopDays, setRotStopDays] = useState(45);
+  var [rotMaxCap, setRotMaxCap] = useState(0);
+  useEffect(function(){
+    if (!p.token || !isOnlyAdmin) return;
+    var cancelled = false;
+    apiFetch("/api/settings/rotation", "GET", null, p.token)
+      .then(function(s){
+        if (cancelled || !s || typeof s !== "object") return;
+        setRotStopDays(Number(s.rotationStopAfterDays) || 45);
+        setRotMaxCap(Number(s.maxRotationsPerLead) || 0);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, isOnlyAdmin]);
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
@@ -5577,6 +5598,28 @@ var LeadsPage = function(p) {
   // fresh `data` reference and forcing it to re-evaluate row layout.
   // Combined with the new `computeItemKey` on each Virtuoso, this keeps
   // row identity AND data reference stable across cosmetic re-renders.
+  // Client mirror of the backend buildRotationStoppedOr — "rotation stopped for
+  // ANY per-lead reason". Kept in lockstep with the server $or so rendered rows
+  // equal the badge. The backend list query is the source of truth (rsLeads are
+  // already stop-filtered); this re-applies the same logic for the pre-fetch
+  // fallback on allVisible and as a belt-and-braces re-filter of rsLeads.
+  // The current-slice noRotation check ($expr on the server) is approximated in
+  // JS against the current holder's active assignment slice.
+  var leadRotationStopped = function(l){
+    if (!l) return false;
+    if (l.rotationStopped === true) return true;
+    if (l.locked === true) return true;
+    if (l.createdAt && (Date.now() - new Date(l.createdAt).getTime()) > (Number(rotStopDays) || 45) * 86400000) return true;
+    if (rotMaxCap > 0 && (Number(l.rotationCount) || 0) >= rotMaxCap) return true;
+    var curId = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId || "");
+    var cur = (l.assignments || []).find(function(a){
+      if (!a || a.removedAt) return false;
+      var aid = a.agentId && a.agentId._id ? String(a.agentId._id) : String(a.agentId || "");
+      return aid === curId;
+    });
+    if (cur && cur.noRotation === true) return true;
+    return false;
+  };
   var filtered = useMemo(function(){
   var filtered;
   if (lockedOnly) {
@@ -5584,8 +5627,9 @@ var LeadsPage = function(p) {
     // leads where the rotation-lock flag is set.
     filtered = allVisible.filter(function(l){return l.locked===true;});
   } else if (p.leadFilter === "rotation_stopped") {
-    // Cross-cut filter (independent of status): leads where the rotation
-    // engine permanently halted (3 consecutive Not Interested rotations).
+    // Cross-cut filter (independent of status): leads whose rotation has stopped
+    // for ANY per-lead reason (3× NI halt / locked / >45d age / max-rotations /
+    // current-slice noRotation) — mirrors the broadened chip counter.
     // Targeted BE fetch (admin/SA via ?rotationStopped=true) holds the
     // full in-scope list, bypassing the paginated p.leads. Falls back to
     // a client-side filter on allVisible during the brief window before
@@ -5598,10 +5642,10 @@ var LeadsPage = function(p) {
         if (l.source === "Daily Request") return false;
         if (l.status === "EOI" || l.status === "DoneDeal") return false;
         if (l.status === "Deal Cancelled" && l.eoiStatus !== "EOI Cancelled") return false;
-        return l.rotationStopped === true;
+        return leadRotationStopped(l);
       });
     } else {
-      filtered = allVisible.filter(function(l){ return l.rotationStopped === true; });
+      filtered = allVisible.filter(leadRotationStopped);
     }
   } else if (p.leadFilter === "not_rotated") {
     // Same pattern as rotation_stopped above. Predicate is "rotationCount
@@ -6351,11 +6395,11 @@ var LeadsPage = function(p) {
             } else if (s.v === "rotation_stopped") {
               // Server-aggregated total (rotationStoppedCount) reflects every
               // matching lead in scope, not just the paginated p.leads slice.
-              // Falls back to in-memory derivation if the BE field is absent
-              // (sales-historical branch / pre-deploy FE).
+              // Falls back to the in-memory mirror (any per-lead stop reason) if
+              // the BE field is absent (sales-historical branch / pre-deploy FE).
               cnt = (typeof leadsPageCounts.rotationStoppedCount === "number")
                 ? leadsPageCounts.rotationStoppedCount
-                : allVisible.filter(function(l){ return l.rotationStopped === true; }).length;
+                : allVisible.filter(leadRotationStopped).length;
             } else if (s.v === "not_rotated") {
               // Server-aggregated notRotatedCount, same precedent as the
               // rotation_stopped branch above.
@@ -6374,7 +6418,7 @@ var LeadsPage = function(p) {
           } else {
             if (s.v==="all") cnt = allVisible.length;
             else if (s.v==="important") cnt = allVisible.filter(function(l){ return qualifyingMarks(l).length > 0; }).length;
-            else if (s.v==="rotation_stopped") cnt = allVisible.filter(function(l){ return l.rotationStopped===true; }).length;
+            else if (s.v==="rotation_stopped") cnt = allVisible.filter(leadRotationStopped).length;
             else if (s.v==="not_rotated") cnt = allVisible.filter(function(l){ return !l.rotationCount && l.agentId; }).length;
             else if (s.v==="NewLead") cnt = allVisible.filter(isGenuineNewLead).length;
             else cnt = allVisible.filter(function(l){ return currentStatus(l)===s.v; }).length;
