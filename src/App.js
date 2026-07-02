@@ -1490,6 +1490,10 @@ var SidebarIcon = function(id, active){
   }
 };
 
+// Sidebar drawer width (px) — the fixed panel width AND the swipe-gesture travel
+// distance. Kept as a module constant so the render helper and the touch effect
+// agree without threading it through deps.
+var SIDEBAR_W = 240;
 var Sidebar = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var isSales = p.cu.role==="sales";
@@ -1530,6 +1534,109 @@ var Sidebar = function(p) {
     (p.cu.role==="admin"||p.cu.role==="sales_admin")&&{id:"settings",label:t.settings,adminSection:true},
   ].filter(Boolean);
   var isRTL = t.dir==="rtl";
+  // ===== Interactive edge-swipe drawer (Option 2 — finger-tracking) =====
+  // The panel follows the finger during an edge drag, then flicks/settles open or
+  // closed on release. Mobile-only; desktop skips the whole effect. Reuses the
+  // panel's own translateX + "transform 0.28s ease" so there is a single animation
+  // system — during the drag we swap transition to none and drive transform/opacity
+  // imperatively, then restore the transition for the settle. A tiny phase machine
+  // (idle | drag | settle) keeps React renders in sync with the imperative writes so
+  // a mid-gesture parent re-render can't clobber the panel position.
+  var panelRef = useRef(null);
+  var overlayRef = useRef(null);
+  var dragRef = useRef({ tx:0 });
+  var settleRef = useRef({ tx:0, open:false });
+  var liveRef = useRef({});
+  var settleTimerRef = useRef(null);
+  var [dragPhase, setDragPhase] = useState("idle");
+  liveRef.current = { open:p.open, onOpen:p.onOpen, onClose:p.onClose };
+  // Openness fraction (0 closed → 1 open) for a given translateX; used by the
+  // render path so the overlay mounts at the correct dim even before the first
+  // imperative paint lands.
+  var openFracOf = function(tx){ var o = isRTL ? (SIDEBAR_W-tx)/SIDEBAR_W : (SIDEBAR_W+tx)/SIDEBAR_W; return o<0?0:(o>1?1:o); };
+  useEffect(function(){
+    if (!p.isMobile) return;
+    var W=SIDEBAR_W, EDGE=24, INTENT=6, FLICK=0.5;
+    var rtl = isRTL;
+    var closedTx = rtl ? W : -W;
+    var g = { active:false, confirmed:false, startX:0, startY:0, baseTx:0, lastX:0, lastT:0, vx:0 };
+    var clamp = function(tx){ return rtl ? Math.max(0,Math.min(W,tx)) : Math.max(-W,Math.min(0,tx)); };
+    var frac = function(tx){ var o = rtl ? (W-tx)/W : (W+tx)/W; return o<0?0:(o>1?1:o); };
+    var paint = function(tx){
+      dragRef.current.tx = tx;
+      var el=panelRef.current;
+      if (el){ el.style.transition="none"; el.style.transform="translateX("+tx+"px)"; }
+      var ov=overlayRef.current;
+      if (ov){ ov.style.transition="none"; ov.style.opacity=String(frac(tx)); }
+    };
+    var onStart, onMove, onEnd;
+    var cleanupMove = function(){
+      document.removeEventListener("touchmove", onMove, { passive:false });
+      document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("touchcancel", onEnd);
+    };
+    onStart = function(e){
+      if (g.active) return;
+      if (!e.touches || e.touches.length!==1) return;
+      var x=e.touches[0].clientX, y=e.touches[0].clientY;
+      var open = !!liveRef.current.open;
+      if (!open){
+        var atEdge = rtl ? (x >= window.innerWidth - EDGE) : (x <= EDGE);
+        if (!atEdge) return;
+      }
+      g.active=true; g.confirmed=false;
+      g.startX=x; g.startY=y; g.baseTx = open ? 0 : closedTx;
+      g.lastX=x; g.lastT=e.timeStamp; g.vx=0;
+      document.addEventListener("touchmove", onMove, { passive:false });
+      document.addEventListener("touchend", onEnd);
+      document.addEventListener("touchcancel", onEnd);
+    };
+    onMove = function(e){
+      if (!g.active || !e.touches || e.touches.length!==1) return;
+      var x=e.touches[0].clientX, y=e.touches[0].clientY;
+      var dx=x-g.startX, dy=y-g.startY;
+      if (!g.confirmed){
+        if (Math.abs(dx)<INTENT && Math.abs(dy)<INTENT) return;
+        if (Math.abs(dy) > Math.abs(dx)){ g.active=false; cleanupMove(); return; }
+        g.confirmed=true;
+        if (settleTimerRef.current){ clearTimeout(settleTimerRef.current); settleTimerRef.current=null; }
+        setDragPhase("drag");
+      }
+      if (e.cancelable) e.preventDefault();
+      var tx=clamp(g.baseTx+dx);
+      var now=e.timeStamp, dt=now-g.lastT;
+      if (dt>0) g.vx=(x-g.lastX)/dt;
+      g.lastX=x; g.lastT=now;
+      paint(tx);
+    };
+    onEnd = function(){
+      if (!g.active){ cleanupMove(); return; }
+      g.active=false;
+      cleanupMove();
+      if (!g.confirmed) return;
+      var f=frac(dragRef.current.tx);
+      var openingVx = rtl ? -g.vx : g.vx;
+      var toOpen = openingVx > FLICK ? true : (openingVx < -FLICK ? false : f >= 0.5);
+      var targetTx = toOpen ? 0 : closedTx;
+      settleRef.current = { tx:targetTx, open:toOpen };
+      var el=panelRef.current;
+      if (el){ el.style.transition="transform 0.28s ease"; void el.offsetWidth; el.style.transform="translateX("+targetTx+"px)"; }
+      var ov=overlayRef.current;
+      if (ov){ ov.style.transition="opacity 0.28s ease"; void ov.offsetWidth; ov.style.opacity=String(toOpen?1:0); }
+      setDragPhase("settle");
+      if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = setTimeout(function(){ settleTimerRef.current=null; setDragPhase("idle"); }, 300);
+      var wasOpen=!!liveRef.current.open;
+      if (toOpen && !wasOpen && liveRef.current.onOpen) liveRef.current.onOpen();
+      else if (!toOpen && wasOpen && liveRef.current.onClose) liveRef.current.onClose();
+    };
+    document.addEventListener("touchstart", onStart, { passive:true });
+    return function(){
+      document.removeEventListener("touchstart", onStart);
+      cleanupMove();
+      if (settleTimerRef.current){ clearTimeout(settleTimerRef.current); settleTimerRef.current=null; }
+    };
+  }, [p.isMobile, isRTL]);
   // Badge source priority — must agree with the LeadsPage "All" tab:
   //  1. p.sidebarLeadsTotal — historical-scope count from /api/leads/counts
   //     (for sales: ?scope=historical, which mirrors the LeadsPage filters
@@ -1550,7 +1657,7 @@ var Sidebar = function(p) {
   var userInitial = (userName||"?")[0];
   var userRole = p.cu.title || ({admin:"Admin",sales_admin:"Sales Admin",manager:"Manager",team_leader:"Team Leader",sales:"Sales",viewer:"Viewer",office_boy:"Office Boy"}[p.cu.role]||"");
   var st = {
-    width:240, height:"100vh",
+    width:SIDEBAR_W, height:"100vh",
     background:"rgba(28, 30, 40, 0.95)",
     borderRight:"1px solid rgba(255,255,255,0.07)",
     padding:"calc(24px + env(safe-area-inset-top, 0px)) 14px 16px",
@@ -1561,7 +1668,11 @@ var Sidebar = function(p) {
     boxSizing:"border-box"
   };
   if (isRTL) { st.right=0; st.borderRight="none"; st.borderLeft="1px solid rgba(255,255,255,0.07)"; } else { st.left=0; }
-  if (p.isMobile&&!p.open) st.transform=isRTL?"translateX(100%)":"translateX(-100%)";
+  if (p.isMobile) {
+    if (dragPhase==="drag") { st.transition="none"; st.transform="translateX("+dragRef.current.tx+"px)"; }
+    else if (dragPhase==="settle") { st.transform="translateX("+settleRef.current.tx+"px)"; }
+    else if (!p.open) { st.transform=isRTL?"translateX(100%)":"translateX(-100%)"; }
+  }
   var renderItem = function(item){
     var act = p.active===item.id;
     var onClick = function(){ p.setActive(item.id); try{localStorage.setItem("crm_page",item.id);}catch(e){} if(p.isMobile) p.onClose(); };
@@ -1583,8 +1694,11 @@ var Sidebar = function(p) {
     </button>;
   };
   return <>
-    {p.isMobile&&p.open&&<div onClick={p.onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.48)", zIndex:140 }}/>}
-    <div style={st}>
+    {p.isMobile&&(p.open||dragPhase!=="idle")&&<div ref={overlayRef} onClick={p.onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.48)", zIndex:140,
+      opacity: dragPhase==="drag" ? openFracOf(dragRef.current.tx) : (dragPhase==="settle" ? (settleRef.current.open?1:0) : 1),
+      pointerEvents: (p.open&&dragPhase!=="drag") ? "auto" : "none",
+      transition: dragPhase==="drag" ? "none" : "opacity 0.28s ease" }}/>}
+    <div ref={panelRef} style={st}>
       {/* Header */}
       <div style={{ paddingBottom:18, borderBottom:"1px solid rgba(255,255,255,0.06)", marginBottom:8 }}>
         <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", gap:10 }}>
@@ -29270,50 +29384,9 @@ export default function CRMApp() {
 
   var t=TR[lang];
 
-  // Mobile edge-swipe gestures for the sidebar drawer (Option 1 — trigger, not
-  // finger-tracking). OPEN: a touch that STARTS within 24px of the leading screen
-  // edge (left in LTR, right in RTL) and travels >50px inward horizontally with
-  // little vertical drift toggles the same setSidebarOpen(true) the ☰ button uses.
-  // CLOSE: while open, a horizontal swipe toward that edge closes it (overlay tap
-  // already closes separately). Deltas are read only at touchend and we never call
-  // preventDefault, so native vertical scroll, horizontal table / tab-strip scroll,
-  // and the Rotation drag-and-drop are all left intact. The 24px edge gate is what
-  // keeps mid-screen swipes inside scrollable tables from ever opening the drawer.
-  useEffect(function(){
-    if (!isMobile) return;
-    var EDGE=24, H_MIN=50, V_MAX=40;
-    var rtl = t.dir==="rtl";
-    var openDir = rtl ? -1 : 1; // sign of an inward (opening) horizontal swipe
-    var startX=0, startY=0, tracking=false;
-    var onStart=function(e){
-      if (!e.touches || e.touches.length!==1){ tracking=false; return; }
-      startX=e.touches[0].clientX; startY=e.touches[0].clientY; tracking=true;
-    };
-    var onEnd=function(e){
-      if (!tracking) return;
-      tracking=false;
-      var tch=e.changedTouches&&e.changedTouches[0];
-      if (!tch) return;
-      var dx=tch.clientX-startX, dy=tch.clientY-startY;
-      if (Math.abs(dy)>V_MAX) return;              // vertical drift → it was a scroll
-      if (Math.abs(dx)<H_MIN) return;              // not a decisive horizontal swipe
-      if (Math.abs(dx)<=Math.abs(dy)) return;      // must be horizontal-dominant
-      if (!sidebarOpen){
-        var w=window.innerWidth;
-        var atEdge = rtl ? (startX>=w-EDGE) : (startX<=EDGE);
-        if (atEdge && Math.sign(dx)===openDir) setSidebarOpen(true);
-      } else if (Math.sign(dx)===-openDir){
-        setSidebarOpen(false);
-      }
-    };
-    document.addEventListener("touchstart", onStart, { passive:true });
-    document.addEventListener("touchend", onEnd, { passive:true });
-    return function(){
-      document.removeEventListener("touchstart", onStart);
-      document.removeEventListener("touchend", onEnd);
-    };
-  },[isMobile, sidebarOpen, t.dir]);
-
+  // NOTE: the sidebar swipe gesture lives inside the Sidebar component now
+  // (interactive finger-tracking — it needs direct refs to the panel + overlay).
+  // App just wires setSidebarOpen through the onOpen/onClose props below.
 
   // Server already filters leads by role/hierarchy — frontend just returns as-is
   var getVisibleLeads = function(allLeads, user, allUsers) {
@@ -30235,7 +30308,7 @@ export default function CRMApp() {
 +   ".crm-dash h1, .crm-dash h2, .crm-dash h3 { max-width: 100%; overflow-wrap: anywhere; }"
 + "}"
 }</style>
-    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} sidebarLeadsTotal={sidebarLeadsTotal} attendanceSettings={attendanceSettings}/>
+    <Sidebar active={currentPage} setActive={setPage} t={t} cu={currentUser} onLogout={handleLogout} isMobile={isMobile} open={sidebarOpen} onOpen={function(){setSidebarOpen(true);}} onClose={function(){setSidebarOpen(false);}} leads={scopedLeads} leadsTotal={leadsTotal} sidebarLeadsTotal={sidebarLeadsTotal} attendanceSettings={attendanceSettings}/>
     <div style={{ flex:1, marginRight:!isMobile&&t.dir==="rtl"?240:0, marginLeft:!isMobile&&t.dir==="ltr"?240:0, minHeight:"100vh", display:"flex", flexDirection:"column", minWidth:0 }}>
       {currentUser.role!=="hr" && currentUser.role!=="office_boy" && <QuickPhoneSearch leads={scopedLeads} dailyReqs={scopedDailyReqs} token={token} t={t} onSelect={function(lead){setPage("leads");setInitSelected(lead);}} onSelectDR={function(req){setPage("dailyReq");setInitSelected(req);}}/>}
       {!isOnline&&<div style={{ background:"#FEF3C7", color:"#B45309", padding:"8px 16px", fontSize:12, fontWeight:600, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
