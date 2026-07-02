@@ -29270,6 +29270,50 @@ export default function CRMApp() {
 
   var t=TR[lang];
 
+  // Mobile edge-swipe gestures for the sidebar drawer (Option 1 — trigger, not
+  // finger-tracking). OPEN: a touch that STARTS within 24px of the leading screen
+  // edge (left in LTR, right in RTL) and travels >50px inward horizontally with
+  // little vertical drift toggles the same setSidebarOpen(true) the ☰ button uses.
+  // CLOSE: while open, a horizontal swipe toward that edge closes it (overlay tap
+  // already closes separately). Deltas are read only at touchend and we never call
+  // preventDefault, so native vertical scroll, horizontal table / tab-strip scroll,
+  // and the Rotation drag-and-drop are all left intact. The 24px edge gate is what
+  // keeps mid-screen swipes inside scrollable tables from ever opening the drawer.
+  useEffect(function(){
+    if (!isMobile) return;
+    var EDGE=24, H_MIN=50, V_MAX=40;
+    var rtl = t.dir==="rtl";
+    var openDir = rtl ? -1 : 1; // sign of an inward (opening) horizontal swipe
+    var startX=0, startY=0, tracking=false;
+    var onStart=function(e){
+      if (!e.touches || e.touches.length!==1){ tracking=false; return; }
+      startX=e.touches[0].clientX; startY=e.touches[0].clientY; tracking=true;
+    };
+    var onEnd=function(e){
+      if (!tracking) return;
+      tracking=false;
+      var tch=e.changedTouches&&e.changedTouches[0];
+      if (!tch) return;
+      var dx=tch.clientX-startX, dy=tch.clientY-startY;
+      if (Math.abs(dy)>V_MAX) return;              // vertical drift → it was a scroll
+      if (Math.abs(dx)<H_MIN) return;              // not a decisive horizontal swipe
+      if (Math.abs(dx)<=Math.abs(dy)) return;      // must be horizontal-dominant
+      if (!sidebarOpen){
+        var w=window.innerWidth;
+        var atEdge = rtl ? (startX>=w-EDGE) : (startX<=EDGE);
+        if (atEdge && Math.sign(dx)===openDir) setSidebarOpen(true);
+      } else if (Math.sign(dx)===-openDir){
+        setSidebarOpen(false);
+      }
+    };
+    document.addEventListener("touchstart", onStart, { passive:true });
+    document.addEventListener("touchend", onEnd, { passive:true });
+    return function(){
+      document.removeEventListener("touchstart", onStart);
+      document.removeEventListener("touchend", onEnd);
+    };
+  },[isMobile, sidebarOpen, t.dir]);
+
 
   // Server already filters leads by role/hierarchy — frontend just returns as-is
   var getVisibleLeads = function(allLeads, user, allUsers) {
