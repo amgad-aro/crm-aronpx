@@ -16391,10 +16391,36 @@ var ReportsLeaderboardBody = function(p) {
   var [state, setState] = useState({ loading: true, data: null, error: null });
   var [includedMgrs, setIncludedMgrs] = useState(lbLoadMgrSet);
   var [agentsPanelOpen, setAgentsPanelOpen] = useState(false);
+  // FIX A — smart default. autoRef stays true only while the initial auto-widen
+  // chain (current month -> current quarter -> whole year) is allowed to run;
+  // any manual period change turns it off. `resolving` keeps the loading state
+  // visible across the widen hops so an empty month never flashes its zeros.
+  var autoRef = useRef(true);
+  var [resolving, setResolving] = useState(true);
+  var curQuarter = (function(){ var m = now.getMonth(); return m < 3 ? "Q1" : m < 6 ? "Q2" : m < 9 ? "Q3" : "Q4"; })();
+
+  // Roster gate + "is this agent shown" predicate (sales always; managers/TLs
+  // only when opted in). Defined up here so the fetch's empty-check and the
+  // render use the exact same membership rule.
+  var LB_ROLES = { sales: true, team_leader: true, manager: true };
+  var isIncludedAgent = function(a){
+    if (!a || !LB_ROLES[a.role]) return false;
+    if (a.role === "sales") return true;
+    return !!includedMgrs[String(a.agentId)];
+  };
+  // A period is "empty" when every SHOWN agent has 0 deals AND 0 EOIs.
+  var agentsAllZero = function(agents){
+    var arr = (agents || []).filter(isIncludedAgent);
+    var tot = 0;
+    for (var i = 0; i < arr.length; i++) { tot += (Number(arr[i].deals) || 0) + (Number(arr[i].eois) || 0); }
+    return tot === 0;
+  };
 
   // Month and Quarter are mutually exclusive — picking one clears the other.
-  var pickMonth = function(m) { setMonth(m); if (m !== "all") setQuarter("all"); };
-  var pickQuarter = function(q) { setQuarter(q); if (q !== "all") setMonth("all"); };
+  // Any manual pick also ends the smart-default auto-widen.
+  var endAuto = function(){ autoRef.current = false; setResolving(false); };
+  var pickMonth = function(m) { endAuto(); setMonth(m); if (m !== "all") setQuarter("all"); };
+  var pickQuarter = function(q) { endAuto(); setQuarter(q); if (q !== "all") setMonth("all"); };
 
   // Active [from, to) window in ms for the endpoint (reportsParseRange needs from < to).
   var range = (function(){
@@ -16413,22 +16439,33 @@ var ReportsLeaderboardBody = function(p) {
     setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
     var qs = "?from=" + range.from + "&to=" + range.to + "&limit=200";
     apiFetch("/api/reports/overview/agents" + qs, "GET", null, p.token)
-      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
-      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+      .then(function(d){
+        if (aborted) return;
+        setState({ loading: false, data: d, error: null });
+        if (!autoRef.current) return;                       // manual selection — never auto-widen
+        if (!agentsAllZero(d && d.agents)) { autoRef.current = false; setResolving(false); return; }
+        // Empty period: widen once (current month -> current quarter -> whole
+        // year), at most 2 extra fetches. Keep `resolving` true so the grid
+        // never flashes an all-zero table between hops.
+        if (month !== "all") { setMonth("all"); setQuarter(curQuarter); return; }
+        if (quarter !== "all") { setQuarter("all"); return; }
+        autoRef.current = false; setResolving(false);       // already whole-year and still empty
+      })
+      .catch(function(e){
+        if (aborted) return;
+        autoRef.current = false; setResolving(false);
+        setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" });
+      });
     return function(){ aborted = true; };
   }, [range.from, range.to]);
 
-  // Roster gate: sales + team_leader + manager (FIX 3 widened the pool so
-  // managers/TLs can be opted in). Sales agents are ALWAYS included; managers
-  // and team_leaders are the only toggleable rows and are OFF by default.
-  var LB_ROLES = { sales: true, team_leader: true, manager: true };
+  // Roster = pooled agents (sales + TL + manager). Picker lists ONLY managers/
+  // TLs (alphabetical). Rankings include every sales agent plus any opted-in
+  // manager/TL (isIncludedAgent, defined above).
   var roster = (((state.data && state.data.agents) || []).filter(function(a){ return a && LB_ROLES[a.role]; }));
-
-  // Picker lists ONLY managers/TLs (alphabetical). Rankings include every sales
-  // agent plus any opted-in manager/TL.
   var mgrRoster = roster.filter(function(a){ return a.role === "manager" || a.role === "team_leader"; });
   var pickerAgents = mgrRoster.slice().sort(function(a, b){ return String(a.name || "").localeCompare(String(b.name || "")); });
-  var included = roster.filter(function(a){ return a.role === "sales" || includedMgrs[String(a.agentId)]; });
+  var included = roster.filter(isIncludedAgent);
   var includedMgrCount = mgrRoster.reduce(function(n, a){ return n + (includedMgrs[String(a.agentId)] ? 1 : 0); }, 0);
 
   var setMgrs = function(next){ lbSaveMgrSet(next); setIncludedMgrs(next); };
@@ -16469,7 +16506,9 @@ var ReportsLeaderboardBody = function(p) {
   var tdNum = Object.assign({}, tdStyle, { textAlign:"right", fontVariantNumeric:"tabular-nums" });
 
   var qBtn = function(q){
-    var active = quarter === q;
+    // FIX C — a quarter chip (incl. "All") is highlighted only when no month is
+    // active, so a selected month never leaves the quarter row falsely lit.
+    var active = (month === "all") && (quarter === q);
     return <button key={q} type="button" onClick={function(){ pickQuarter(q); }}
       style={{ padding:"5px 12px", borderRadius:8, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0",
         background: active ? C.accent + "12" : "#fff", color: active ? C.accent : C.textLight,
@@ -16535,7 +16574,7 @@ var ReportsLeaderboardBody = function(p) {
           <option value="all">All months</option>
           {LB_MONTHS.map(function(mn, i){ return <option key={i} value={i}>{mn}</option>; })}
         </select>
-        <select value={year} onChange={function(e){ setYear(Number(e.target.value)); }} style={selStyle}>
+        <select value={year} onChange={function(e){ endAuto(); setYear(Number(e.target.value)); }} style={selStyle}>
           {years.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
         </select>
 
@@ -16583,9 +16622,17 @@ var ReportsLeaderboardBody = function(p) {
 
     {state.error && <Card style={{ padding:"14px 16px", marginBottom:16, color:"#DC2626", fontSize:13 }}>Couldn't load leaderboard: {state.error}</Card>}
 
-    {(state.loading && !state.data)
-      ? <div style={{ fontSize:13, color:C.textLight, padding:"32px 12px", textAlign:"center" }}>Loading leaderboard…</div>
-      : <div className="lb-grid">{dealsCard}{eoiCard}</div>}
+    {state.error
+      ? null
+      : (resolving || (state.loading && !state.data))
+        ? <div style={{ fontSize:13, color:C.textLight, padding:"32px 12px", textAlign:"center" }}>Loading leaderboard…</div>
+        : agentsAllZero(state.data && state.data.agents)
+          ? <Card style={{ padding:"40px 24px", textAlign:"center" }}>
+              <div style={{ fontSize:28, marginBottom:8 }}>📭</div>
+              <div style={{ fontSize:15, fontWeight:700, color:C.text, marginBottom:4 }}>No deals or EOIs in {periodLabel}</div>
+              <div style={{ fontSize:12, color:C.textLight }}>Try a different month, quarter, or year using the filters above.</div>
+            </Card>
+          : <div className="lb-grid">{dealsCard}{eoiCard}</div>}
   </div>;
 };
 
