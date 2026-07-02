@@ -12539,10 +12539,13 @@ var DealsPage = function(p) {
         </div>:null;})}
         </div>
 
+        {/* Closed via + Developer — side by side on wide screens, stacking on
+            narrow (same responsive auto-fit grid as the info-cards row above). */}
+        {(canSeeClosingCompany(p.cu)||canSeeDeveloper(p.cu))&&<div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12, marginTop:12 }}>
         {/* Closing Company (Feature B) — admin/SA can set/change which company
             the deal was closed under. The PUT response isn't populated, so the
             <select> value + label resolve via ccIdOf / the companies map. */}
-        {canSeeClosingCompany(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+        {canSeeClosingCompany(p.cu)&&<div style={{ padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏢 Closed via</div>
           <select value={ccIdOf(selectedDeal)} onChange={async function(e){
             var val=e.target.value;
@@ -12562,7 +12565,7 @@ var DealsPage = function(p) {
             role (the 505 developers are pre-vetted). Writes Lead.developerId via
             PUT; the response isn't populated, so value + label resolve via devIdOf
             / the developers map. "— None —" clears it. */}
-        {canSeeDeveloper(p.cu)&&<div style={{ marginTop:12, padding:12, background:"#fff", borderRadius:8 }}>
+        {canSeeDeveloper(p.cu)&&<div style={{ padding:12, background:"#fff", borderRadius:8 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
           {/* N4 — admin/SA opening a deal whose developer is still pending
               (sales typed a free-text name at conversion, no developerId yet):
@@ -12601,6 +12604,7 @@ var DealsPage = function(p) {
                 setDealAllData(function(prev){return Array.isArray(prev)?prev.map(function(l){return gid(l)===gid(selectedDeal)?updated:l;}):prev;});
               }catch(ex){ alert((ex&&ex.message)||"Update failed"); }
             }}/>}
+        </div>}
         </div>}
 
         {/* Deal Images — only shown when the deal already has contract images */}
