@@ -16143,7 +16143,15 @@ var ReportsPage = function(p) {
   var t = p.t;
   var cu = p.cu;
 
-  var [tab, setTab] = useState("overview");
+  // FIX 4 — persist the selected Reports tab across refreshes (matches the
+  // app's crm_page localStorage pattern). Fall back to "overview" for an
+  // unknown/removed saved id.
+  var [tab, setTab] = useState(function(){
+    var valid = { overview:1, campaigns:1, agents:1, leaderboard:1, pipeline:1 };
+    try { var saved = localStorage.getItem("crm_reports_tab"); return (saved && valid[saved]) ? saved : "overview"; }
+    catch (e) { return "overview"; }
+  });
+  var selectTab = function(id){ setTab(id); try { localStorage.setItem("crm_reports_tab", id); } catch (e) {} };
   var [filters, setFilters] = useState(function(){
     var now = new Date();
     var monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
@@ -16246,19 +16254,19 @@ var ReportsPage = function(p) {
       </div>
     </div>
 
-    <div style={{ display:"flex", gap:4, marginBottom:14, borderBottom:"1px solid #E2E8F0" }}>
+    <div style={{ display:"flex", gap:4, marginBottom:14, borderBottom:"1px solid #E2E8F0", overflowX:"auto", overflowY:"hidden", WebkitOverflowScrolling:"touch", flexWrap:"nowrap", scrollbarWidth:"thin" }}>
       {tabs.map(function(tb){
         var active = tab === tb.id;
         var disabled = !tb.enabled;
         return <button key={tb.id}
-          onClick={function(){ if(!disabled) setTab(tb.id); }}
+          onClick={function(){ if(!disabled) selectTab(tb.id); }}
           title={disabled ? "Coming soon" : ""}
           style={{
             padding:"9px 16px", border:"none",
             borderBottom: active ? "2px solid "+C.accent : "2px solid transparent",
             background:"transparent",
             color: disabled ? "#CBD5E1" : (active ? C.accent : C.textLight),
-            fontSize:13, fontWeight:600,
+            fontSize:13, fontWeight:600, flexShrink:0, whiteSpace:"nowrap",
             cursor: disabled ? "not-allowed" : "pointer"
           }}>
           {tb.label}
@@ -16340,13 +16348,15 @@ var ReportsPage = function(p) {
 
 var LB_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-// Leaderboard include/exclude agent filter — persisted as an array of EXCLUDED
-// agentIds so any agent NOT in the saved set defaults to INCLUDED (new agents
-// show up automatically). Display-only; never affects calculations.
-var LB_EXCL_KEY = "crm_lb_excluded_agents";
-function lbLoadExcluded(){
+// Leaderboard "Include managers" filter (FIX 3) — sales-role agents are ALWAYS
+// shown and are never listed/toggleable. Managers / team_leaders are OFF by
+// default and opted-in here. Persisted as an array of INCLUDED manager/TL
+// agentIds (default = none => sales-only view); a manager not in the saved set
+// defaults to EXCLUDED. Display-only; never affects calculations.
+var LB_MGR_KEY = "crm_lb_included_mgrs";
+function lbLoadMgrSet(){
   try {
-    var raw = localStorage.getItem(LB_EXCL_KEY);
+    var raw = localStorage.getItem(LB_MGR_KEY);
     if (!raw) return {};
     var parsed = JSON.parse(raw);
     var m = {};
@@ -16355,8 +16365,8 @@ function lbLoadExcluded(){
     return m;
   } catch (e) { return {}; }
 }
-function lbSaveExcluded(m){
-  try { localStorage.setItem(LB_EXCL_KEY, JSON.stringify(Object.keys(m || {}))); } catch (e) {}
+function lbSaveMgrSet(m){
+  try { localStorage.setItem(LB_MGR_KEY, JSON.stringify(Object.keys(m || {}))); } catch (e) {}
 }
 
 // 🏆 Sales Leaderboard tab (admin/sales_admin only — inherits the ReportsPage
@@ -16379,7 +16389,7 @@ var ReportsLeaderboardBody = function(p) {
   var [quarter, setQuarter] = useState("all");
   var [month, setMonth] = useState(now.getMonth());
   var [state, setState] = useState({ loading: true, data: null, error: null });
-  var [excluded, setExcluded] = useState(lbLoadExcluded);
+  var [includedMgrs, setIncludedMgrs] = useState(lbLoadMgrSet);
   var [agentsPanelOpen, setAgentsPanelOpen] = useState(false);
 
   // Month and Quarter are mutually exclusive — picking one clears the other.
@@ -16408,29 +16418,32 @@ var ReportsLeaderboardBody = function(p) {
     return function(){ aborted = true; };
   }, [range.from, range.to]);
 
-  // Roster gate (Decision C): sales + team_leader only.
-  var LB_ROLES = { sales: true, team_leader: true };
+  // Roster gate: sales + team_leader + manager (FIX 3 widened the pool so
+  // managers/TLs can be opted in). Sales agents are ALWAYS included; managers
+  // and team_leaders are the only toggleable rows and are OFF by default.
+  var LB_ROLES = { sales: true, team_leader: true, manager: true };
   var roster = (((state.data && state.data.agents) || []).filter(function(a){ return a && LB_ROLES[a.role]; }));
 
-  // Include/exclude filter (display-only). Picker is alphabetical for a stable
-  // list; the rankings below rank only the included agents.
-  var pickerAgents = roster.slice().sort(function(a, b){ return String(a.name || "").localeCompare(String(b.name || "")); });
-  var included = roster.filter(function(a){ return !excluded[String(a.agentId)]; });
-  var includedCount = included.length, rosterCount = roster.length;
+  // Picker lists ONLY managers/TLs (alphabetical). Rankings include every sales
+  // agent plus any opted-in manager/TL.
+  var mgrRoster = roster.filter(function(a){ return a.role === "manager" || a.role === "team_leader"; });
+  var pickerAgents = mgrRoster.slice().sort(function(a, b){ return String(a.name || "").localeCompare(String(b.name || "")); });
+  var included = roster.filter(function(a){ return a.role === "sales" || includedMgrs[String(a.agentId)]; });
+  var includedMgrCount = mgrRoster.reduce(function(n, a){ return n + (includedMgrs[String(a.agentId)] ? 1 : 0); }, 0);
 
-  var setExcl = function(next){ lbSaveExcluded(next); setExcluded(next); };
-  var toggleAgent = function(id){
+  var setMgrs = function(next){ lbSaveMgrSet(next); setIncludedMgrs(next); };
+  var toggleMgr = function(id){
     var key = String(id);
-    var next = Object.assign({}, excluded);
+    var next = Object.assign({}, includedMgrs);
     if (next[key]) delete next[key]; else next[key] = true;
-    setExcl(next);
+    setMgrs(next);
   };
-  var selectAllAgents = function(){ setExcl({}); };
-  var clearAllAgents = function(){
+  var selectAllMgrs = function(){
     var next = {};
-    roster.forEach(function(a){ next[String(a.agentId)] = true; });
-    setExcl(next);
+    mgrRoster.forEach(function(a){ next[String(a.agentId)] = true; });
+    setMgrs(next);
   };
+  var clearAllMgrs = function(){ setMgrs({}); };
 
   var dealRows = included.slice().sort(function(a, b){
     return (b.revenue - a.revenue) || (b.deals - a.deals) || String(a.name || "").localeCompare(String(b.name || ""));
@@ -16533,7 +16546,7 @@ var ReportsLeaderboardBody = function(p) {
               background: agentsPanelOpen ? C.accent + "12" : "#fff",
               color: agentsPanelOpen ? C.accent : C.textLight,
               fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
-            ⚙️ Agents{rosterCount > 0 && includedCount < rosterCount ? " (" + includedCount + "/" + rosterCount + ")" : ""}
+            ⚙️ Include managers{includedMgrCount > 0 ? " (" + includedMgrCount + ")" : ""}
           </button>
           {agentsPanelOpen && <>
             <div onClick={function(){ setAgentsPanelOpen(false); }} style={{ position:"fixed", inset:0, zIndex:40 }}/>
@@ -16541,20 +16554,21 @@ var ReportsLeaderboardBody = function(p) {
               width:"min(300px, 88vw)", maxWidth:"88vw", maxHeight:296, display:"flex", flexDirection:"column",
               background:"#fff", border:"1px solid #E2E8F0", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,0.14)", overflow:"hidden" }}>
               <div style={{ flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"9px 12px", borderBottom:"1px solid #F1F5F9", background:"#FAFBFC" }}>
-                <span style={{ fontSize:11, fontWeight:700, color:C.text, textTransform:"uppercase", letterSpacing:"0.04em" }}>Show agents</span>
+                <span style={{ fontSize:11, fontWeight:700, color:C.text, textTransform:"uppercase", letterSpacing:"0.04em" }}>Managers &amp; TLs</span>
                 <div style={{ display:"flex", gap:6, flexShrink:0 }}>
-                  <button type="button" onClick={selectAllAgents} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer" }}>Select all</button>
-                  <button type="button" onClick={clearAllAgents} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }}>Clear</button>
+                  <button type="button" onClick={selectAllMgrs} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.accent, fontSize:11, fontWeight:600, cursor:"pointer" }}>Select all</button>
+                  <button type="button" onClick={clearAllMgrs} style={{ padding:"3px 8px", borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", color:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }}>Clear</button>
                 </div>
               </div>
+              <div style={{ flexShrink:0, padding:"6px 12px", fontSize:10.5, color:C.textLight, background:"#FAFBFC", borderBottom:"1px solid #F1F5F9" }}>Sales agents are always shown.</div>
               <div style={{ flex:1, minHeight:0, overflowY:"auto", padding:"4px 0", WebkitOverflowScrolling:"touch" }}>
                 {pickerAgents.length === 0
-                  ? <div style={{ fontSize:12, color:C.textLight, padding:"16px 12px", textAlign:"center", fontStyle:"italic" }}>No agents in range</div>
+                  ? <div style={{ fontSize:12, color:C.textLight, padding:"16px 12px", textAlign:"center", fontStyle:"italic" }}>No managers or team leaders in range</div>
                   : pickerAgents.map(function(a){
-                      var checked = !excluded[String(a.agentId)];
+                      var checked = !!includedMgrs[String(a.agentId)];
                       return <label key={a.agentId} style={{ display:"flex", alignItems:"center", gap:9, padding:"7px 12px", cursor:"pointer", fontSize:13, color:C.text }}>
-                        <input type="checkbox" checked={checked} onChange={function(){ toggleAgent(a.agentId); }} style={{ cursor:"pointer", flexShrink:0 }}/>
-                        <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>{a.name || "(unknown)"}</span>
+                        <input type="checkbox" checked={checked} onChange={function(){ toggleMgr(a.agentId); }} style={{ cursor:"pointer", flexShrink:0 }}/>
+                        <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>{a.name || "(unknown)"}<span style={{ color:C.textLight, fontSize:11 }}>{a.role === "manager" ? " · Manager" : " · TL"}</span></span>
                       </label>;
                     })}
               </div>
