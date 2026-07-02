@@ -2143,6 +2143,103 @@ async function computeAgentDealStats(agentOids, fromDate, toDate, pwMap, sourceF
   return { leads: leads, deals: dealRows.length, revenue: revenue };
 }
 
+// FIX 2 — Batched equivalent of running computeAgentDealStats once PER agent
+// for the flat per-agent leaderboard (/api/reports/overview/agents). The old
+// path fired 2N Lead queries (countDocuments + aggregate per agent), each a
+// FULL COLLECTION SCAN because the $or:[agentId, splitAgent2Id] can't be index-
+// covered (splitAgent2Id is unindexed). This collapses them into exactly 2
+// aggregations, then reproduces the SAME per-agent math in JS:
+//   - leads   : archived!=true, createdAt in window, source rule, agent on
+//               agentId|splitAgent2Id (deduped so a self-split lead counts once).
+//   - deals   : status DoneDeal|globalStatus donedeal, effective date
+//               (dealDate->eoiDate->updatedAt->createdAt) in window.
+//   - revenue : budget * projectWeight * splitMult, splitMult = 0.5 for a split
+//               deal credited to each side (1 when the same agent is both sides).
+// Returns one row per poolOid (zeros included) as { id, stats:{leads,deals,
+// revenue} } — byte-identical to Promise.all(poolOids.map(o =>
+// computeAgentDealStats([o], ...))). computeAgentDealStats itself is left
+// untouched (shared with /api/team/member-stats, which passes multi-agent sets).
+async function computeAgentDealStatsBatch(poolOids, fromDate, toDate, pwMap, sourceFilter) {
+  pwMap = pwMap || {};
+  var poolSet = new Set(poolOids.map(function(o){ return String(o); }));
+
+  // Query 1 — leads per agent (ONE scan). $setUnion+$setDifference dedupe the
+  // [agentId, splitAgent2Id] pair and drop nulls so a lead counts at most once
+  // per distinct agent (parity with the per-agent countDocuments).
+  var leadMatch = {
+    archived: { $ne: true },
+    createdAt: { $gte: fromDate, $lt: toDate },
+    source: sourceFilter ? sourceFilter : { $ne: "Daily Request" },
+    $or: [{ agentId: { $in: poolOids } }, { splitAgent2Id: { $in: poolOids } }]
+  };
+  var leadAggP = Lead.aggregate([
+    { $match: leadMatch },
+    { $project: { agentList: { $setDifference: [ { $setUnion: [ ["$agentId", "$splitAgent2Id"] ] }, [null] ] } } },
+    { $unwind: "$agentList" },
+    { $group: { _id: "$agentList", c: { $sum: 1 } } }
+  ]);
+
+  // Query 2 — deal docs in window (ONE scan). Same dealMatch + effective-date
+  // filter as computeAgentDealStats; returns projected docs for JS grouping.
+  var dealMatch = {
+    archived: { $ne: true },
+    $and: [
+      { $or: [{ agentId: { $in: poolOids } }, { splitAgent2Id: { $in: poolOids } }] },
+      { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }] }
+    ]
+  };
+  if (sourceFilter) dealMatch.source = sourceFilter;
+  var dealAggP = Lead.aggregate([
+    { $match: dealMatch },
+    { $addFields: { _effDate: { $let: {
+      vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+      in:   { $ifNull: ["$$d1", { $ifNull: [
+        { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+        { $ifNull: ["$updatedAt", "$createdAt"] }
+      ]}]}
+    }}}},
+    { $match: { _effDate: { $gte: fromDate, $lt: toDate } } },
+    { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+  ]);
+
+  var res = await Promise.all([leadAggP, dealAggP]);
+  var leadRows = res[0], dealRows = res[1];
+
+  var stats = {};
+  var ensure = function(id){ return stats[id] || (stats[id] = { leads: 0, deals: 0, revenue: 0 }); };
+  // Seed every pool agent so the return set matches the old one-call-per-agent
+  // shape (rows exist even for zero-activity agents).
+  poolOids.forEach(function(o){ ensure(String(o)); });
+
+  leadRows.forEach(function(r){ var id = String(r._id); if (poolSet.has(id)) ensure(id).leads = Number(r.c) || 0; });
+
+  dealRows.forEach(function(d){
+    var w;
+    if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
+    else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
+    else w = 1;
+    var bg = parseDealTotalFromBudget(d.budget);
+    var isSplit = !!d.splitAgent2Id;
+    var pri = String(d.agentId || "");
+    var sec = isSplit ? String(d.splitAgent2Id || "") : "";
+    // Iterate the UNIQUE candidate agents for this deal, applying the same
+    // splitMult computeAgentDealStats([oneAgent]) would compute: 0.5 for a split
+    // deal, 1 when not split OR when the same agent holds both sides.
+    var cands = isSplit ? [pri, sec] : [pri];
+    var seen = {};
+    cands.forEach(function(id){
+      if (!id || seen[id] || !poolSet.has(id)) return;
+      seen[id] = true;
+      var splitMult = !isSplit ? 1 : ((id === pri && id === sec) ? 1 : 0.5);
+      var a = ensure(id);
+      a.deals += 1;
+      a.revenue += bg * w * splitMult;
+    });
+  });
+
+  return poolOids.map(function(o){ var id = String(o); return { id: id, stats: stats[id] }; });
+}
+
 // Phase R-12 Part 3 — Write-site validation for the external-deal fields on
 // Lead. Schema-level required/min validators were intentionally NOT added
 // (Part 2 judgment #1) so the hundreds of partial PUTs that never touch
@@ -19572,10 +19669,9 @@ app.get("/api/reports/overview/agents", auth, reportsAuth, async function(req, r
     // per-agent rows => agentOids is always [agentId], so intra-team split
     // credit never applies and split deals are halved exactly as before).
     var poolOids = poolUsers.map(function(u){ return u._id; });
-    var dealStatsP = Promise.all(poolUsers.map(function(u){
-      return computeAgentDealStats([u._id], fromDate, toDate, pwMap, sourceFilter)
-        .then(function(s){ return { id: String(u._id), stats: s }; });
-    }));
+    // FIX 2 — was Promise.all(poolUsers.map(computeAgentDealStats([u._id])...)) =
+    // 2N Lead scans. Batched into 2 aggregations; identical [{ id, stats }] shape.
+    var dealStatsP = computeAgentDealStatsBatch(poolOids, fromDate, toDate, pwMap, sourceFilter);
 
     var parts = await Promise.all([meetingsP, eoisP, callsP, dealStatsP]);
     var poolSet = {};
