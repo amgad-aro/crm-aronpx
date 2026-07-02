@@ -16215,10 +16215,11 @@ var ReportsPage = function(p) {
   };
 
   var tabs = [
-    { id: "overview",  label: "Overview",  enabled: true },
-    { id: "campaigns", label: "Campaigns", enabled: true },
-    { id: "agents",    label: "Agents",    enabled: true },
-    { id: "pipeline",  label: "Pipeline",  enabled: true }
+    { id: "overview",    label: "Overview",       enabled: true },
+    { id: "campaigns",   label: "Campaigns",      enabled: true },
+    { id: "agents",      label: "Agents",         enabled: true },
+    { id: "leaderboard", label: "🏆 Leaderboard", enabled: true },
+    { id: "pipeline",    label: "Pipeline",       enabled: true }
   ];
 
   var presets = [
@@ -16330,8 +16331,169 @@ var ReportsPage = function(p) {
     {tab === "agents" && <ReportsAgentsBody filters={filters} cu={cu} t={t} token={p.token} users={p.users}
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
 
+    {tab === "leaderboard" && <ReportsLeaderboardBody cu={cu} t={t} token={p.token}/>}
+
     {tab === "campaigns" && <ReportsCampaignsBody filters={filters} cu={cu} t={t} token={p.token}
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
+  </div>;
+};
+
+var LB_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+// 🏆 Sales Leaderboard tab (admin/sales_admin only — inherits the ReportsPage
+// role gate; no extra guard needed here). Two rankings from a SINGLE
+// GET /api/reports/overview/agents call:
+//   • Deals Leaderboard — agent-share revenue (budget × projectWeight, split
+//     deals halved), DoneDeal status, sorted by revenue desc.
+//   • Top EOI — Pending+Approved EOIs (cancelled excluded, deal-superset
+//     included per the endpoint), sorted by eois desc.
+// Roster is filtered client-side to sales + team_leader using the payload's
+// `role` field (Decision C — adjust the LB_ROLES map if the desired roster
+// changes). Period control mirrors the Deals page: Quarter buttons + Year
+// select, plus a Month select. Month and Quarter are mutually exclusive.
+var ReportsLeaderboardBody = function(p) {
+  var now = new Date();
+  var curYear = now.getFullYear();
+  var years = [curYear, curYear - 1, curYear - 2, curYear - 3];
+
+  var [year, setYear] = useState(curYear);
+  var [quarter, setQuarter] = useState("all");
+  var [month, setMonth] = useState(now.getMonth());
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+
+  // Month and Quarter are mutually exclusive — picking one clears the other.
+  var pickMonth = function(m) { setMonth(m); if (m !== "all") setQuarter("all"); };
+  var pickQuarter = function(q) { setQuarter(q); if (q !== "all") setMonth("all"); };
+
+  // Active [from, to) window in ms for the endpoint (reportsParseRange needs from < to).
+  var range = (function(){
+    if (month !== "all") {
+      return { from: new Date(year, month, 1).getTime(), to: new Date(year, month + 1, 1).getTime() };
+    }
+    if (quarter !== "all") {
+      var qStart = { Q1: 0, Q2: 3, Q3: 6, Q4: 9 }[quarter];
+      return { from: new Date(year, qStart, 1).getTime(), to: new Date(year, qStart + 3, 1).getTime() };
+    }
+    return { from: new Date(year, 0, 1).getTime(), to: new Date(year + 1, 0, 1).getTime() };
+  })();
+
+  useEffect(function(){
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    var qs = "?from=" + range.from + "&to=" + range.to + "&limit=200";
+    apiFetch("/api/reports/overview/agents" + qs, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [range.from, range.to]);
+
+  // Roster gate (Decision C): sales + team_leader only.
+  var LB_ROLES = { sales: true, team_leader: true };
+  var roster = (((state.data && state.data.agents) || []).filter(function(a){ return a && LB_ROLES[a.role]; }));
+
+  var dealRows = roster.slice().sort(function(a, b){
+    return (b.revenue - a.revenue) || (b.deals - a.deals) || String(a.name || "").localeCompare(String(b.name || ""));
+  });
+  var eoiRows = roster.slice().sort(function(a, b){
+    return (b.eois - a.eois) || (b.revenue - a.revenue) || String(a.name || "").localeCompare(String(b.name || ""));
+  });
+
+  var medal = function(rank, value){
+    if (value > 0 && rank === 1) return "🥇";
+    if (value > 0 && rank === 2) return "🥈";
+    if (value > 0 && rank === 3) return "🥉";
+    return String(rank);
+  };
+
+  var periodLabel = month !== "all" ? (LB_MONTHS[month] + " " + year)
+    : quarter !== "all" ? (quarter + " " + year)
+    : ("Full year " + year);
+
+  var selStyle = { padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text };
+  var thStyle = { fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", textAlign:"left", padding:"8px 12px", borderBottom:"1px solid #E2E8F0", fontWeight:600, whiteSpace:"nowrap" };
+  var tdStyle = { fontSize:13, padding:"9px 12px", borderBottom:"1px solid #F1F5F9", color:C.text };
+  var tdNum = Object.assign({}, tdStyle, { textAlign:"right", fontVariantNumeric:"tabular-nums" });
+
+  var qBtn = function(q){
+    var active = quarter === q;
+    return <button key={q} type="button" onClick={function(){ pickQuarter(q); }}
+      style={{ padding:"5px 12px", borderRadius:8, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0",
+        background: active ? C.accent + "12" : "#fff", color: active ? C.accent : C.textLight,
+        fontSize:12, fontWeight:600, cursor:"pointer" }}>{q === "all" ? "All" : q}</button>;
+  };
+
+  var renderRankTable = function(opts){
+    var rows = opts.rows;
+    return <Card style={{ padding:0, overflow:"hidden" }}>
+      <div style={{ padding:"14px 16px 10px" }}>
+        <div style={{ fontSize:14, fontWeight:700, color:C.text }}>{opts.title}</div>
+        <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{opts.subtitle}</div>
+      </div>
+      <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", minWidth:300 }}>
+          <thead><tr>
+            <th style={Object.assign({}, thStyle, { width:44, textAlign:"center" })}>#</th>
+            <th style={thStyle}>Agent</th>
+            {opts.cols.map(function(c, i){ return <th key={i} style={Object.assign({}, thStyle, { textAlign: c.align || "right" })}>{c.header}</th>; })}
+          </tr></thead>
+          <tbody>
+            {rows.length === 0
+              ? <tr><td colSpan={2 + opts.cols.length} style={Object.assign({}, tdStyle, { textAlign:"center", color:C.textLight, fontStyle:"italic", padding:"28px 12px" })}>No agents for this period</td></tr>
+              : rows.map(function(a, idx){
+                  var rank = idx + 1;
+                  var mv = a[opts.metricKey] || 0;
+                  return <tr key={a.agentId || idx}>
+                    <td style={Object.assign({}, tdStyle, { textAlign:"center", fontSize:15 })}>{medal(rank, mv)}</td>
+                    <td style={Object.assign({}, tdStyle, { fontWeight:600, whiteSpace:"nowrap" })}>{a.name || "(unknown)"}</td>
+                    {opts.cols.map(function(c, i){ return <td key={i} style={Object.assign({}, tdNum, { textAlign: c.align || "right" })}>{c.render(a)}</td>; })}
+                  </tr>;
+                })}
+          </tbody>
+        </table>
+      </div>
+    </Card>;
+  };
+
+  var dealsCard = renderRankTable({
+    title: "💰 Deals Leaderboard",
+    subtitle: "Total deal value (EGP) · " + periodLabel,
+    rows: dealRows, metricKey: "revenue",
+    cols: [
+      { header: "Total (EGP)", align:"right", render: function(a){ return fmtEGPRaw(a.revenue); } },
+      { header: "Deals",       align:"right", render: function(a){ return a.deals || 0; } }
+    ]
+  });
+  var eoiCard = renderRankTable({
+    title: "📝 Top EOI",
+    subtitle: "EOI count · " + periodLabel,
+    rows: eoiRows, metricKey: "eois",
+    cols: [ { header: "EOIs", align:"right", render: function(a){ return a.eois || 0; } } ]
+  });
+
+  return <div>
+    <style>{".lb-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;}@media (max-width:720px){.lb-grid{grid-template-columns:1fr;}}"}</style>
+
+    <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+      <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }}>Period</span>
+        <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>{["all","Q1","Q2","Q3","Q4"].map(qBtn)}</div>
+        <select value={month} onChange={function(e){ var v = e.target.value; pickMonth(v === "all" ? "all" : Number(v)); }} style={selStyle}>
+          <option value="all">All months</option>
+          {LB_MONTHS.map(function(mn, i){ return <option key={i} value={i}>{mn}</option>; })}
+        </select>
+        <select value={year} onChange={function(e){ setYear(Number(e.target.value)); }} style={selStyle}>
+          {years.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
+        </select>
+        <div style={{ flex:1, minWidth:8 }}/>
+        <span style={{ fontSize:11, color:C.textLight }}>{periodLabel}</span>
+      </div>
+    </Card>
+
+    {state.error && <Card style={{ padding:"14px 16px", marginBottom:16, color:"#DC2626", fontSize:13 }}>Couldn't load leaderboard: {state.error}</Card>}
+
+    {(state.loading && !state.data)
+      ? <div style={{ fontSize:13, color:C.textLight, padding:"32px 12px", textAlign:"center" }}>Loading leaderboard…</div>
+      : <div className="lb-grid">{dealsCard}{eoiCard}</div>}
   </div>;
 };
 
