@@ -880,7 +880,7 @@ var DocumentsUpload = function(p) {
       {files.map(function(f,idx){
         var isPdf = f.fileData && f.fileData.indexOf("application/pdf")>=0;
         return <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"4px 0", borderTop:idx>0?"1px solid #F1F5F9":"none" }}>
-          <div style={{ fontSize:12, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>{isPdf?"📕":"🖼️"} {f.fileName}</div>
+          <div style={{ fontSize:12, color:C.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1, minWidth:0 }}>{isPdf?"📕":"🖼️"} {f.fileName}</div>
           <button onClick={function(){removeAt(idx);}} style={{ background:"none", border:"none", color:C.danger, fontSize:14, cursor:"pointer", padding:"0 4px", lineHeight:1 }} title="Remove">×</button>
         </div>;
       })}
@@ -2906,7 +2906,7 @@ var LeadForm = function(p) {
     {dupWarning&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#FEF3C7", borderRadius:10, fontSize:13, fontWeight:500, color:"#B45309", display:"flex", alignItems:"center", gap:8 }}>
       <AlertCircle size={16}/> {t.duplicateFound} — <b>{dupWarning.name}</b>
     </div>}
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+    <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
       <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/></div>
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
@@ -2962,7 +2962,7 @@ var LeadForm = function(p) {
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {isDoneDealForm&&<Inp label="Deal Date" type="date" req value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
-    {isDoneDealForm&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+    {isDoneDealForm&&<div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
       <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
       <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
     </div>}
@@ -3050,7 +3050,7 @@ var LeadForm = function(p) {
                 upd("ambassadorConfig", { developerTaxEnabled: false, developerTaxRate: "" });
               }
             }}
-            style={{ flex:1, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? theme : "#E2E8F0", background: active ? theme+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
+            style={{ flex:1, minWidth:0, padding:"10px 12px", borderRadius:9, border:"1px solid", borderColor: active ? theme : "#E2E8F0", background: active ? theme+"12" : "#fff", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.55 : 1, textAlign:"left" }}>
             <div style={{ fontSize:13, fontWeight:600, color: active ? theme : C.text }}>{opt[1]}</div>
             <div style={{ fontSize:11, color:C.textLight, marginTop:2 }}>{opt[2]}</div>
           </button>;
@@ -3101,7 +3101,7 @@ var LeadForm = function(p) {
             When ON, pick the second sales agent and enter the manual EGP commission they receive.
             The Internal team chain (TL / manager / director / owner) is never paid on External deals.
           </div>
-          {form.externalSalesAgentEnabled && <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
+          {form.externalSalesAgentEnabled && <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
             <div>
               <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>Second Sales Agent<span style={{ color:C.danger, marginLeft:3 }}>*</span></label>
               <select value={form.externalSalesAgentId || ""}
@@ -3134,7 +3134,7 @@ var LeadForm = function(p) {
                 broker's share (broker's net take-home shrinks). */}
             <div style={{ gridColumn:"1 / span 2", marginTop:8 }}>
               <div style={{ fontSize:11, fontWeight:600, color:C.text, marginBottom:6 }}>Paid by:</div>
-              <div style={{ display:"flex", gap:18, alignItems:"center" }}>
+              <div style={{ display:"flex", gap:18, alignItems:"center", flexWrap:"wrap" }}>
                 <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:C.text, cursor:"pointer" }}>
                   <input type="radio" name="extSalesPaidBy"
                     checked={String(form.externalSalesAgentPaidBy || "company") === "company"}
@@ -3163,7 +3163,7 @@ var LeadForm = function(p) {
         <div style={{ fontSize:11, fontWeight:700, color:"#5B21B6", textTransform:"uppercase", letterSpacing:0.3, marginBottom:6 }}>
           External Broker Split (informal — for bookkeeping)
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"0 12px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
           <Inp label="Broker pre-deduction %"
             value={(form.externalDealConfig && form.externalDealConfig.commissionTaxPct) || ""}
             onChange={function(e){
