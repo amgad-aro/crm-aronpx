@@ -793,7 +793,7 @@ var Modal = function(p) {
   // className hooks so the global mobile stylesheet can make the overlay
   // full-screen on phones without disturbing desktop centering.
   return <div className="crm-modal" data-overlay-above="true" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:600, padding:16 }} onClick={p.onClose}>
-    <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto", boxSizing:"border-box" }} onClick={function(e){e.stopPropagation();}}>
+    <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto", overflowX:"hidden", boxSizing:"border-box" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
         <h2 style={{ margin:0, fontSize:17, fontWeight:700, color:C.text }}>{p.title}</h2>
         <button onClick={p.onClose} style={{ width:28, height:28, borderRadius:7, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={14}/></button>
@@ -2937,7 +2937,7 @@ var LeadForm = function(p) {
         onChange={function(e){ setDevPendName(e.target.value); setDevSelId(""); }}
         style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>}
       <button type="button" onClick={function(){ if(devPendOpen){ setDevPendOpen(false); setDevPendName(""); } else { setDevPendOpen(true); setDevSelId(""); } }}
-        style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline" }}>
+        style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline", maxWidth:"100%", textAlign:"left", whiteSpace:"normal" }}>
         {devPendOpen ? "← Pick from the list instead" : "Can't find the developer? Enter a new name"}
       </button>
     </div>}
@@ -29862,7 +29862,7 @@ export default function CRMApp() {
 +   ".crm-app button:not(.crm-btn-xs) { min-height: 40px; }"
 +   "/* Modals become full-screen sheets on mobile so no content is clipped. */"
 +   ".crm-modal { padding: 0 !important; align-items: stretch !important; }"
-+   ".crm-modal > .crm-modal-inner { width: 100% !important; max-width: 100% !important; min-height: 100vh !important; max-height: 100vh !important; border-radius: 0 !important; padding: 16px !important; padding-top: calc(16px + env(safe-area-inset-top, 0px)) !important; box-sizing: border-box !important; overflow-y: auto !important; -webkit-overflow-scrolling: touch; }"
++   ".crm-modal > .crm-modal-inner { width: 100% !important; max-width: 100% !important; min-height: 100vh !important; max-height: 100vh !important; border-radius: 0 !important; padding: 16px !important; padding-top: calc(16px + env(safe-area-inset-top, 0px)) !important; box-sizing: border-box !important; overflow-y: auto !important; overflow-x: hidden !important; -webkit-overflow-scrolling: touch; }"
 +   "/* Dashboard-specific safety net (admin + sales). */"
 +   ".crm-dash { width: 100% !important; max-width: 100% !important; overflow-x: hidden !important; padding-left: 12px !important; padding-right: 12px !important; }"
 +   ".crm-dash .crm-dash-card { width: 100% !important; max-width: 100% !important; min-width: 0 !important; padding: 14px !important; box-sizing: border-box !important; }"
