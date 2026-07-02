@@ -365,15 +365,9 @@ Lead.collection.createIndex(
   console.error("[externalId index] not created:", e && e.message ? e.message : e);
 });
 
-// File-storage stopgap (see offload-ahmed-attia.js). Holds base64 eoiDocuments[]
-// moved off oversized Lead docs to stay under Mongo's 16MB/doc limit. One sidecar
-// doc per lead (unique leadId). The full file-storage migration will supersede
-// this with object storage + signed URLs.
-var LeadArtifactArchive = mongoose.model("LeadArtifactArchive", new mongoose.Schema({
-  leadId:       { type: mongoose.Schema.Types.ObjectId, ref: "Lead", required: true, unique: true, index: true },
-  eoiDocuments: [{ type: mongoose.Schema.Types.Mixed }],
-  reason:       { type: String, default: "" },
-}, { timestamps: true }));
+// (The LeadArtifactArchive sidecar collection — a base64 offload stopgap — was
+// retired 2026-07-02 after the Backblaze B2 file-storage migration moved all
+// artifacts to B2 and dropped the collection. See migrate-artifacts-to-b2.js.)
 
 // B2 signed-URL TTL for read resolution (seconds). Panels are open minutes; 1h
 // is ample. Overridable via env for tuning.
@@ -413,27 +407,16 @@ async function resolveDocEntry(entry) {
 }
 
 // Prepare a Lead object for any endpoint that returns a doc the EOI/Deal panel
-// may render. Two responsibilities:
-//   1) Merge the lead's offloaded eoiDocuments from the LeadArtifactArchive
-//      sidecar (archived docs first, then live) — kept until the sidecar is
-//      retired in a later phase.
-//   2) Resolve every artifact field (eoiImage, eoiDocuments[], dealImages[],
-//      legacy dealImage, dealDocuments[]) from B2 keys to signed URLs, while
-//      passing legacy base64 through untouched (backward-compatible, permanent).
+// may render: resolve every artifact field (eoiImage, eoiDocuments[], dealImages[],
+// legacy dealImage, dealDocuments[]) from B2 keys to signed URLs, while passing any
+// legacy base64 through untouched (backward-compatible, permanent).
 // Accepts a lean/plain object OR a Mongoose doc (converted via toObject) —
 // ALWAYS use the return value:  res.json(await resolveArtifacts(lead)).
 async function resolveArtifacts(leadObj) {
   if (!leadObj) return leadObj;
   if (typeof leadObj.toObject === "function") leadObj = leadObj.toObject();
   if (!leadObj._id) return leadObj;
-  // 1) Sidecar merge (unchanged behavior).
-  try {
-    var arch = await LeadArtifactArchive.findOne({ leadId: leadObj._id }).select("eoiDocuments").lean();
-    if (arch && Array.isArray(arch.eoiDocuments) && arch.eoiDocuments.length) {
-      leadObj.eoiDocuments = arch.eoiDocuments.concat(leadObj.eoiDocuments || []);
-    }
-  } catch (e) { console.error("[resolveArtifacts] archive merge:", e && e.message); }
-  // 2) Sign B2 keys / pass base64 through.
+  // Sign B2 keys / pass base64 through.
   try {
     if (leadObj.eoiImage) leadObj.eoiImage = await signArtifactRef(leadObj.eoiImage);
     if (leadObj.dealImage) leadObj.dealImage = await signArtifactRef(leadObj.dealImage); // legacy singular
@@ -10755,23 +10738,11 @@ app.post("/api/leads/:id/delete-eoi-document", auth, async function(req, res) {
     var index = req.body && Number(req.body.index);
     var lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ error: "Lead not found" });
-    // The FE indexes into the MERGED list (archived ++ live), so resolve the
-    // index across both stores before splicing — otherwise deleting a live doc
-    // could remove the wrong item once an archive exists.
-    var arch = await LeadArtifactArchive.findOne({ leadId: lead._id });
-    var archDocs = (arch && arch.eoiDocuments) || [];
     var liveDocs = lead.eoiDocuments || [];
-    if (!(index >= 0 && index < archDocs.length + liveDocs.length)) return res.status(400).json({ error: "Invalid index" });
-    var removedDoc; // capture the spliced entry so we can clean its B2 object
-    if (index < archDocs.length) {
-      removedDoc = archDocs.splice(index, 1)[0];
-      if (archDocs.length) { arch.eoiDocuments = archDocs; await arch.save(); }
-      else { await LeadArtifactArchive.deleteOne({ _id: arch._id }); } // last one removed → drop the sidecar
-    } else {
-      removedDoc = liveDocs.splice(index - archDocs.length, 1)[0];
-      lead.eoiDocuments = liveDocs;
-      await lead.save();
-    }
+    if (!(index >= 0 && index < liveDocs.length)) return res.status(400).json({ error: "Invalid index" });
+    var removedDoc = liveDocs.splice(index, 1)[0]; // capture the spliced entry for B2 cleanup
+    lead.eoiDocuments = liveDocs;
+    await lead.save();
     // Best-effort B2 cleanup (skips legacy base64 entries; never throws).
     var removedKey = artifactB2Key(removedDoc);
     if (removedKey) await b2.deleteObject(removedKey);
@@ -27559,6 +27530,7 @@ broadcast = function(type, data){
 if (require.main === module) {
   httpServer.listen(PORT, function() {
     console.log("CRM ARO Server + WebSocket running on port " + PORT);
+    b2.logStatus(); // logged post-listen so it survives Railway's log capture
   });
 }
 

@@ -49,17 +49,22 @@ if (_configured) {
       credentials: { accessKeyId: ACCESS_KEY, secretAccessKey: SECRET_KEY },
       forcePathStyle: true, // S3-compatible (B2) — path-style addressing
     });
-    console.log("[b2] file storage configured — bucket:", BUCKET, "region:", REGION);
   } catch (e) {
     console.error("[b2] client init failed:", e && e.message ? e.message : e);
     _client = null;
     _configured = false;
   }
-} else {
-  console.warn("[b2] file storage NOT configured — uploads will 503 until B2_* env vars are set");
 }
 
 function isConfigured() { return _configured; }
+
+// Log the storage status. Call this AFTER app.listen so the line survives
+// Railway's log capture (the earliest module-init stdout can be dropped before
+// the log shipper attaches).
+function logStatus() {
+  if (_configured) console.log("[b2] file storage configured — bucket:", BUCKET, "region:", REGION);
+  else console.warn("[b2] file storage NOT configured — uploads will 503 until B2_* env vars are set");
+}
 
 // Upload a buffer. Throws B2_UNCONFIGURED if storage isn't set up so the caller
 // can return a clean 503. Any real S3 error propagates to the caller's catch.
@@ -109,6 +114,7 @@ async function getSignedReadUrl(key, ttl) {
 
 module.exports = {
   isConfigured: isConfigured,
+  logStatus: logStatus,
   putObject: putObject,
   deleteObject: deleteObject,
   getSignedReadUrl: getSignedReadUrl,
