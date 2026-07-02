@@ -793,7 +793,7 @@ var Modal = function(p) {
   // className hooks so the global mobile stylesheet can make the overlay
   // full-screen on phones without disturbing desktop centering.
   return <div className="crm-modal" data-overlay-above="true" style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:600, padding:16 }} onClick={p.onClose}>
-    <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto" }} onClick={function(e){e.stopPropagation();}}>
+    <div className="crm-modal-inner" style={{ background:"#fff", borderRadius:18, padding:26, width:"100%", maxWidth:p.w||500, maxHeight:"90vh", overflowY:"auto", boxSizing:"border-box" }} onClick={function(e){e.stopPropagation();}}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
         <h2 style={{ margin:0, fontSize:17, fontWeight:700, color:C.text }}>{p.title}</h2>
         <button onClick={p.onClose} style={{ width:28, height:28, borderRadius:7, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><X size={14}/></button>
@@ -2478,10 +2478,26 @@ var Header = function(p) {
 };
 
 // ===== LEAD FORM (shared for add/edit) =====
+// Add-form draft autosave — guards against mobile WebView background-reload data
+// loss. Persists serializable text/scalar fields to localStorage (survives a
+// WebView reload) so an OS-killed Add EOI / Add Deal / Add Lead form can restore
+// on reopen. Attachments are intentionally excluded (too large for localStorage)
+// and re-picked after restore. Add mode only.
+var LEAD_DRAFT_PREFIX = "crm_lead_draft_v1_";
+var readLeadDraft = function(key){ try { return JSON.parse(localStorage.getItem(key) || "null"); } catch(e){ return null; } };
+var writeLeadDraft = function(key, data){ try { localStorage.setItem(key, JSON.stringify(data)); } catch(e){} };
+var clearLeadDraft = function(key){ try { localStorage.removeItem(key); } catch(e){} };
+
 var LeadForm = function(p) {
   var t = p.t; var isAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
   var isOnlyAdmin = p.cu.role==="admin"||p.cu.role==="sales_admin";
   var salesUsers = p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
+  // Draft autosave (add mode only): key scoped per form purpose so Add EOI / Add
+  // Deal / Add Lead / Add Request don't clobber each other. Read once via a ref.
+  var draftKey = LEAD_DRAFT_PREFIX + (p.isReq ? "req" : (p.initialStatus || "lead"));
+  var draftRef = useRef(false);
+  if (draftRef.current === false) draftRef.current = (!p.editId ? readLeadDraft(draftKey) : null) || null;
+  var initialDraft = draftRef.current;
   var [form, setForm] = useState((function(){
     var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"", agentId:"", callbackTime:"", notes:"", status:"NewLead", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
     // Load saved extra fields from localStorage if editing a deal
@@ -2544,10 +2560,16 @@ var LeadForm = function(p) {
     } else {
       base.externalSalesAgentManualAmount = "";
     }
+    // Draft restore (add mode only) — overlay saved text/scalar fields onto the
+    // normalized base. Attachments were never persisted, so documentFiles stays.
+    if (initialDraft && initialDraft.form) base = Object.assign({}, base, initialDraft.form);
     return base;
   })());
   var [dupWarning, setDupWarning] = useState(null);
   var [saving, setSaving] = useState(false);
+  // Draft banner (add mode) — shown when a saved draft was restored on open.
+  var [draftRestored, setDraftRestored] = useState(!!initialDraft);
+  var [draftHadAttach, setDraftHadAttach] = useState(!!(initialDraft && initialDraft.hadAttachments));
   // Phase R-12 Part 3 — brokers state for the External-deal dropdown.
   // Self-fetched on mount when admin AND the form is for a Done Deal (the
   // only context that surfaces the toggle). Fetches with includeArchived=1
@@ -2561,8 +2583,8 @@ var LeadForm = function(p) {
   // Same pattern as StatusModal: devSelId (dropdown) XOR devPendName (typed new
   // name). Create-only — edit mode never shows it (developer edits go through the
   // deal side-panel dropdown, which carries the N1 approval lock).
-  var [devSelId, setDevSelId] = useState("");
-  var [devPendName, setDevPendName] = useState("");
+  var [devSelId, setDevSelId] = useState((initialDraft && initialDraft.devSelId) || "");
+  var [devPendName, setDevPendName] = useState((initialDraft && initialDraft.devPendName) || "");
   var [devPendOpen, setDevPendOpen] = useState(false);
   var [devList, setDevList] = useState([]);
   // Phase R-12 Part 5 — commission lock. When editing an existing deal whose
@@ -2672,6 +2694,22 @@ var LeadForm = function(p) {
 
   var upd = function(k, v) { setForm(function(f){return Object.assign({},f,{[k]:v});}); };
 
+  // Draft autosave (add mode only) — debounced persist of text/scalar fields.
+  // Attachments (documentFiles) are excluded; we only record whether any exist so
+  // the restore banner can prompt a re-pick. An emptied form clears its draft.
+  useEffect(function(){
+    if (p.editId) return;
+    var handle = setTimeout(function(){
+      var meaningful = !!(form.name||form.phone||form.phone2||form.email||form.budget||form.project||form.notes||form.eoiDeposit||form.eoiDate||form.dealDate||form.callbackTime||devSelId||devPendName);
+      if (!meaningful) { clearLeadDraft(draftKey); return; }
+      var toSave = Object.assign({}, form);
+      delete toSave.documentFiles;
+      writeLeadDraft(draftKey, { form: toSave, devSelId: devSelId, devPendName: devPendName, hadAttachments: !!(form.documentFiles && form.documentFiles.length) });
+    }, 400);
+    return function(){ clearTimeout(handle); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, devSelId, devPendName]);
+
   var submit = async function() {
     // Block any second entry within the same async submission — ref check
     // runs synchronously so it wins races that the React state can't.
@@ -2681,6 +2719,7 @@ var LeadForm = function(p) {
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
     if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
+    if (isEOIForm && !String(form.eoiDate || "").trim()) { alert("EOI Date is required"); return; }
     if (!p.editId && (isEOIForm || isDoneDealForm) && !devSelId && !devPendName.trim()) { alert("Please pick a developer or enter a new name"); return; }   // N3
     // Phase R-13 — broker split is now informal (commissionTaxPct may be 0).
     // Only brokerSharePct is required > 0 for External; broker dropdown still
@@ -2852,6 +2891,7 @@ var LeadForm = function(p) {
           } catch(docErr) { console.error("Document upload failed:", docErr.message); }
         }
       }
+      if (!p.editId) clearLeadDraft(draftKey); // draft consumed on successful add
       p.onSave(result);
     } catch(e) { alert(e.message); }
     inflight.current = false;
@@ -2859,6 +2899,10 @@ var LeadForm = function(p) {
   };
 
   return <div>
+    {draftRestored&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#EFF6FF", borderRadius:10, fontSize:13, fontWeight:500, color:"#1E40AF", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+      <span>↩︎ Unsaved draft restored{draftHadAttach?" — re-attach any documents/images":""}</span>
+      <button type="button" onClick={function(){ clearLeadDraft(draftKey); setDevSelId(""); setDevPendName(""); setDraftRestored(false); setDraftHadAttach(false); setForm(function(f){ return Object.assign({},f,{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", notes:"", eoiDeposit:"", eoiDate:"", dealDate:"", callbackTime:"", source:p.isReq?"Daily Request":"", agentId:"", downPaymentPct:"", installmentYears:"", commissionRate:"" }); }); }} style={{ flexShrink:0, background:"none", border:"none", padding:"2px 6px", color:C.danger, fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline" }}>Discard</button>
+    </div>}
     {dupWarning&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#FEF3C7", borderRadius:10, fontSize:13, fontWeight:500, color:"#B45309", display:"flex", alignItems:"center", gap:8 }}>
       <AlertCircle size={16}/> {t.duplicateFound} — <b>{dupWarning.name}</b>
     </div>}
@@ -2913,7 +2957,7 @@ var LeadForm = function(p) {
       }
       return agentList;
     })().map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
-    {isEOIForm&&<Inp label="📅 EOI Date" type="date" value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}}/>}
+    {isEOIForm&&<Inp label="📅 EOI Date" type="date" req value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
     {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
@@ -3289,7 +3333,7 @@ var LeadForm = function(p) {
       label={isEOIForm?"📎 Upload EOI Documents":"📎 Upload Deal Documents"}
     />}
     <div style={{ display:"flex", gap:10 }}>
-      <Btn outline onClick={p.onClose} style={{ flex:1 }}>{t.cancel}</Btn>
+      <Btn outline onClick={function(){ if(!p.editId) clearLeadDraft(draftKey); p.onClose(); }} style={{ flex:1 }}>{t.cancel}</Btn>
       <Btn onClick={submit} loading={saving} disabled={!p.editId && (isEOIForm||isDoneDealForm) && !devSelId && !devPendName.trim()} style={{ flex:1 }}>{p.editId?t.save:t.add}</Btn>
     </div>
   </div>;
@@ -12589,7 +12633,7 @@ var DealsPage = function(p) {
         {/* Closing Company (Feature B) — admin/SA can set/change which company
             the deal was closed under. The PUT response isn't populated, so the
             <select> value + label resolve via ccIdOf / the companies map. */}
-        {canSeeClosingCompany(p.cu)&&<div style={{ padding:12, background:"#fff", borderRadius:8 }}>
+        {canSeeClosingCompany(p.cu)&&<div style={{ padding:12, background:"#fff", borderRadius:8, minWidth:0 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏢 Closed via</div>
           <select value={ccIdOf(selectedDeal)} onChange={async function(e){
             var val=e.target.value;
@@ -12609,7 +12653,7 @@ var DealsPage = function(p) {
             role (the 505 developers are pre-vetted). Writes Lead.developerId via
             PUT; the response isn't populated, so value + label resolve via devIdOf
             / the developers map. "— None —" clears it. */}
-        {canSeeDeveloper(p.cu)&&<div style={{ padding:12, background:"#fff", borderRadius:8 }}>
+        {canSeeDeveloper(p.cu)&&<div style={{ padding:12, background:"#fff", borderRadius:8, minWidth:0 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🏗️ Developer</div>
           {/* N4 — admin/SA opening a deal whose developer is still pending
               (sales typed a free-text name at conversion, no developerId yet):
