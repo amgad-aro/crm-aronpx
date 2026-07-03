@@ -1173,7 +1173,10 @@ TeamMembershipEvent.collection.createIndex({ effectiveDate: -1 }).catch(function
 // but the leader's target is EXCLUDED from teamTarget (subs-only, self as fallback),
 // faithfully reproducing that endpoint's existing target/revenue asymmetry.
 var targetPeriodMemberSchema = new mongoose.Schema({
-  userId:            { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  userId:            { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // null for a hand-entered (hard-deleted) row
+  agentId:          { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // deal-attribution id; for departed/deleted rows, falls back to userId
+  manual:           { type: Boolean, default: false }, // hand-entered row (hard-deleted / off-roster member)
+  manualId:         { type: String, default: "" },     // stable key for a manual row (no userId to key on)
   userName:          { type: String, default: "" },   // snapshot
   role:              { type: String, default: "" },   // snapshot
   isLeader:          { type: Boolean, default: false },// the card owner (self); target excluded from teamTarget
@@ -17427,9 +17430,10 @@ async function closePeriodDoc(period, closedBy) {
   var members = period.members || [];
   recomputeMemberDerived(members, b);
   for (var i = 0; i < members.length; i++) {
-    members[i].achievedSnapshot = await snapshotMemberAchievement(members[i].userId, b.qStart, b.qEnd, pwMap);
+    var achId = members[i].agentId || members[i].userId; // manual/departed rows attribute deals via agentId
+    members[i].achievedSnapshot = achId ? await snapshotMemberAchievement(achId, b.qStart, b.qEnd, pwMap) : 0;
   }
-  var agentOids = members.map(function(m){ return m.userId; });
+  var agentOids = members.map(function(m){ return m.agentId || m.userId; }).filter(Boolean);
   var teamStats = agentOids.length ? await computeAgentDealStats(agentOids, b.qStart, b.qEnd, pwMap) : { leads: 0, deals: 0, revenue: 0 };
   period.teamTarget = sumTeamTarget(members);
   period.teamAchievedSnapshot = teamStats.revenue || 0;
@@ -17501,10 +17505,10 @@ app.patch("/api/target-periods/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, asy
     if (!period) return res.status(404).json({ error: "Not found" });
     if (period.status === "closed") return res.status(409).json({ error: "Period is closed — reopen before editing" });
     var patchList = Array.isArray(req.body.members) ? req.body.members : [];
-    var byId = {};
-    patchList.forEach(function(p){ if (p && p.userId) byId[String(p.userId)] = p; });
+    var byKey = {};
+    patchList.forEach(function(p){ var k = p && (p.key || p.userId); if (k) byKey[String(k)] = p; });
     period.members.forEach(function(m){
-      var p = byId[String(m.userId)];
+      var p = byKey[String(m.userId || m.manualId || "")];
       if (!p) return;
       if ("joinedAt" in p) m.joinedAt = p.joinedAt ? new Date(p.joinedAt) : null;
       if ("leftAt"  in p) m.leftAt   = p.leftAt   ? new Date(p.leftAt)   : null;
@@ -17514,6 +17518,98 @@ app.patch("/api/target-periods/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, asy
     period.markModified("members");
     await period.save();
     res.json(period);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Add a member to a draft/open period. Body EITHER { userId } (an existing user,
+// INCLUDING a deactivated one) OR { manual:true, userName, role, fullQuarterTarget,
+// agentId? }. Optional joinedAt/leftAt. agentId links a hard-deleted producer's
+// orphaned deals so their achievement still counts at close. Policy: anyone on the
+// team during the period counts. Rejects a closed period + duplicate users.
+app.post("/api/target-periods/:id([0-9a-fA-F]{24})/members", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var period = await TargetPeriod.findById(req.params.id);
+    if (!period) return res.status(404).json({ error: "Not found" });
+    if (period.status === "closed") return res.status(409).json({ error: "Period is closed — reopen before editing" });
+    var body = req.body || {};
+    var b = qPeriodBounds(period.year, period.quarter);
+    var jd = body.joinedAt ? new Date(body.joinedAt) : null;
+    var ld = body.leftAt ? new Date(body.leftAt) : null;
+    var m;
+    if (body.userId && mongoose.Types.ObjectId.isValid(body.userId)) {
+      if (period.members.some(function(x){ return x.userId && String(x.userId) === String(body.userId); }))
+        return res.status(409).json({ error: "User already in this period" });
+      var u = await User.findById(body.userId).select("name role qTargets").lean();
+      if (!u) return res.status(404).json({ error: "User not found" });
+      var full = readQTargetServer(u, period.year, period.quarter) || 0;
+      m = { userId: u._id, agentId: null, manual: false, manualId: "", userName: u.name || "", role: u.role || "",
+        isLeader: false, fullQuarterTarget: full, joinedAt: jd, leftAt: ld, achievedSnapshot: 0 };
+    } else {
+      var nm = String(body.userName || "").trim();
+      if (!nm) return res.status(400).json({ error: "userName required for a manual member" });
+      var agentId = (body.agentId && mongoose.Types.ObjectId.isValid(body.agentId)) ? new mongoose.Types.ObjectId(body.agentId) : null;
+      m = { userId: null, agentId: agentId, manual: true, manualId: new mongoose.Types.ObjectId().toString(),
+        userName: nm, role: body.role || "sales", isLeader: false,
+        fullQuarterTarget: Number(body.fullQuarterTarget) || 0, joinedAt: jd, leftAt: ld, achievedSnapshot: 0 };
+    }
+    var frac = computePresenceFraction(m.joinedAt, m.leftAt, b.qStart, b.qEnd);
+    m.presenceFraction = Math.round(frac * 10000) / 10000;
+    m.proratedTarget = Math.round((m.fullQuarterTarget || 0) * frac);
+    period.members.push(m);
+    period.teamTarget = sumTeamTarget(period.members);
+    period.markModified("members");
+    await period.save();
+    res.json(period);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Remove a member from a draft/open period by key (userId or manualId). Never
+// removes the leader. Rejects a closed period.
+app.delete("/api/target-periods/:id([0-9a-fA-F]{24})/members", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var period = await TargetPeriod.findById(req.params.id);
+    if (!period) return res.status(404).json({ error: "Not found" });
+    if (period.status === "closed") return res.status(409).json({ error: "Period is closed — reopen before editing" });
+    var key = String(req.query.key || (req.body && req.body.key) || "");
+    if (!key) return res.status(400).json({ error: "key (userId or manualId) required" });
+    var before = period.members.length;
+    period.members = period.members.filter(function(m){
+      if (m.isLeader) return true;
+      var mk = m.userId ? String(m.userId) : (m.manualId || "");
+      return mk !== key;
+    });
+    if (period.members.length === before) return res.status(404).json({ error: "Member not found" });
+    period.teamTarget = sumTeamTarget(period.members);
+    period.markModified("members");
+    await period.save();
+    res.json(period);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Orphaned producers for a quarter — DoneDeal agentIds that belong to NO user doc
+// (hard-deleted), with recovered name (commission snapshot) + deal count. Powers
+// the "add manual member" flow so a departed producer's deals can be linked.
+app.get("/api/target-periods/orphan-producers", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var year = parseInt(req.query.year, 10), quarter = parseInt(req.query.quarter, 10);
+    if (!year || quarter < 1 || quarter > 4) return res.status(400).json({ error: "year + quarter (1..4) required" });
+    var b = qPeriodBounds(year, quarter);
+    var rows = await Lead.aggregate([
+      { $match: { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }], archived: { $ne: true } } },
+      { $addFields: { _eff: { $let: { vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+        in: { $ifNull: ["$$d1", { $ifNull: [{ $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } }, { $ifNull: ["$updatedAt", "$createdAt"] }] }] } } } } },
+      { $match: { _eff: { $gte: b.qStart, $lt: b.qEnd } } },
+      { $group: { _id: "$agentId", deals: { $sum: 1 } } }
+    ]);
+    var ids = rows.map(function(r){ return r._id; }).filter(Boolean);
+    var existing = await User.find({ _id: { $in: ids } }).select("_id").lean();
+    var have = {}; existing.forEach(function(u){ have[String(u._id)] = true; });
+    var orphanIds = ids.filter(function(id){ return !have[String(id)]; });
+    var comms = orphanIds.length ? await Commission.find({ "snapshot.salesAgent.userId": { $in: orphanIds } }).select("snapshot.salesAgent").lean() : [];
+    var nameOf = {};
+    comms.forEach(function(c){ var sa = c.snapshot && c.snapshot.salesAgent; if (sa && sa.userId) nameOf[String(sa.userId)] = sa.userName || nameOf[String(sa.userId)]; });
+    var dealCount = {}; rows.forEach(function(r){ if (r._id) dealCount[String(r._id)] = r.deals; });
+    res.json(orphanIds.map(function(id){ return { agentId: String(id), userName: nameOf[String(id)] || "(unknown)", deals: dealCount[String(id)] || 0 }; }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

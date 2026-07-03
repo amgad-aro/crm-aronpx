@@ -14955,14 +14955,28 @@ var TargetPeriodsManager = function(pp) {
   var [periods, setPeriods] = useState(null);        // array | null=loading
   var [busy, setBusy] = useState(false);
   var [expanded, setExpanded] = useState(null);      // leaderId (string) expanded
-  var [edits, setEdits] = useState({});              // periodId -> { uid -> {joinedAt, leftAt} } (YYYY-MM-DD)
+  var [edits, setEdits] = useState({});              // periodId -> { key -> {joinedAt, leftAt} } (YYYY-MM-DD)
+  var [orphans, setOrphans] = useState([]);          // hard-deleted producers this quarter (manual-link dropdown)
+  var [pickUser, setPickUser] = useState({});        // periodId -> selected userId to add
+  var [manualForm, setManualForm] = useState({});    // periodId -> { open, userName, role, fullQuarterTarget, agentId, joinedAt, leftAt }
 
   var leaders = (pp.users || []).filter(function(u){ return (u.role === "manager" || u.role === "team_leader") && u.active; });
+  var userById = {}; (pp.users || []).forEach(function(u){ userById[String(gid(u))] = u; });
+  var isInactiveUser = function(uid){ var u = userById[String(uid)]; return !!(u && u.active === false); };
+  // Addable = any sales / team_leader (incl. deactivated) not already in the period.
+  var addableUsers = function(period){
+    var inPeriod = {}; (period.members || []).forEach(function(m){ if (m.userId) inPeriod[String(m.userId)] = true; });
+    return (pp.users || []).filter(function(u){ return (u.role === "sales" || u.role === "team_leader") && !inPeriod[String(gid(u))]; });
+  };
+  var inpS = { fontSize: 12, padding: "3px 5px", border: "1px solid " + C.border, borderRadius: 5, width: 120 };
 
   var load = function(){
     apiFetch("/api/target-periods?year=" + year + "&quarter=" + quarter, "GET", null, pp.token)
       .then(function(rows){ setPeriods(Array.isArray(rows) ? rows : []); })
       .catch(function(){ setPeriods([]); });
+    apiFetch("/api/target-periods/orphan-producers?year=" + year + "&quarter=" + quarter, "GET", null, pp.token)
+      .then(function(rows){ setOrphans(Array.isArray(rows) ? rows : []); })
+      .catch(function(){ setOrphans([]); });
   };
   useEffect(function(){ load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [year, quarter]);
 
@@ -14984,7 +14998,7 @@ var TargetPeriodsManager = function(pp) {
     if (expanded === lid) { setExpanded(null); return; }
     setExpanded(lid);
     var seed = {};
-    (period.members || []).forEach(function(m){ seed[String(m.userId)] = { joinedAt: fmtDate(m.joinedAt), leftAt: fmtDate(m.leftAt) }; });
+    (period.members || []).forEach(function(m){ seed[String(m.userId || m.manualId)] = { joinedAt: fmtDate(m.joinedAt), leftAt: fmtDate(m.leftAt) }; });
     setEdits(function(prev){ var n = Object.assign({}, prev); n[String(period._id)] = seed; return n; });
   };
   var setMemberEdit = function(periodId, uid, field, val){
@@ -14999,7 +15013,7 @@ var TargetPeriodsManager = function(pp) {
     if (busy) return; setBusy(true);
     try {
       var e = edits[String(period._id)] || {};
-      var members = Object.keys(e).map(function(uid){ return { userId: uid, joinedAt: e[uid].joinedAt || null, leftAt: e[uid].leftAt || null }; });
+      var members = Object.keys(e).map(function(k){ return { key: k, joinedAt: e[k].joinedAt || null, leftAt: e[k].leftAt || null }; });
       await apiFetch("/api/target-periods/" + period._id, "PATCH", { members: members }, pp.token, pp.csrfToken); afterChange();
     } catch(e){ alert(e.message || "Failed to save presence"); } finally { setBusy(false); }
   };
@@ -15023,6 +15037,36 @@ var TargetPeriodsManager = function(pp) {
     setBusy(true);
     try { await apiFetch("/api/target-periods/" + period._id, "DELETE", null, pp.token, pp.csrfToken); afterChange(); }
     catch(e){ alert(e.message || "Failed to delete"); } finally { setBusy(false); }
+  };
+  var addExisting = async function(period){
+    if (busy) return;
+    var uid = pickUser[String(period._id)];
+    if (!uid) return;
+    setBusy(true);
+    try {
+      await apiFetch("/api/target-periods/" + period._id + "/members", "POST", { userId: uid }, pp.token, pp.csrfToken);
+      setPickUser(function(prev){ var n = Object.assign({}, prev); delete n[String(period._id)]; return n; });
+      afterChange();
+    } catch(e){ alert(e.message || "Failed to add member"); } finally { setBusy(false); }
+  };
+  var setManual = function(pid, field, val){ setManualForm(function(prev){ var f = Object.assign({ open: true }, prev[pid] || {}); f[field] = val; var n = Object.assign({}, prev); n[pid] = f; return n; }); };
+  var addManual = async function(period){
+    if (busy) return;
+    var f = manualForm[String(period._id)] || {};
+    if (!f.userName || !f.userName.trim()) { alert("Enter a name"); return; }
+    setBusy(true);
+    try {
+      await apiFetch("/api/target-periods/" + period._id + "/members", "POST", { manual: true, userName: f.userName, role: f.role || "sales", fullQuarterTarget: Number(f.fullQuarterTarget) || 0, agentId: f.agentId || null, joinedAt: f.joinedAt || null, leftAt: f.leftAt || null }, pp.token, pp.csrfToken);
+      setManualForm(function(prev){ var n = Object.assign({}, prev); delete n[String(period._id)]; return n; });
+      afterChange();
+    } catch(e){ alert(e.message || "Failed to add member"); } finally { setBusy(false); }
+  };
+  var removeMember = async function(period, key){
+    if (busy) return;
+    if (!window.confirm("Remove this member from the period?")) return;
+    setBusy(true);
+    try { await apiFetch("/api/target-periods/" + period._id + "/members?key=" + encodeURIComponent(key), "DELETE", null, pp.token, pp.csrfToken); afterChange(); }
+    catch(e){ alert(e.message || "Failed to remove"); } finally { setBusy(false); }
   };
   var badge = function(status){
     var m = { closed: { bg:"#dcfce7", fg:"#166534", label:"Closed ✓ frozen" }, draft: { bg:"#fef9c3", fg:"#854d0e", label:"Draft" }, open: { bg:"#dbeafe", fg:"#1e40af", label:"Open" } }[status] || { bg:"#f1f5f9", fg:"#475569", label:"No period" };
@@ -15079,10 +15123,16 @@ var TargetPeriodsManager = function(pp) {
                       </tr></thead>
                       <tbody>
                         {(period.members||[]).map(function(m){
-                          var uid = String(m.userId);
+                          var uid = String(m.userId || m.manualId);
                           var e = (edits[String(period._id)]||{})[uid] || { joinedAt: fmtDate(m.joinedAt), leftAt: fmtDate(m.leftAt) };
                           return <tr key={uid} style={{ borderTop:"1px solid #f1f5f9" }}>
-                            <td style={{ padding:"5px 6px" }}>{m.userName}{m.isLeader?<span style={{ fontSize:10, color:C.textLight }}> (leader)</span>:null}</td>
+                            <td style={{ padding:"5px 6px" }}>
+                              {!m.isLeader && <button onClick={function(){removeMember(period,uid);}} title="Remove from period" style={{ border:"none", background:"none", color:C.danger, cursor:"pointer", marginRight:5, fontSize:14, lineHeight:1, padding:0 }}>×</button>}
+                              {m.userName}
+                              {m.isLeader?<span style={{ fontSize:10, color:C.textLight }}> (leader)</span>:null}
+                              {m.manual?<span style={{ fontSize:10, color:"#854d0e", background:"#fef9c3", padding:"1px 5px", borderRadius:10, marginLeft:4 }}>manual{m.agentId?" · linked":""}</span>:null}
+                              {(!m.isLeader && !m.manual && isInactiveUser(m.userId))?<span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>(inactive)</span>:null}
+                            </td>
                             <td style={{ padding:"5px 6px" }}>{m.isLeader ? <span style={{ color:C.textLight }}>—</span> : <input type="date" value={e.joinedAt} onChange={function(ev){setMemberEdit(String(period._id),uid,"joinedAt",ev.target.value);}} style={{ fontSize:12, padding:"2px 4px", border:"1px solid "+C.border, borderRadius:5 }}/>}</td>
                             <td style={{ padding:"5px 6px" }}>{m.isLeader ? <span style={{ color:C.textLight }}>—</span> : <input type="date" value={e.leftAt} onChange={function(ev){setMemberEdit(String(period._id),uid,"leftAt",ev.target.value);}} style={{ fontSize:12, padding:"2px 4px", border:"1px solid "+C.border, borderRadius:5 }}/>}</td>
                             <td style={{ padding:"5px 6px", textAlign:"right" }}>{pct(m.presenceFraction)}%</td>
@@ -15098,6 +15148,32 @@ var TargetPeriodsManager = function(pp) {
                     </table>
                   </div>
                   <div style={{ fontSize:11, color:C.textLight, marginTop:6 }}>Edit dates then <b>Save presence</b> to recompute pro-rated targets. The leader's own target is excluded from the team total (matches the Sales Team card).</div>
+                  {/* Add a departed member — policy: anyone on the team during the period counts. */}
+                  <div style={{ marginTop:12, paddingTop:10, borderTop:"1px dashed "+C.border }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:6 }}>Add a departed / off-roster member</div>
+                    <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", marginBottom:6 }}>
+                      <select value={pickUser[String(period._id)]||""} onChange={function(ev){var v=ev.target.value;setPickUser(function(prev){var n=Object.assign({},prev);n[String(period._id)]=v;return n;});}} style={Object.assign({},inpS,{width:"auto",maxWidth:280})}>
+                        <option value="">— pick a user (includes deactivated) —</option>
+                        {addableUsers(period).map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name} ({u.role}){u.active===false?" — inactive":""}</option>; })}
+                      </select>
+                      <Btn outline disabled={busy||!pickUser[String(period._id)]} onClick={function(){addExisting(period);}} style={{ padding:"4px 9px", fontSize:11 }}>Add user</Btn>
+                    </div>
+                    {!(manualForm[String(period._id)]&&manualForm[String(period._id)].open)
+                      ? <button onClick={function(){setManual(String(period._id),"open",true);}} style={{ border:"none", background:"none", color:C.accent, cursor:"pointer", fontSize:11, padding:0 }}>+ manual entry (hard-deleted member — no account)</button>
+                      : (function(){ var f=manualForm[String(period._id)]||{}; return <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", background:"#F8FAFC", padding:8, borderRadius:8 }}>
+                          <input placeholder="Name" value={f.userName||""} onChange={function(ev){setManual(String(period._id),"userName",ev.target.value);}} style={inpS}/>
+                          <input placeholder="Role" value={f.role||"sales"} onChange={function(ev){setManual(String(period._id),"role",ev.target.value);}} style={Object.assign({},inpS,{width:90})}/>
+                          <input placeholder="Full target EGP" value={f.fullQuarterTarget||""} onChange={function(ev){setManual(String(period._id),"fullQuarterTarget",ev.target.value);}} style={Object.assign({},inpS,{width:120})}/>
+                          <select value={f.agentId||""} onChange={function(ev){var v=ev.target.value;var o=orphans.filter(function(x){return x.agentId===v;})[0];setManual(String(period._id),"agentId",v);if(o&&!f.userName)setManual(String(period._id),"userName",o.userName);}} style={Object.assign({},inpS,{width:"auto",maxWidth:210})}>
+                            <option value="">link deals: none</option>
+                            {orphans.map(function(o){ return <option key={o.agentId} value={o.agentId}>{o.userName} — {o.deals} deal(s)</option>; })}
+                          </select>
+                          <input type="date" title="joined" value={f.joinedAt||""} onChange={function(ev){setManual(String(period._id),"joinedAt",ev.target.value);}} style={inpS}/>
+                          <input type="date" title="left" value={f.leftAt||""} onChange={function(ev){setManual(String(period._id),"leftAt",ev.target.value);}} style={inpS}/>
+                          <Btn disabled={busy} onClick={function(){addManual(period);}} style={{ padding:"4px 9px", fontSize:11 }}>Add</Btn>
+                        </div>; })()}
+                    {orphans.length>0 && <div style={{ fontSize:10.5, color:C.textLight, marginTop:5 }}>{orphans.length} hard-deleted producer(s) with deals this quarter available to link.</div>}
+                  </div>
                 </div>}
               </div>;
             })}

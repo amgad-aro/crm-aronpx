@@ -135,6 +135,22 @@ function fmtD(d) { return d ? new Date(d).toISOString().slice(0, 10) : "—"; }
     });
   }
 
+  // Departed-member awareness (policy: anyone on a team during a period counts,
+  // deactivated or hard-deleted). Load ALL users (incl. inactive) to detect both.
+  var allUsers = await User.find({}).select("_id name role active reportsTo").lean();
+  var allUserIds = {}; allUsers.forEach(function(u){ allUserIds[String(u._id)] = u; });
+  function leaderName(id){ for (var i = 0; i < leaders.length; i++){ if (String(leaders[i]._id) === String(id)) return leaders[i].name; } return null; }
+  var deact = allUsers.filter(function(u){
+    if (u.active !== false) return false;
+    var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo || "");
+    return !!leaderName(rt);
+  });
+  if (deact.length) {
+    console.log("--- DEACTIVATED members still linked to a team (add each via the Manage Periods picker) ---");
+    deact.forEach(function(u){ var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : String(u.reportsTo || ""); console.log("  • " + u.name + " (" + u.role + ") → team of " + leaderName(rt)); });
+    console.log("");
+  }
+
   var totals = { create: 0, skipClosed: 0, skipExisting: 0, skipNoTeam: 0, flags: 0 };
 
   for (var qi = 0; qi < QUARTERS.length; qi++) {
@@ -154,6 +170,24 @@ function fmtD(d) { return d ? new Date(d).toISOString().slice(0, 10) : "—"; }
         if (s[slot] && s[slot].userId) agentSnapLeaders[ag][String(s[slot].userId)] = true;
       });
     });
+
+    // Orphaned producers — DoneDeal agentIds this quarter that belong to NO user
+    // doc (hard-deleted). Add as manual rows in the UI with the agentId linked so
+    // their deals still count at close. Names recovered from commission snapshots.
+    var snapName = {};
+    comms.forEach(function(c){ var s = c.snapshot; if (s && s.salesAgent && s.salesAgent.userId) snapName[String(s.salesAgent.userId)] = s.salesAgent.userName || snapName[String(s.salesAgent.userId)]; });
+    var dealByAgent = await Lead.aggregate([
+      { $match: { $or: [{ status: "DoneDeal" }, { globalStatus: "donedeal" }], archived: { $ne: true } } },
+      { $addFields: { _eff: { $let: { vars: { d1: { $convert: { input: "$dealDate", to: "date", onError: null, onNull: null } } },
+        in: { $ifNull: ["$$d1", { $ifNull: [{ $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } }, { $ifNull: ["$updatedAt", "$createdAt"] }] }] } } } } },
+      { $match: { _eff: { $gte: b.qStart, $lt: b.qEnd } } },
+      { $group: { _id: "$agentId", deals: { $sum: 1 } } }
+    ]);
+    var orphans = dealByAgent.filter(function(r){ return r._id && !allUserIds[String(r._id)]; });
+    if (orphans.length) {
+      console.log("  ⚑ ORPHANED PRODUCERS (hard-deleted, had deals this quarter — add as manual rows, link the agentId):");
+      orphans.forEach(function(r){ console.log("      • " + (snapName[String(r._id)] || "(name unknown)") + " — " + r.deals + " deal(s) — agentId " + String(r._id)); });
+    }
 
     for (var li = 0; li < leaders.length; li++) {
       var lead = leaders[li];
