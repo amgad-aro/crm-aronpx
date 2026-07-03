@@ -1157,6 +1157,52 @@ TeamMembershipEvent.collection.createIndex({ userId: 1, effectiveDate: -1 }).cat
 TeamMembershipEvent.collection.createIndex({ leaderId: 1, effectiveDate: -1 }).catch(function(){});
 TeamMembershipEvent.collection.createIndex({ effectiveDate: -1 }).catch(function(){});
 
+// ===== TargetPeriod — Phase 2 of the time-locked Target Period overhaul.
+// One document per (leaderId, year, quarter): a roster snapshot with per-member
+// pro-rated targets and (once closed) frozen achievement. Purpose: lock a past
+// quarter's team target/achievement so a later roster change can't retroactively
+// rewrite it. status:
+//   "draft"  — generated for a past quarter, awaiting admin confirmation (Phase 5).
+//   "open"   — the live current quarter; recomputed from the roster on read.
+//   "closed" — immutable; reads serve the stored teamTarget/teamAchievedSnapshot.
+// LOCKED DECISIONS: keyed per-LEADER; members[].fullQuarterTarget is the member's
+// own qTargets value and is NEVER pro-rated (commission basis untouched);
+// proration lives only in members[].proratedTarget (team roll-up); achievement is
+// snapshotted at close. members[] includes the leader themselves (isLeader:true)
+// so a card's revenue = [self + reports] matches /api/team/member-stats exactly —
+// but the leader's target is EXCLUDED from teamTarget (subs-only, self as fallback),
+// faithfully reproducing that endpoint's existing target/revenue asymmetry.
+var targetPeriodMemberSchema = new mongoose.Schema({
+  userId:            { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  userName:          { type: String, default: "" },   // snapshot
+  role:              { type: String, default: "" },   // snapshot
+  isLeader:          { type: Boolean, default: false },// the card owner (self); target excluded from teamTarget
+  fullQuarterTarget: { type: Number, default: 0 },    // = qTargets[qKey]; commission basis, NEVER pro-rated
+  joinedAt:          { type: Date, default: null },   // presence start within quarter (null = at/before qStart)
+  leftAt:            { type: Date, default: null },   // presence end within quarter (null = still present at qEnd)
+  presenceFraction:  { type: Number, default: 1 },    // overlap(presence, [qStart,qEnd)) / span ∈ [0,1]
+  proratedTarget:    { type: Number, default: 0 },    // fullQuarterTarget × presenceFraction (team roll-up only)
+  achievedSnapshot:  { type: Number, default: 0 }     // frozen weighted revenue at close
+}, { _id: false });
+var TargetPeriod = mongoose.model("TargetPeriod", new mongoose.Schema({
+  leaderId:             { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  teamId:               { type: String, default: "" },   // snapshot of leader's teamId at period time
+  teamName:             { type: String, default: "" },   // snapshot
+  year:                 { type: Number, required: true },
+  quarter:              { type: Number, required: true, min: 1, max: 4 },
+  qKey:                 { type: String, required: true }, // "2026-Q2"
+  status:               { type: String, enum: ["draft", "open", "closed"], default: "draft" },
+  members:              { type: [targetPeriodMemberSchema], default: [] },
+  teamTarget:           { type: Number, default: 0 },   // Σ subs' proratedTarget (immutable when closed)
+  teamAchievedSnapshot: { type: Number, default: 0 },   // revenue over [self+subs] (immutable when closed)
+  teamDealsSnapshot:    { type: Number, default: 0 },   // deal count over [self+subs] at close
+  teamLeadsSnapshot:    { type: Number, default: 0 },   // lead count over [self+subs] at close
+  closedAt:             { type: Date, default: null },
+  closedBy:             { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
+}, { timestamps: true }));
+TargetPeriod.collection.createIndex({ leaderId: 1, year: 1, quarter: 1 }, { unique: true }).catch(function(){});
+TargetPeriod.collection.createIndex({ qKey: 1, status: 1 }).catch(function(){});
+
 // Defaults applied when no AppSetting key="attendance_settings" doc exists yet
 // (first server boot). Office is empty so the Owner must configure it before
 // anyone can check in. All permission toggles default ON for sales_admin + hr
@@ -8039,6 +8085,196 @@ async function logMembershipEvent(o) {
   } catch (e) {
     console.error("[membership-event] log failed:", e && e.message);
   }
+}
+
+// ===== TargetPeriod compute/close service (Phase 2 — DORMANT) =====
+// Builds, pro-rates, snapshots, and freezes a leader's quarterly TargetPeriod.
+// NOTHING calls these yet; Phase 3 wires them to admin endpoints + the read
+// branch. All revenue routes through computeAgentDealStats (the Sales Team page's
+// single source of truth) over the SAME half-open [qStart,qEnd) window and the
+// SAME raw projectWeights map, so a frozen snapshot equals what the page showed.
+// Invariant: never touches User.qTargets — the individual commission basis is
+// untouched, so freezing a period can't move anyone's pay.
+
+// qPeriodBounds — half-open [qStart,qEnd) UTC window for (year, quarter),
+// IDENTICAL to /api/team/member-stats (Date.UTC(year,(q-1)*3,1) .. year,q*3,1).
+function qPeriodBounds(year, quarter) {
+  var qStart = new Date(Date.UTC(year, (quarter - 1) * 3, 1, 0, 0, 0, 0));
+  var qEnd   = new Date(Date.UTC(year, quarter * 3, 1, 0, 0, 0, 0));
+  return { qStart: qStart, qEnd: qEnd, spanMs: qEnd.getTime() - qStart.getTime(), qKey: year + "-Q" + quarter };
+}
+
+// computePresenceFraction — fraction of [qStart,qEnd) the member was present.
+// joinedAt null ⇒ present from qStart; leftAt null ⇒ present through qEnd. Pure
+// (no DB) so it's directly unit-verifiable.
+function computePresenceFraction(joinedAt, leftAt, qStart, qEnd) {
+  var qs = qStart.getTime(), qe = qEnd.getTime();
+  var span = qe - qs;
+  if (span <= 0) return 0;
+  var start = joinedAt ? Math.max(new Date(joinedAt).getTime(), qs) : qs;
+  var end   = leftAt   ? Math.min(new Date(leftAt).getTime(),   qe) : qe;
+  if (end <= start) return 0;
+  var frac = (end - start) / span;
+  if (frac < 0) return 0;
+  if (frac > 1) return 1;
+  return frac;
+}
+
+// getRawProjectWeightsMap — the raw projectWeights AppSetting value, read exactly
+// as /api/team/member-stats reads it (NOT the [0,1]-clamped getProjectWeights),
+// so revenue math is byte-identical to the page.
+async function getRawProjectWeightsMap() {
+  var pwDoc = await AppSetting.findOne({ key: "projectWeights" }).lean();
+  return (pwDoc && pwDoc.value && typeof pwDoc.value === "object") ? pwDoc.value : {};
+}
+
+// resolveLeaderRoster — the leader's current direct reports (sales + team_leader),
+// IDENTICAL to the member-stats leader-card roster query.
+async function resolveLeaderRoster(leaderId) {
+  return User.find({
+    active: { $ne: false },
+    role: { $in: ["sales", "team_leader"] },
+    reportsTo: leaderId
+  }).select("_id name role qTargets teamId teamName").lean();
+}
+
+// resolveMemberPresence — derive {joinedAt, leftAt} within [qStart,qEnd) for a
+// member under a leader from the TeamMembershipEvent log. null/null ⇒ present the
+// whole quarter (no in-quarter transition recorded). A later migration phase
+// refines historical accuracy; this reads whatever events exist.
+async function resolveMemberPresence(userId, leaderId, qStart, qEnd) {
+  var evts = await TeamMembershipEvent.find({
+    userId: userId,
+    effectiveDate: { $gte: qStart, $lt: qEnd }
+  }).sort({ effectiveDate: 1 }).lean();
+  var joinedAt = null, leftAt = null, lid = String(leaderId || "");
+  for (var i = 0; i < evts.length; i++) {
+    var e = evts[i];
+    var toThis   = String(e.leaderId || "") === lid;
+    var fromThis = String(e.previousLeaderId || "") === lid;
+    if ((e.event === "join" || e.event === "transfer") && toThis) joinedAt = e.effectiveDate;
+    else if ((e.event === "leave" || e.event === "transfer") && fromThis) leftAt = e.effectiveDate;
+  }
+  return { joinedAt: joinedAt, leftAt: leftAt };
+}
+
+// buildPeriodMembers — assemble members[] for a leader's quarter: the leader
+// themselves (isLeader:true, always present) followed by their direct reports
+// (pro-rated by presence). Mirrors member-stats' agentOids = [self, ...subs].
+// Does NOT snapshot achievement (closePeriod does that).
+async function buildPeriodMembers(leaderId, year, quarter) {
+  var b = qPeriodBounds(year, quarter);
+  var leader = await User.findById(leaderId).select("_id name role qTargets teamId teamName").lean();
+  var roster = await resolveLeaderRoster(leaderId);
+  var members = [];
+  if (leader) {
+    var lfull = readQTargetServer(leader, year, quarter) || 0;
+    members.push({
+      userId: leader._id, userName: leader.name || "", role: leader.role || "",
+      isLeader: true, fullQuarterTarget: lfull,
+      joinedAt: null, leftAt: null, presenceFraction: 1,
+      proratedTarget: lfull, achievedSnapshot: 0
+    });
+  }
+  for (var i = 0; i < roster.length; i++) {
+    var u = roster[i];
+    var full = readQTargetServer(u, year, quarter) || 0;
+    var pres = await resolveMemberPresence(u._id, leaderId, b.qStart, b.qEnd);
+    var frac = computePresenceFraction(pres.joinedAt, pres.leftAt, b.qStart, b.qEnd);
+    members.push({
+      userId: u._id, userName: u.name || "", role: u.role || "",
+      isLeader: false, fullQuarterTarget: full,
+      joinedAt: pres.joinedAt, leftAt: pres.leftAt,
+      presenceFraction: Math.round(frac * 10000) / 10000,
+      proratedTarget: Math.round(full * frac), achievedSnapshot: 0
+    });
+  }
+  return { bounds: b, leader: leader, members: members };
+}
+
+// sumTeamTarget — Σ pro-rated targets of the NON-leader members; if that's 0,
+// fall back to the leader's own target (reproduces member-stats' `if (!qTarget)
+// qTarget = readQTargetServer(u)`).
+function sumTeamTarget(members) {
+  var subsSum = members.reduce(function(s, m) { return s + (m.isLeader ? 0 : (m.proratedTarget || 0)); }, 0);
+  if (subsSum > 0) return subsSum;
+  var lead = members.filter(function(m) { return m.isLeader; })[0];
+  return lead ? (lead.proratedTarget || 0) : 0;
+}
+
+// snapshotMemberAchievement — frozen weighted revenue for one member over the
+// quarter via computeAgentDealStats (per-member, for row detail). Σ over members
+// reconciles exactly with the team-set call (intra-team splits: 0.5+0.5 = 1.0).
+async function snapshotMemberAchievement(userId, qStart, qEnd, pwMap) {
+  var stats = await computeAgentDealStats([userId], qStart, qEnd, pwMap);
+  return stats && stats.revenue ? stats.revenue : 0;
+}
+
+// buildOpenPeriodForLeader — a LIVE (unsaved) period object for previewing the
+// current quarter (Phase 4 "preview before close"). Team totals are computed live
+// via one team-set call so they equal the page. Not persisted.
+async function buildOpenPeriodForLeader(leaderId, year, quarter) {
+  var b = qPeriodBounds(year, quarter);
+  var pwMap = await getRawProjectWeightsMap();
+  var built = await buildPeriodMembers(leaderId, year, quarter);
+  var leader = built.leader;
+  var agentOids = built.members.map(function(m) { return m.userId; });
+  var teamStats = agentOids.length ? await computeAgentDealStats(agentOids, b.qStart, b.qEnd, pwMap) : { leads: 0, deals: 0, revenue: 0 };
+  return {
+    leaderId: leaderId,
+    teamId: leader ? (leader.teamId || "") : "",
+    teamName: leader ? (leader.teamName || "") : "",
+    year: year, quarter: quarter, qKey: b.qKey,
+    status: "open",
+    members: built.members,
+    teamTarget: sumTeamTarget(built.members),
+    teamAchievedSnapshot: teamStats.revenue || 0,
+    teamDealsSnapshot: teamStats.deals || 0,
+    teamLeadsSnapshot: teamStats.leads || 0
+  };
+}
+
+// closePeriod — upsert a leader's quarter as an IMMUTABLE closed period: rebuild
+// members (target + presence + proration), snapshot per-member + team achievement,
+// persist status:"closed" with closedAt/closedBy. Idempotent — re-closing
+// recomputes from current data and overwrites the snapshot. Never touches
+// User.qTargets. Returns the saved doc.
+async function closePeriod(opts) {
+  var leaderId = opts.leaderId, year = opts.year, quarter = opts.quarter;
+  var b = qPeriodBounds(year, quarter);
+  var pwMap = await getRawProjectWeightsMap();
+  var built = await buildPeriodMembers(leaderId, year, quarter);
+  var leader = built.leader;
+  for (var i = 0; i < built.members.length; i++) {
+    var m = built.members[i];
+    m.achievedSnapshot = await snapshotMemberAchievement(m.userId, b.qStart, b.qEnd, pwMap);
+  }
+  var agentOids = built.members.map(function(mm) { return mm.userId; });
+  var teamStats = agentOids.length ? await computeAgentDealStats(agentOids, b.qStart, b.qEnd, pwMap) : { leads: 0, deals: 0, revenue: 0 };
+  var doc = await TargetPeriod.findOneAndUpdate(
+    { leaderId: leaderId, year: year, quarter: quarter },
+    { $set: {
+        teamId: leader ? (leader.teamId || "") : "",
+        teamName: leader ? (leader.teamName || "") : "",
+        qKey: b.qKey,
+        status: "closed",
+        members: built.members,
+        teamTarget: sumTeamTarget(built.members),
+        teamAchievedSnapshot: teamStats.revenue || 0,
+        teamDealsSnapshot: teamStats.deals || 0,
+        teamLeadsSnapshot: teamStats.leads || 0,
+        closedAt: new Date(),
+        closedBy: (opts.closedBy && mongoose.Types.ObjectId.isValid(opts.closedBy)) ? opts.closedBy : null
+      } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  return doc;
+}
+
+// getClosedPeriod — a leader's CLOSED period for a quarter (null if none / not
+// closed). Phase 3's read branch calls this: closed ⇒ serve frozen numbers.
+async function getClosedPeriod(leaderId, year, quarter) {
+  return TargetPeriod.findOne({ leaderId: leaderId, year: year, quarter: quarter, status: "closed" }).lean();
 }
 
 app.post("/api/users", auth, adminOnly, async function(req, res) {
