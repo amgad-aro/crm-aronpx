@@ -16849,6 +16849,14 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
     var pwDoc = await AppSetting.findOne({ key: "projectWeights" }).lean();
     var pwMap = (pwDoc && pwDoc.value && typeof pwDoc.value === "object") ? pwDoc.value : {};
 
+    // Phase 3 — period-aware read branch. Pre-fetch any CLOSED TargetPeriods for
+    // this quarter (one query) so a leader card can serve frozen numbers instead
+    // of the live (current-roster) computation. Empty until an admin closes a
+    // period, so this endpoint stays byte-identical to before until then.
+    var _closedPeriods = await TargetPeriod.find({ year: year, quarter: quarter, status: "closed" }).lean();
+    var closedByLeader = {};
+    _closedPeriods.forEach(function(p){ closedByLeader[String(p.leaderId)] = p; });
+
     // Per-member quarterly aggregation. For each user, build agentOids set
     // (self + direct sales subordinates for manager/TL cards) and aggregate
     // deals + leads + calls in the quarter.
@@ -16896,20 +16904,32 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
       var qDeals    = dealStats.deals;
       var qRev      = dealStats.revenue;
 
-      var qProg = qTarget > 0 ? Math.min(100, Math.round((qRev / qTarget) * 100)) : 0;
+      // Period-aware override: a CLOSED period for this leader card serves the
+      // frozen snapshot (target / revenue / deals / leads) and the frozen roster.
+      // qCalls remains the live count (not part of the frozen target math). Sales
+      // cards (no period) always use the live numbers. frozen is null until an
+      // admin closes a period, so output is unchanged until then.
+      var frozen = isManagerCard ? closedByLeader[String(uid)] : null;
+      var outTarget = frozen ? frozen.teamTarget : qTarget;
+      var outRev    = frozen ? frozen.teamAchievedSnapshot : qRev;
+      var outDeals  = frozen ? frozen.teamDealsSnapshot : qDeals;
+      var outLeads  = frozen ? frozen.teamLeadsSnapshot : qLeads;
+      var outUids   = frozen ? (frozen.members || []).map(function(m){ return String(m.userId); }) : agentOids.map(function(o){ return String(o); });
+      var qProg = outTarget > 0 ? Math.min(100, Math.round((outRev / outTarget) * 100)) : 0;
 
       return {
         uid: String(uid),
         name: u.name || "",
         role: u.role,
         isManagerCard: isManagerCard,
-        teamUids: agentOids.map(function(o){ return String(o); }),
-        qTarget: qTarget,
-        qLeads: qLeads,
-        qDeals: qDeals,
+        teamUids: outUids,
+        qTarget: outTarget,
+        qLeads: outLeads,
+        qDeals: outDeals,
         qCalls: qCalls,
-        qRev: qRev,
-        qProg: qProg
+        qRev: outRev,
+        qProg: qProg,
+        fromPeriod: !!frozen
       };
     }));
 
@@ -17246,6 +17266,12 @@ app.get("/api/agents/:id([0-9a-fA-F]{24})/quarterly-stats", auth, async function
       qTarget = readQTargetServer(target, year, quarter) || 0;
     }
 
+    // Phase 3 — period-aware read branch. A CLOSED period for this leader serves
+    // frozen numbers at response time; null (no closed period) ⇒ the live
+    // computation below stands unchanged.
+    var frozenPeriod = (target.role === "manager" || target.role === "team_leader")
+      ? await getClosedPeriod(target._id, year, quarter) : null;
+
     // Lead/deal aggregation. agentId or splitAgent2Id matches any agent in
     // the resolved team subtree (sales role = just self). archived excluded.
     var ownerMatch = { archived: { $ne: true }, $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] };
@@ -17324,7 +17350,12 @@ app.get("/api/agents/:id([0-9a-fA-F]{24})/quarterly-stats", auth, async function
       createdAt: { $gte: qStart, $lt: qEnd }
     });
 
-    var qProg = qTarget > 0 ? Math.min(100, Math.round((qRev / qTarget) * 100)) : 0;
+    // Period-aware override (frozen when a closed period exists; live otherwise).
+    var outTarget = frozenPeriod ? frozenPeriod.teamTarget : qTarget;
+    var outRev    = frozenPeriod ? frozenPeriod.teamAchievedSnapshot : qRev;
+    var outDeals  = frozenPeriod ? frozenPeriod.teamDealsSnapshot : qDeals;
+    var outLeads  = frozenPeriod ? frozenPeriod.teamLeadsSnapshot : qLeadsCount;
+    var qProg = outTarget > 0 ? Math.min(100, Math.round((outRev / outTarget) * 100)) : 0;
 
     res.json({
       uid:     targetId,
@@ -17332,17 +17363,204 @@ app.get("/api/agents/:id([0-9a-fA-F]{24})/quarterly-stats", auth, async function
       role:    target.role || "",
       year:    year,
       quarter: quarter,
-      qTarget: qTarget,
-      qLeads:  qLeadsCount,
-      qDeals:  qDeals,
+      qTarget: outTarget,
+      qLeads:  outLeads,
+      qDeals:  outDeals,
       qCalls:  qCalls,
-      qRev:    qRev,
-      qProg:   qProg
+      qRev:    outRev,
+      qProg:   qProg,
+      fromPeriod: !!frozenPeriod
     });
   } catch (e) {
     console.error("[GET /api/agents/:id/quarterly-stats]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "quarterly_stats_failed" });
   }
+});
+
+// ===== TargetPeriod admin service (Phase 3) — operations on the STORED doc
+// (preserving manual presence edits), distinct from the Phase 2 builders that
+// seed from the live roster. =====
+
+// recomputeMemberDerived — refresh presenceFraction + proratedTarget for every
+// member from its (possibly hand-edited) joinedAt/leftAt. The leader row is never
+// pro-rated (always present). Mutates in place; returns the array.
+function recomputeMemberDerived(members, bounds) {
+  for (var i = 0; i < members.length; i++) {
+    var m = members[i];
+    var frac = m.isLeader ? 1 : computePresenceFraction(m.joinedAt, m.leftAt, bounds.qStart, bounds.qEnd);
+    m.presenceFraction = Math.round(frac * 10000) / 10000;
+    m.proratedTarget = Math.round((m.fullQuarterTarget || 0) * frac);
+  }
+  return members;
+}
+
+// generateDraftPeriod — ensure a draft exists for (leader, year, quarter). No-
+// clobber by default: if a period already exists (draft or closed) it is returned
+// untouched so manual edits / a closed snapshot are never lost. refresh=true
+// re-seeds members from the live roster (draft only; refuses a closed period).
+async function generateDraftPeriod(leaderId, year, quarter, refresh) {
+  var existing = await TargetPeriod.findOne({ leaderId: leaderId, year: year, quarter: quarter });
+  if (existing && existing.status === "closed") return existing;
+  if (existing && !refresh) return existing;
+  var built = await buildPeriodMembers(leaderId, year, quarter);
+  var leader = built.leader;
+  return TargetPeriod.findOneAndUpdate(
+    { leaderId: leaderId, year: year, quarter: quarter },
+    { $set: {
+        teamId: leader ? (leader.teamId || "") : "",
+        teamName: leader ? (leader.teamName || "") : "",
+        qKey: built.bounds.qKey, status: "draft",
+        members: built.members, teamTarget: sumTeamTarget(built.members),
+        teamAchievedSnapshot: 0, teamDealsSnapshot: 0, teamLeadsSnapshot: 0,
+        closedAt: null, closedBy: null
+      } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+}
+
+// closePeriodDoc — freeze a period from ITS STORED members[] (preserving hand-
+// edited presence), snapshotting achievement. Recomputes derived fields first so
+// prorated targets reflect edits. Idempotent (re-close overwrites the snapshot).
+async function closePeriodDoc(period, closedBy) {
+  var b = qPeriodBounds(period.year, period.quarter);
+  var pwMap = await getRawProjectWeightsMap();
+  var members = period.members || [];
+  recomputeMemberDerived(members, b);
+  for (var i = 0; i < members.length; i++) {
+    members[i].achievedSnapshot = await snapshotMemberAchievement(members[i].userId, b.qStart, b.qEnd, pwMap);
+  }
+  var agentOids = members.map(function(m){ return m.userId; });
+  var teamStats = agentOids.length ? await computeAgentDealStats(agentOids, b.qStart, b.qEnd, pwMap) : { leads: 0, deals: 0, revenue: 0 };
+  period.teamTarget = sumTeamTarget(members);
+  period.teamAchievedSnapshot = teamStats.revenue || 0;
+  period.teamDealsSnapshot = teamStats.deals || 0;
+  period.teamLeadsSnapshot = teamStats.leads || 0;
+  period.status = "closed";
+  period.closedAt = new Date();
+  period.closedBy = (closedBy && mongoose.Types.ObjectId.isValid(closedBy)) ? closedBy : null;
+  period.markModified("members");
+  await period.save();
+  return period;
+}
+
+// ===== TargetPeriod admin endpoints (Phase 3) — all strictAdminOnly (Owner),
+// matching the admin-only qTargets editor. Lifecycle: draft → edit presence →
+// close. The Sales Team endpoints above serve a CLOSED period's frozen numbers;
+// these create and finalize them. =====
+
+// List periods. Filters: ?year= ?quarter= ?leaderId= ?status=
+app.get("/api/target-periods", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var q = {};
+    if (req.query.year)    q.year    = parseInt(req.query.year, 10);
+    if (req.query.quarter) q.quarter = parseInt(req.query.quarter, 10);
+    if (req.query.status)  q.status  = String(req.query.status);
+    if (req.query.leaderId) { try { q.leaderId = new mongoose.Types.ObjectId(req.query.leaderId); } catch(e){} }
+    var rows = await TargetPeriod.find(q).sort({ year: -1, quarter: -1, teamName: 1 }).lean();
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Live (unsaved) preview for a leader+quarter — mirrors what a close would freeze.
+app.get("/api/target-periods/preview", auth, strictAdminOnly, async function(req, res) {
+  try {
+    if (!req.query.leaderId || !mongoose.Types.ObjectId.isValid(req.query.leaderId)) return res.status(400).json({ error: "leaderId required" });
+    var year = parseInt(req.query.year, 10), quarter = parseInt(req.query.quarter, 10);
+    if (!year || quarter < 1 || quarter > 4) return res.status(400).json({ error: "year + quarter (1..4) required" });
+    var preview = await buildOpenPeriodForLeader(new mongoose.Types.ObjectId(req.query.leaderId), year, quarter);
+    res.json(preview);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Create / ensure a draft. Body: { leaderId, year, quarter, refresh? }.
+app.post("/api/target-periods/draft", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var leaderId = req.body.leaderId;
+    if (!leaderId || !mongoose.Types.ObjectId.isValid(leaderId)) return res.status(400).json({ error: "leaderId required" });
+    var year = parseInt(req.body.year, 10), quarter = parseInt(req.body.quarter, 10);
+    if (!year || quarter < 1 || quarter > 4) return res.status(400).json({ error: "year + quarter (1..4) required" });
+    var doc = await generateDraftPeriod(new mongoose.Types.ObjectId(leaderId), year, quarter, req.body.refresh === true);
+    res.json(doc);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Fetch one period by id.
+app.get("/api/target-periods/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var p = await TargetPeriod.findById(req.params.id).lean();
+    if (!p) return res.status(404).json({ error: "Not found" });
+    res.json(p);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Edit member presence on a draft/open period. Body: { members:[{userId, joinedAt, leftAt}] }.
+// Recomputes presenceFraction / proratedTarget / teamTarget. Rejects a closed period.
+app.patch("/api/target-periods/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var period = await TargetPeriod.findById(req.params.id);
+    if (!period) return res.status(404).json({ error: "Not found" });
+    if (period.status === "closed") return res.status(409).json({ error: "Period is closed — reopen before editing" });
+    var patchList = Array.isArray(req.body.members) ? req.body.members : [];
+    var byId = {};
+    patchList.forEach(function(p){ if (p && p.userId) byId[String(p.userId)] = p; });
+    period.members.forEach(function(m){
+      var p = byId[String(m.userId)];
+      if (!p) return;
+      if ("joinedAt" in p) m.joinedAt = p.joinedAt ? new Date(p.joinedAt) : null;
+      if ("leftAt"  in p) m.leftAt   = p.leftAt   ? new Date(p.leftAt)   : null;
+    });
+    recomputeMemberDerived(period.members, qPeriodBounds(period.year, period.quarter));
+    period.teamTarget = sumTeamTarget(period.members);
+    period.markModified("members");
+    await period.save();
+    res.json(period);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Close (freeze) a period — snapshot achievement, status:"closed".
+app.post("/api/target-periods/:id([0-9a-fA-F]{24})/close", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var period = await TargetPeriod.findById(req.params.id);
+    if (!period) return res.status(404).json({ error: "Not found" });
+    var closed = await closePeriodDoc(period, req.user.id);
+    res.json(closed);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Reopen a closed period back to draft (audit-logged). Body: { reason? }.
+app.post("/api/target-periods/:id([0-9a-fA-F]{24})/reopen", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var period = await TargetPeriod.findById(req.params.id);
+    if (!period) return res.status(404).json({ error: "Not found" });
+    if (period.status !== "closed") return res.status(409).json({ error: "Only a closed period can be reopened" });
+    var before = { status: "closed", teamTarget: period.teamTarget, teamAchievedSnapshot: period.teamAchievedSnapshot, closedAt: period.closedAt };
+    period.status = "draft";
+    period.closedAt = null;
+    period.closedBy = null;
+    await period.save();
+    try {
+      await AuditLog.create({
+        type: "TARGET_PERIOD_REOPENED",
+        targetUserId: period.leaderId,
+        performedBy: (req.user && mongoose.Types.ObjectId.isValid(req.user.id)) ? req.user.id : null,
+        before: before, after: { status: "draft" },
+        reason: (req.body && req.body.reason) ? String(req.body.reason) : "",
+        flags: { qKey: period.qKey }
+      });
+    } catch (e) { console.error("[target-period reopen audit] " + (e && e.message)); }
+    res.json(period);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete a DRAFT period (cleanup). Refuses a closed period (reopen first).
+app.delete("/api/target-periods/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var period = await TargetPeriod.findById(req.params.id).lean();
+    if (!period) return res.status(404).json({ error: "Not found" });
+    if (period.status === "closed") return res.status(409).json({ error: "Cannot delete a closed period — reopen first" });
+    await TargetPeriod.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // STEP 3 — single-DR detail endpoint. Mirrors the role visibility of the
