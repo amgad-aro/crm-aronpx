@@ -5,8 +5,13 @@
  * the last run, and pushes each one into the CRM via POST /api/leads.
  *
  * Sheet columns (row 1 headers, any order, case-insensitive):
- *   name, phone, phone2, campaign, project
- * Column 5 is the status column — after each row is processed we write:
+ *   name, phone, phone2, source, campaign, project, unit type, status
+ *   - campaign  = the actual ad-campaign name (e.g. "Cali Coast - June - LAL")
+ *   - project   = the development (e.g. "Cali Coast")
+ *   - unit type = Apartment | Duplex | Townhouse | Twinhouse | Standalone |
+ *                 Commercial | Admin | Clinic | Service Apartment | Chalet
+ * The "status" column is written back per row (found by header name, so column
+ * order is flexible; falls back to column 5 then to an appended column):
  *   "CRM"        — row pushed to the CRM successfully
  *   "Duplicate"  — phone already exists in the CRM
  *   "Error ..."  — anything else (http code or exception text)
@@ -22,7 +27,10 @@
  */
 
 var SPREADSHEET_ID = "1iVfFjL-mdq4uyI0wRYZ0s-KPXiefzhUP7S08Gmu9b5E";
-var STATUS_COL     = 5; // 1-indexed — "CRM" / "Duplicate" / "Error ..." land here.
+// Fallback write-back column if the sheet has no "status" header. Prefer the
+// header lookup (see _statusCol_) so adding columns (e.g. "unit type") never
+// clobbers data — this positional constant is only the last resort.
+var STATUS_COL_FALLBACK = 5; // 1-indexed — "CRM" / "Duplicate" / "Error ..." land here.
 
 function _props_()   { return PropertiesService.getScriptProperties(); }
 function _sheet_()   { return SpreadsheetApp.openById(SPREADSHEET_ID).getSheets()[0]; }
@@ -102,10 +110,16 @@ function _rowToPayload_(headersMap, values) {
     name:     pick("name"),
     phone:    pick("phone"),
     phone2:   pick("phone2"),
+    // Corrected field model: campaign = the actual ad-campaign name, project =
+    // the development, unit type = the unit. fieldsV2 tells the CRM to read them
+    // that way (development in project, not campaign). Reads by header name so
+    // the three never merge.
     campaign: pick("campaign"),
-    project:  pick("project"),
-    source:   "Facebook",
-    status:   "NewLead"
+    project:  pick("project") || pick("development"),
+    unitType: pick("unit type") || pick("unittype") || pick("unit_type"),
+    source:   pick("source") || "Facebook",
+    status:   "NewLead",
+    fieldsV2: true
   };
 }
 
@@ -142,10 +156,15 @@ function checkNewLeads() {
     if (start > lastRow) return;
     var headersMap = _headersMap_(sheet);
     var lastCol    = sheet.getLastColumn();
+    // Resolve the write-back column from the "status" header (1-indexed). Falls
+    // back to the positional constant, then to appending after the last column,
+    // so a new "unit type" column can never overwrite a data column.
+    var statusCol  = (headersMap.status != null) ? (headersMap.status + 1)
+                   : (STATUS_COL_FALLBACK <= lastCol ? STATUS_COL_FALLBACK : lastCol + 1);
     var values     = sheet.getRange(start, 1, lastRow - start + 1, lastCol).getValues();
     for (var i = 0; i < values.length; i++) {
       var rowIndex = start + i;
-      var statusCell = sheet.getRange(rowIndex, STATUS_COL);
+      var statusCell = sheet.getRange(rowIndex, statusCol);
       try {
         var payload = _rowToPayload_(headersMap, values[i]);
         if (!payload.name || !payload.phone) {

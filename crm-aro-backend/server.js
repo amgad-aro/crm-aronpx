@@ -10302,6 +10302,10 @@ app.post("/api/leads", auth, async function(req, res) {
       project:          req.body.project || "",
       unitType:         req.body.unitType || "",
       campaign:         req.body.campaign || "",
+      // fieldsV2 — new-field-model marker. Set by the corrected intake paths
+      // (Lead form, paste-import, Apps Script) so readers treat project as the
+      // development + unitType as the unit. Absent/false = legacy semantics.
+      fieldsV2:         req.body.fieldsV2 === true,
       agentId:          agentId,
       budget:           req.body.budget || "",
       notes:            req.body.notes || "",

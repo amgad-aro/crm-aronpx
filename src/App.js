@@ -263,6 +263,9 @@ var PROJECTS = [
   "العاصمة الإدارية", "المستقبل سيتي", "التجمع الخامس", "الشروق", "6 أكتوبر",
   "بالم هيلز", "ماونتن فيو", "سوديك ايست", "الرحاب", "مدينتي"
 ];
+// Canonical unit types — mirrors the Add-Deal + Daily-Request unit-type dropdowns.
+// Drives the Lead form's Unit Type field (fieldsV2 model). "" renders "- Select -".
+var UNIT_TYPES = ["", "Apartment", "Duplex", "Townhouse", "Twinhouse", "Standalone", "Commercial", "Admin", "Clinic", "Service Apartment", "Chalet"];
 // Phase A1 (2026-05-05): canonical Lead source list. Replaces the prior
 // 8-item list which included Instagram and "Snap Chat" (with space) —
 // those drop off; existing leads tagged with the old labels surface as
@@ -719,9 +722,24 @@ var loadXLSX = function() {
     document.head.appendChild(s);
   });
 };
-var rowToLead = function(row) {
+// Map an import row (keys already lowercased by handleImport) to a lead payload.
+// `newLayout` is decided ONCE from the header set (reliable, unlike per-cell
+// guessing): a sheet carrying a Unit Type / Development column is the corrected
+// 3-field template → campaign = ad campaign, project = development, unitType =
+// unit, marked fieldsV2. A legacy sheet (only a campaign/project column, the old
+// inverted convention) keeps the prior behaviour: that column → project, v1.
+var rowToLead = function(row, newLayout) {
   var g = function() { for (var i = 0; i < arguments.length; i++) { var v = row[arguments[i]]; if (v) return String(v).trim(); } return ""; };
-  return { name: g("name","Name","اسم الleads"), phone: g("phone","phone number","Phone","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email","Email"), budget: g("budget","Budget"), project: g("project","campaign","المشروع","الكامبين") || "", source: g("source","المصدر"), notes: g("notes","Notes") };
+  var base = { name: g("name","اسم الleads"), phone: g("phone","phone number","موبايل","رقم"), phone2: g("phone2","phone2 ","phone 2","هاتف إضافي","هاتف2","رقم2","موبايل2"), email: g("email"), budget: g("budget"), source: g("source","المصدر"), notes: g("notes") };
+  if (newLayout) {
+    base.campaign = g("campaign","ad campaign","campaign name","الكامبين");
+    base.project  = g("development","project","المشروع","التطوير");
+    base.unitType = g("unit type","unittype","unit_type","نوع الوحدة","الوحدة");
+    base.fieldsV2 = true;
+  } else {
+    base.project = g("project","campaign","المشروع","الكامبين") || "";
+  }
+  return base;
 };
 
 // ===== UI COMPONENTS =====
@@ -2899,6 +2917,10 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      // New leads created here use the corrected field model (project = development,
+      // unitType = unit, campaign = ad campaign) → mark v2. Edits leave the existing
+      // flag untouched (not sent) so legacy leads stay v1 until the bulk migration.
+      if (!p.editId) payload.fieldsV2 = true;
       // Developer (N3) — create-mode EOI/DoneDeal only: send exactly one of
       // developerId / developerPending (N1's backend require accepts either).
       if (!p.editId && (isEOIForm || isDoneDealForm)) {
@@ -3027,7 +3049,7 @@ var LeadForm = function(p) {
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
       <Inp label={isEOIForm?"💰 Amount (EGP)":t.budget} req={isEOIForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
-    <Inp label="Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Campaign A April"/>
+    <Inp label="📣 Ad Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Cali Coast – June – Lookalike"/>
     {showStatusPicker&&<Inp label="Status" type="select" value={form.status||"NewLead"} onChange={function(e){upd("status",e.target.value);}} options={[
       {value:"NewLead",label:"New Lead"},
       {value:"Potential",label:"Potential"},
@@ -3035,7 +3057,8 @@ var LeadForm = function(p) {
       {value:"EOI",label:"EOI"},
       {value:"DoneDeal",label:"Done Deal"}
     ]}/>}
-    <Inp label={t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder=""/>
+    <Inp label={"🏢 " + t.project + " / Development"} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+    <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
     {/* Developer (N3) — REQUIRED for create-mode EOI/DoneDeal. Pick from the 505
         OR type a new name (mutually exclusive). */}
     {(isEOIForm||isDoneDealForm)&&!p.editId&&<div style={{ marginBottom:13 }}>
@@ -6270,7 +6293,10 @@ var LeadsPage = function(p) {
           return;
         }
       }
-      var toImport=rows.map(rowToLead).filter(function(l){return l.name&&l.phone;});
+      // Decide the field layout once from the header set (see rowToLead): a Unit
+      // Type / Development column means the corrected 3-field template (v2).
+      var newLayout = rows.length>0 && (function(){ var k=Object.keys(rows[0]); return k.indexOf("unit type")>=0||k.indexOf("unittype")>=0||k.indexOf("unit_type")>=0||k.indexOf("development")>=0||k.indexOf("نوع الوحدة")>=0; })();
+      var toImport=rows.map(function(r){return rowToLead(r,newLayout);}).filter(function(l){return l.name&&l.phone;});
       if(!toImport.length){setImportMsg(t.importErr);setImporting(false);return;}
       var agId="";
       var created=[]; for(var i=0;i<toImport.length;i++){try{var lead=await apiFetch("/api/leads","POST",Object.assign({},toImport[i],{agentId:agId,source:isReq?"Daily Request":toImport[i].source,status:"NewLead",phone2:toImport[i].phone2||""}),p.token);if(toImport[i].phone2){try{var cache=JSON.parse(localStorage.getItem("phone2_cache")||"{}");if(lead._id)cache[String(lead._id)]=toImport[i].phone2;localStorage.setItem("phone2_cache",JSON.stringify(cache));}catch(e){}}created.push(lead);}catch(ex){}}
@@ -6780,6 +6806,7 @@ var LeadsPage = function(p) {
               <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
                 {lead.campaign&&<span style={{ fontSize:11, color:"#0369A1", fontWeight:700, background:"#E0F2FE", padding:"2px 8px", borderRadius:6 }}>📣 {lead.campaign}</span>}
                 {lead.project?<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
+                {lead.unitType&&<span style={{ fontSize:11, color:"#B45309", fontWeight:700, background:"#FEF3C7", padding:"2px 8px", borderRadius:6 }}>🏷️ {lead.unitType}</span>}
               </div>
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
@@ -7060,6 +7087,7 @@ var LeadsPage = function(p) {
               var fields = [
                 { l:"Campaign",       v: selected.campaign },
                 { l:t.project,         v: selected.project },
+                { l:"Unit Type",      v: selected.unitType },
                 { l:t.source,          v: isAdmin ? selected.source : null },
                 { l:t.budget,          v: selected.budget },
                 { l:t.callbackTime,    v: selected.callbackTime ? selected.callbackTime.slice(0,16).replace("T"," ") : null },
@@ -7371,7 +7399,7 @@ var LeadsPage = function(p) {
           setQuickSaving(true);
           try{
             var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
-            var lead=await apiFetch("/api/leads","POST",Object.assign({},quickForm,{agentId:quickForm.agentId||""}),p.token);
+            var lead=await apiFetch("/api/leads","POST",Object.assign({},quickForm,{agentId:quickForm.agentId||"",fieldsV2:true}),p.token);
             p.setLeads(function(prev){return [lead].concat(prev);});
             setShowQuickAdd(false);
             setQuickForm({name:"",phone:"",project:PROJECTS[0],source:""});
