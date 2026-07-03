@@ -110,6 +110,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // Script + Sheet now send source explicitly, and POST /api/leads validates
   // non-empty source server-side — see server.js:2337 area.
   source:{type:String,default:""}, project:{type:String,default:""}, unitType:{type:String,default:""}, campaign:{type:String,default:""},
+  // fieldsV2 — marks a lead created/migrated under the corrected field model:
+  // development lives in `project`, unit type in `unitType`, `campaign` = the
+  // real ad-campaign name. Legacy (v1 — this flag false/absent) leads carry the
+  // development in `campaign` and the unit type in `project`. Reports branch on
+  // this via LEAD_DEV_EXPR / LEAD_UNIT_EXPR until the field-refactor cleanup phase.
+  fieldsV2:{type:Boolean,default:false},
   // Inbound webhook fields — populated by POST /api/leads/inbound when leads
   // arrive from facebook/instagram/tiktok/snapchat/whatsapp. externalId is the
   // platform's lead id (used together with source for dedupe).
@@ -18476,6 +18482,17 @@ function reportsParseRange(from, to) {
   return { from: f, to: t };
 }
 
+// ===== Campaign/Project/UnitType refactor — vintage-aware field expressions =====
+// A lead created or migrated under the corrected model carries fieldsV2:true and
+// stores the DEVELOPMENT in `project` + the UNIT TYPE in `unitType`. Legacy (v1)
+// leads store the development in `campaign` + the unit type in `project`. These
+// aggregation expressions resolve the right field per-lead so reports stay correct
+// across ANY mix of v1/v2 leads during the migration. For all-v1 data (pre-
+// migration) they are byte-identical to reading campaign/project directly. Delete
+// after the field-refactor cleanup phase (all leads v2).
+var LEAD_DEV_EXPR  = { $cond: [{ $eq: ["$fieldsV2", true] }, { $ifNull: ["$project",  ""] }, { $ifNull: ["$campaign", ""] }] };
+var LEAD_UNIT_EXPR = { $cond: [{ $eq: ["$fieldsV2", true] }, { $ifNull: ["$unitType", ""] }, { $ifNull: ["$project",  ""] }] };
+
 // GET /api/reports/overview/kpis
 // Returns the 4 top-line KPIs (revenue, pipeline, avg deal size, conv %)
 // each with prev-period delta + a sparkline aligned to the bucket grid
@@ -22390,11 +22407,15 @@ app.get("/api/reports/campaigns", auth, reportsAuth, async function(req, res) {
     // not with number-of-campaigns × all-leads.
     var perCampaign = await Promise.all(campaignsForReport.map(function(cc){
       var c = cc.rec;
+      // Match the tracked campaign name against the lead's DEVELOPMENT, resolved
+      // per-vintage (LEAD_DEV_EXPR): v1 leads carry it in `campaign`, v2 leads in
+      // `project`. For all-v1 data this is identical to the prior `campaign` regex
+      // match; post-migration it follows the development into `project`.
       var matchObj = {
         archived: false,
         source: c.sourcePlatform,
-        campaign: { $regex: "^" + escapeRegex(c.name) + "$", $options: "i" },
-        createdAt: { $gte: cc.cs, $lt: cc.ceExcl }
+        createdAt: { $gte: cc.cs, $lt: cc.ceExcl },
+        $expr: { $regexMatch: { input: LEAD_DEV_EXPR, regex: "^" + escapeRegex(c.name) + "$", options: "i" } }
       };
       if (scopeIds) matchObj.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
 
@@ -22607,10 +22628,16 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
           _isEoi: { $and: [
             { $ne: ["$eoiStatus", "EOI Cancelled"] },
             { $in: ["$eoiStatus", ["Pending", "Approved"]] }
-          ]}
+          ]},
+          // Development + unit resolved per-vintage so the table follows the
+          // fields across migration (v1: campaign/project · v2: project/unitType).
+          // _id keys stay named campaign/project so the Node post-processing below
+          // is unchanged; for all-v1 data this equals the raw campaign/project.
+          _dev:  LEAD_DEV_EXPR,
+          _unit: LEAD_UNIT_EXPR
       }},
       { $group: {
-          _id: { campaign: { $ifNull: ["$campaign", ""] }, project: { $ifNull: ["$project", ""] } },
+          _id: { campaign: "$_dev", project: "$_unit" },
           leads: { $sum: 1 },
           eois:  { $sum: { $cond: ["$_isEoi", 1, 0] } },
           deals: { $sum: { $cond: ["$_isDeal", 1, 0] } }
