@@ -17622,7 +17622,11 @@ async function runBroadcast(title, body, fromName) {
   var ids = actives.map(function(u){ return String(u._id); });
   var pushResult = await sendPushNotification(
     ids,
-    title || "Announcement",
+    // No admin-entered title → fall back to the brand name "ARO" (language-
+    // neutral) rather than a generic English "Announcement". This title feeds
+    // the FCM notification.title, which drives the lock-screen push AND both
+    // in-app foreground surfaces (iOS OS banner, Android local notification).
+    title || "ARO",
     body,
     { type: "announcement", notifId: String(row._id) }
   );
