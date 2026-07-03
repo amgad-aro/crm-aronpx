@@ -14944,6 +14944,167 @@ var UsersPage = function(p) {
 };
 
 // ===== TEAM =====
+// ===== Phase 4 (Target Periods) — admin "Manage Target Periods" modal. Owner-
+// only entry from the Sales Team page. Per leader: create draft → edit member
+// presence (joinedAt/leftAt) → Close (freeze) → Reopen. Closing a period is what
+// makes the Sales Team cards show that quarter's frozen, roster-locked numbers;
+// individual agents' own qTargets are never touched.
+var TargetPeriodsManager = function(pp) {
+  var year = pp.year, quarter = pp.quarter;
+  var qKey = year + "-Q" + quarter;
+  var [periods, setPeriods] = useState(null);        // array | null=loading
+  var [busy, setBusy] = useState(false);
+  var [expanded, setExpanded] = useState(null);      // leaderId (string) expanded
+  var [edits, setEdits] = useState({});              // periodId -> { uid -> {joinedAt, leftAt} } (YYYY-MM-DD)
+
+  var leaders = (pp.users || []).filter(function(u){ return (u.role === "manager" || u.role === "team_leader") && u.active; });
+
+  var load = function(){
+    apiFetch("/api/target-periods?year=" + year + "&quarter=" + quarter, "GET", null, pp.token)
+      .then(function(rows){ setPeriods(Array.isArray(rows) ? rows : []); })
+      .catch(function(){ setPeriods([]); });
+  };
+  useEffect(function(){ load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [year, quarter]);
+
+  var periodByLeader = {};
+  (periods || []).forEach(function(pr){ periodByLeader[String(pr.leaderId)] = pr; });
+
+  var fmtEGP = function(n){ return (Number(n) || 0).toLocaleString(); };
+  var fmtDate = function(d){ return d ? new Date(d).toISOString().slice(0, 10) : ""; };
+  var pct = function(f){ return Math.round((Number(f) || 0) * 100); };
+  var afterChange = function(){ load(); if (pp.onChanged) pp.onChanged(); };
+
+  var createDraft = async function(leaderId, refresh){
+    if (busy) return; setBusy(true);
+    try { await apiFetch("/api/target-periods/draft", "POST", { leaderId: leaderId, year: year, quarter: quarter, refresh: !!refresh }, pp.token, pp.csrfToken); afterChange(); }
+    catch(e){ alert(e.message || "Failed to create draft"); } finally { setBusy(false); }
+  };
+  var openEditor = function(period){
+    var lid = String(period.leaderId);
+    if (expanded === lid) { setExpanded(null); return; }
+    setExpanded(lid);
+    var seed = {};
+    (period.members || []).forEach(function(m){ seed[String(m.userId)] = { joinedAt: fmtDate(m.joinedAt), leftAt: fmtDate(m.leftAt) }; });
+    setEdits(function(prev){ var n = Object.assign({}, prev); n[String(period._id)] = seed; return n; });
+  };
+  var setMemberEdit = function(periodId, uid, field, val){
+    setEdits(function(prev){
+      var pe = Object.assign({}, prev[periodId] || {});
+      pe[uid] = Object.assign({ joinedAt: "", leftAt: "" }, pe[uid] || {});
+      pe[uid][field] = val;
+      var n = Object.assign({}, prev); n[periodId] = pe; return n;
+    });
+  };
+  var savePresence = async function(period){
+    if (busy) return; setBusy(true);
+    try {
+      var e = edits[String(period._id)] || {};
+      var members = Object.keys(e).map(function(uid){ return { userId: uid, joinedAt: e[uid].joinedAt || null, leftAt: e[uid].leftAt || null }; });
+      await apiFetch("/api/target-periods/" + period._id, "PATCH", { members: members }, pp.token, pp.csrfToken); afterChange();
+    } catch(e){ alert(e.message || "Failed to save presence"); } finally { setBusy(false); }
+  };
+  var doClose = async function(period){
+    if (busy) return;
+    if (!window.confirm("Freeze " + qKey + " for " + (period.teamName || "this team") + "?\n\nClosed periods are immutable — the Sales Team page shows these frozen numbers for this quarter. Reopen to edit.")) return;
+    setBusy(true);
+    try { await apiFetch("/api/target-periods/" + period._id + "/close", "POST", null, pp.token, pp.csrfToken); afterChange(); }
+    catch(e){ alert(e.message || "Failed to close"); } finally { setBusy(false); }
+  };
+  var doReopen = async function(period){
+    if (busy) return;
+    if (!window.confirm("Reopen " + qKey + "?\n\nThis unfreezes it back to a draft; the Sales Team page reverts to live numbers until you close it again.")) return;
+    setBusy(true);
+    try { await apiFetch("/api/target-periods/" + period._id + "/reopen", "POST", { reason: "admin reopen" }, pp.token, pp.csrfToken); afterChange(); }
+    catch(e){ alert(e.message || "Failed to reopen"); } finally { setBusy(false); }
+  };
+  var doDelete = async function(period){
+    if (busy) return;
+    if (!window.confirm("Delete this draft period for " + qKey + "?")) return;
+    setBusy(true);
+    try { await apiFetch("/api/target-periods/" + period._id, "DELETE", null, pp.token, pp.csrfToken); afterChange(); }
+    catch(e){ alert(e.message || "Failed to delete"); } finally { setBusy(false); }
+  };
+  var badge = function(status){
+    var m = { closed: { bg:"#dcfce7", fg:"#166534", label:"Closed ✓ frozen" }, draft: { bg:"#fef9c3", fg:"#854d0e", label:"Draft" }, open: { bg:"#dbeafe", fg:"#1e40af", label:"Open" } }[status] || { bg:"#f1f5f9", fg:"#475569", label:"No period" };
+    return <span style={{ background:m.bg, color:m.fg, padding:"2px 9px", borderRadius:20, fontSize:11, fontWeight:700 }}>{m.label}</span>;
+  };
+
+  return <Modal show={true} onClose={pp.onClose} title={"🎯 Manage Target Periods — " + qKey}>
+    <div style={{ fontSize:12.5, color:C.textLight, marginBottom:14, lineHeight:1.5 }}>
+      Lock this quarter's team targets to the roster that was actually present. Create a draft, set each member's join / leave dates (blank = present all quarter), then <b>Close</b> to freeze. Closed quarters show frozen numbers on the Sales Team page; individual agents' own targets are never changed.
+    </div>
+    {periods === null
+      ? <div style={{ padding:20, textAlign:"center", color:C.textLight }}>Loading…</div>
+      : leaders.length === 0
+        ? <div style={{ padding:20, textAlign:"center", color:C.textLight }}>No managers or team leaders found.</div>
+        : <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {leaders.map(function(lead){
+              var lid = String(gid(lead));
+              var period = periodByLeader[lid] || null;
+              var status = period ? period.status : "none";
+              var isOpen = expanded === lid && period;
+              return <div key={lid} style={{ border:"1px solid "+C.border, borderRadius:10, padding:12, background:"#fff" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:180 }}>
+                    <span style={{ fontWeight:700, color:C.text }}>{lead.name}</span>
+                    <span style={{ fontSize:11, color:C.textLight }}>{lead.role}</span>
+                    {badge(status)}
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+                    {period && <span style={{ fontSize:12, color:C.textLight }}>Target <b style={{ color:C.text }}>{fmtEGP(period.teamTarget)}</b>{status==="closed" ? <span> · Achieved <b style={{ color:C.text }}>{fmtEGP(period.teamAchievedSnapshot)}</b></span> : null}</span>}
+                    {!period && <Btn outline disabled={busy} onClick={function(){createDraft(lid,false);}} style={{ padding:"5px 10px", fontSize:12 }}>Create draft</Btn>}
+                    {period && status!=="closed" && <Btn outline disabled={busy} onClick={function(){openEditor(period);}} style={{ padding:"5px 10px", fontSize:12 }}>{isOpen?"Hide":"Edit roster"}</Btn>}
+                    {period && status!=="closed" && <Btn success disabled={busy} onClick={function(){doClose(period);}} style={{ padding:"5px 10px", fontSize:12 }}>Close</Btn>}
+                    {period && status!=="closed" && <Btn danger disabled={busy} onClick={function(){doDelete(period);}} style={{ padding:"5px 10px", fontSize:12 }}>Delete</Btn>}
+                    {period && status==="closed" && <Btn outline disabled={busy} onClick={function(){doReopen(period);}} style={{ padding:"5px 10px", fontSize:12 }}>Reopen</Btn>}
+                  </div>
+                </div>
+                {isOpen && <div style={{ marginTop:12, borderTop:"1px solid "+C.border, paddingTop:10 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8, gap:8, flexWrap:"wrap" }}>
+                    <span style={{ fontSize:12, fontWeight:700, color:C.text }}>Roster — join / leave within {qKey}</span>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <Btn outline disabled={busy} onClick={function(){createDraft(lid,true);}} style={{ padding:"4px 9px", fontSize:11 }}>↻ Reseed from roster</Btn>
+                      <Btn disabled={busy} onClick={function(){savePresence(period);}} style={{ padding:"4px 9px", fontSize:11 }}>Save presence</Btn>
+                    </div>
+                  </div>
+                  <div style={{ overflowX:"auto" }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                      <thead><tr style={{ color:C.textLight, textAlign:"left" }}>
+                        <th style={{ padding:"4px 6px" }}>Member</th>
+                        <th style={{ padding:"4px 6px" }}>Joined</th>
+                        <th style={{ padding:"4px 6px" }}>Left</th>
+                        <th style={{ padding:"4px 6px", textAlign:"right" }}>Present</th>
+                        <th style={{ padding:"4px 6px", textAlign:"right" }}>Full target</th>
+                        <th style={{ padding:"4px 6px", textAlign:"right" }}>Pro-rated</th>
+                      </tr></thead>
+                      <tbody>
+                        {(period.members||[]).map(function(m){
+                          var uid = String(m.userId);
+                          var e = (edits[String(period._id)]||{})[uid] || { joinedAt: fmtDate(m.joinedAt), leftAt: fmtDate(m.leftAt) };
+                          return <tr key={uid} style={{ borderTop:"1px solid #f1f5f9" }}>
+                            <td style={{ padding:"5px 6px" }}>{m.userName}{m.isLeader?<span style={{ fontSize:10, color:C.textLight }}> (leader)</span>:null}</td>
+                            <td style={{ padding:"5px 6px" }}>{m.isLeader ? <span style={{ color:C.textLight }}>—</span> : <input type="date" value={e.joinedAt} onChange={function(ev){setMemberEdit(String(period._id),uid,"joinedAt",ev.target.value);}} style={{ fontSize:12, padding:"2px 4px", border:"1px solid "+C.border, borderRadius:5 }}/>}</td>
+                            <td style={{ padding:"5px 6px" }}>{m.isLeader ? <span style={{ color:C.textLight }}>—</span> : <input type="date" value={e.leftAt} onChange={function(ev){setMemberEdit(String(period._id),uid,"leftAt",ev.target.value);}} style={{ fontSize:12, padding:"2px 4px", border:"1px solid "+C.border, borderRadius:5 }}/>}</td>
+                            <td style={{ padding:"5px 6px", textAlign:"right" }}>{pct(m.presenceFraction)}%</td>
+                            <td style={{ padding:"5px 6px", textAlign:"right" }}>{fmtEGP(m.fullQuarterTarget)}</td>
+                            <td style={{ padding:"5px 6px", textAlign:"right", fontWeight:600 }}>{m.isLeader?<span style={{ color:C.textLight }}>excl.</span>:fmtEGP(m.proratedTarget)}</td>
+                          </tr>;
+                        })}
+                      </tbody>
+                      <tfoot><tr style={{ borderTop:"2px solid "+C.border, fontWeight:700 }}>
+                        <td style={{ padding:"6px" }} colSpan={5}>Team target (Σ pro-rated, leader excluded)</td>
+                        <td style={{ padding:"6px", textAlign:"right" }}>{fmtEGP(period.teamTarget)}</td>
+                      </tr></tfoot>
+                    </table>
+                  </div>
+                  <div style={{ fontSize:11, color:C.textLight, marginTop:6 }}>Edit dates then <b>Save presence</b> to recompute pro-rated targets. The leader's own target is excluded from the team total (matches the Sales Team card).</div>
+                </div>}
+              </div>;
+            })}
+          </div>}
+  </Modal>;
+};
+
 var TeamPage = function(p) {
   var t=p.t;
   var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader";
@@ -14970,6 +15131,10 @@ var TeamPage = function(p) {
   // after the X3 bootstrap shrink. One fetch covers every visible card;
   // we keep the in-memory derivation as a bootstrap-time fallback.
   var [memberStatsMap, setMemberStatsMap] = useState(null);
+  // Phase 4 — admin "Manage Target Periods" modal + a bump that re-fetches
+  // member-stats after a period is closed/reopened so cards reflect the change.
+  var [showPeriods, setShowPeriods] = useState(false);
+  var [periodBust, setPeriodBust] = useState(0);
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
@@ -14984,7 +15149,7 @@ var TeamPage = function(p) {
       .catch(function(){});
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, viewYear, viewQ, p.cbBust]);
+  },[p.token, viewYear, viewQ, p.cbBust, periodBust]);
   var [editQModal,setEditQModal]=useState(null);
   var [expandedManager,setExpandedManager]=useState(null); // uid of expanded manager
   // Hide-all confirm flow — admin / sales_admin only. Triggers the same
@@ -15234,6 +15399,7 @@ var TeamPage = function(p) {
         <select value={viewYear} onChange={function(e){setViewYear(Number(e.target.value));}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
           {years.map(function(y){return <option key={y} value={y}>{y}</option>;})}
         </select>
+        {p.cu.role==="admin" && <Btn outline onClick={function(){setShowPeriods(true);}} style={{ padding:"6px 12px", fontSize:12 }}>🎯 Manage Periods</Btn>}
       </div>
     </div>
 
@@ -15346,6 +15512,7 @@ var TeamPage = function(p) {
       </div>
     </div>}
 
+    {showPeriods && <TargetPeriodsManager token={p.token} csrfToken={p.csrfToken} users={p.users} year={viewYear} quarter={parseInt(String(viewQ).replace("Q",""))||1} t={t} onClose={function(){setShowPeriods(false);}} onChanged={function(){setPeriodBust(function(x){return x+1;});}} />}
     {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>Quarterly target in EGP</div>
       <div style={{ marginBottom:14 }}>
