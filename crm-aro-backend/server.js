@@ -1126,6 +1126,37 @@ AuditLog.collection.createIndex({ targetUserId: 1, timestamp: -1 }).catch(functi
 AuditLog.collection.createIndex({ performedBy: 1, timestamp: -1 }).catch(function(){});
 AuditLog.collection.createIndex({ type: 1, timestamp: -1 }).catch(function(){});
 
+// ===== TeamMembershipEvent — Phase 1 of the time-locked Target Period overhaul.
+// Append-only log of every team-membership transition (join / leave / transfer),
+// written whenever POST/PUT/DELETE /api/users changes a user's reportsTo, teamId,
+// or teamName. This is the historical memory the roster never had: it lets a past
+// quarter's roster be reconstructed as-of any date, so team targets can eventually
+// be time-locked instead of re-summed from the live roster. Purely additive —
+// nothing reads it for computation yet (a later phase builds TargetPeriod on top).
+// effectiveDate is admin-settable (defaults to the change time) so a future
+// backfill phase can date historical events in the past. userName/role/byName are
+// snapshots so the log stays readable without joins after renames/deletions.
+var TeamMembershipEvent = mongoose.model("TeamMembershipEvent", new mongoose.Schema({
+  userId:           { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  userName:         { type: String, default: "" },
+  role:             { type: String, default: "" },
+  event:            { type: String, enum: ["join", "leave", "transfer"], required: true },
+  leaderId:         { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // reportsTo AFTER
+  previousLeaderId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // reportsTo BEFORE
+  teamId:           { type: String, default: "" },   // AFTER
+  teamName:         { type: String, default: "" },   // AFTER
+  previousTeamId:   { type: String, default: "" },   // BEFORE
+  previousTeamName: { type: String, default: "" },   // BEFORE
+  effectiveDate:    { type: Date, default: Date.now },
+  by:               { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // acting admin
+  byName:           { type: String, default: "" },
+  source:           { type: String, default: "api" },   // "api" | "backfill" | "migration"
+  note:             { type: String, default: "" }
+}, { timestamps: true }));
+TeamMembershipEvent.collection.createIndex({ userId: 1, effectiveDate: -1 }).catch(function(){});
+TeamMembershipEvent.collection.createIndex({ leaderId: 1, effectiveDate: -1 }).catch(function(){});
+TeamMembershipEvent.collection.createIndex({ effectiveDate: -1 }).catch(function(){});
+
 // Defaults applied when no AppSetting key="attendance_settings" doc exists yet
 // (first server boot). Office is empty so the Owner must configure it before
 // anyone can check in. All permission toggles default ON for sales_admin + hr
@@ -7960,6 +7991,56 @@ app.delete("/api/users/push-token", auth, async function(req, res) {
   }
 });
 
+// ===== Phase 1 (Target Period overhaul) — team-membership event logging =====
+// membershipChanged/classifyMembership derive a join|leave|transfer transition
+// from before/after {reportsTo, teamId, teamName} snapshots. Leader presence
+// (reportsTo) is the primary signal; teamId presence is the fallback when the
+// leader pointer is unchanged. logMembershipEvent appends one event and is
+// deliberately non-fatal — membership bookkeeping must NEVER break the user
+// mutation that triggered it, so every failure is swallowed (console only).
+// Live API events are dated "now"; historical dating is a later backfill phase.
+function membershipChanged(prev, next) {
+  return String(prev.reportsTo || "") !== String(next.reportsTo || "")
+      || String(prev.teamId   || "") !== String(next.teamId   || "")
+      || String(prev.teamName || "") !== String(next.teamName || "");
+}
+function classifyMembership(prev, next) {
+  var hadLeader = !!(prev && prev.reportsTo);
+  var hasLeader = !!(next && next.reportsTo);
+  if (hadLeader !== hasLeader) return hasLeader ? "join" : "leave";
+  var hadTeam = !!(prev && prev.teamId);
+  var hasTeam = !!(next && next.teamId);
+  if (hadTeam !== hasTeam) return hasTeam ? "join" : "leave";
+  return "transfer"; // leader/team value changed but presence did not
+}
+async function logMembershipEvent(o) {
+  try {
+    var m = o.member || {};
+    var prev = o.prev || {};
+    var next = o.next || {};
+    var byId = (o.actor && o.actor.id && mongoose.Types.ObjectId.isValid(o.actor.id)) ? o.actor.id : null;
+    await TeamMembershipEvent.create({
+      userId:           o.userId || m._id,
+      userName:         m.name || "",
+      role:             m.role || "",
+      event:            o.event,
+      leaderId:         next.reportsTo || null,
+      previousLeaderId: prev.reportsTo || null,
+      teamId:           next.teamId || "",
+      teamName:         next.teamName || "",
+      previousTeamId:   prev.teamId || "",
+      previousTeamName: prev.teamName || "",
+      effectiveDate:    o.when || new Date(),
+      by:               byId,
+      byName:           (o.actor && o.actor.name) || "",
+      source:           o.source || "api",
+      note:             o.note || ""
+    });
+  } catch (e) {
+    console.error("[membership-event] log failed:", e && e.message);
+  }
+}
+
 app.post("/api/users", auth, adminOnly, async function(req, res) {
   try {
     // Owner lockdown — see ALLOWED_CREATE_ROLES above. The Owner is seeded
@@ -8008,6 +8089,16 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
     var obj = user.toObject();
     delete obj.password;
     emitUser(obj);
+    // Phase 1 — record the initial team assignment as a "join" (only if the new
+    // user actually lands on a team / under a leader at creation).
+    if (user.reportsTo || user.teamId) {
+      await logMembershipEvent({
+        member: user, event: "join",
+        prev: { reportsTo: null, teamId: "", teamName: "" },
+        next: { reportsTo: user.reportsTo, teamId: user.teamId, teamName: user.teamName },
+        actor: req.user, source: "api", note: "user created"
+      });
+    }
     res.json(obj);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -8091,6 +8182,21 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.active !== undefined) {
       delete userActiveCache[req.params.id];
     }
+    // Phase 1 — if this edit changed team membership (reportsTo/teamId/teamName),
+    // append a join|leave|transfer event. `target` holds the pre-update values;
+    // `update` holds only the fields present in the request body.
+    var prevMembership = { reportsTo: target.reportsTo, teamId: target.teamId, teamName: target.teamName };
+    var nextMembership = {
+      reportsTo: update.reportsTo !== undefined ? update.reportsTo : target.reportsTo,
+      teamId:    update.teamId    !== undefined ? update.teamId    : target.teamId,
+      teamName:  update.teamName  !== undefined ? update.teamName  : target.teamName
+    };
+    if (membershipChanged(prevMembership, nextMembership)) {
+      await logMembershipEvent({
+        member: user, event: classifyMembership(prevMembership, nextMembership),
+        prev: prevMembership, next: nextMembership, actor: req.user, source: "api"
+      });
+    }
     emitUser(user);
     res.json(user);
   } catch (e) {
@@ -8111,11 +8217,59 @@ app.delete("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (target.role === "admin") {
       return res.status(403).json({ error: "Admin users cannot be deleted" });
     }
+    // Phase 1 — capture leave events BEFORE the detach wipes reportsTo. Each
+    // subordinate loses their leader; the deleted user leaves their own team.
+    var detachedSubs = await User.find({ reportsTo: req.params.id })
+      .select("_id name role teamId teamName").lean();
     // Orphan-safe: detach subordinates so the tree stays intact without the parent.
     await User.updateMany({ reportsTo: req.params.id }, { $set: { reportsTo: null } });
     var deletedUser = await User.findByIdAndDelete(req.params.id);
     emitUserDeleted(deletedUser);
+    if (target.reportsTo || target.teamId) {
+      await logMembershipEvent({
+        member: target, event: "leave",
+        prev: { reportsTo: target.reportsTo, teamId: target.teamId, teamName: target.teamName },
+        next: { reportsTo: null, teamId: "", teamName: "" },
+        actor: req.user, source: "api", note: "user deleted"
+      });
+    }
+    for (var si = 0; si < detachedSubs.length; si++) {
+      var sub = detachedSubs[si];
+      await logMembershipEvent({
+        member: sub, event: "leave",
+        prev: { reportsTo: req.params.id, teamId: sub.teamId, teamName: sub.teamName },
+        next: { reportsTo: null, teamId: sub.teamId, teamName: sub.teamName },
+        actor: req.user, source: "api", note: "leader deleted (detached)"
+      });
+    }
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Phase 1 verification endpoint (Target Period overhaul) — read-only view of the
+// team-membership event log. Admin-gated (same `adminOnly` as the user routes it
+// sits beside). Filters: ?userId= ?leaderId= ?event= ?from= ?to= ?limit=
+// (default 200, max 1000). Nothing depends on this for computation; it exists so
+// the append-only log can be inspected/verified.
+app.get("/api/team-membership-events", auth, adminOnly, async function(req, res) {
+  try {
+    var q = {};
+    if (req.query.userId)   { try { q.userId   = new mongoose.Types.ObjectId(req.query.userId); }   catch(e){} }
+    if (req.query.leaderId) { try { q.leaderId = new mongoose.Types.ObjectId(req.query.leaderId); } catch(e){} }
+    if (req.query.event)    { q.event = String(req.query.event); }
+    if (req.query.from || req.query.to) {
+      q.effectiveDate = {};
+      if (req.query.from) q.effectiveDate.$gte = new Date(req.query.from);
+      if (req.query.to)   q.effectiveDate.$lte = new Date(req.query.to);
+    }
+    var limit = Math.min(1000, Math.max(1, parseInt(req.query.limit, 10) || 200));
+    var events = await TeamMembershipEvent.find(q)
+      .sort({ effectiveDate: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(events);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
