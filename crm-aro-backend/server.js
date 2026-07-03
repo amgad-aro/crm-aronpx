@@ -22574,6 +22574,192 @@ app.get("/api/reports/campaigns", auth, reportsAuth, async function(req, res) {
   }
 });
 
+// GET /api/reports/campaigns/performance?from&to
+// COHORT per-campaign table (Reports > Campaigns > "Performance" sub-view).
+// Distinct from /api/reports/campaigns (ROI/spend, tracked-campaign model):
+// this one groups the RAW lead.campaign field and counts by LEAD CREATION
+// DATE — a lead created in the window counts here even if its EOI/deal closes
+// later (cohort measurement). Counting conventions match the Leaderboard:
+//   EOI  = eoiStatus in {Pending, Approved}     (EOI Cancelled excluded)
+//   Deal = status DoneDeal | globalStatus donedeal, Deal Cancelled excluded
+// One aggregation (group by {rawCampaign, project}); the campaign-variant
+// merge + top-unit-type pick happen in Node — lead.campaign cardinality is
+// tiny (~40 distinct) so the fuzzy rule stays in readable JS rather than a
+// $regexReplace pipeline. In THIS data campaign≈project-name and project≈
+// unit-type (chalet/villa/commercial unit), hence the "Top unit types" column.
+app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(req, res) {
+  try {
+    var range = reportsParseRange(req.query.from, req.query.to);
+    var fromDate = new Date(range.from), toDate = new Date(range.to);
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var matchObj = { archived: false, createdAt: { $gte: fromDate, $lt: toDate } };
+    if (scopeIds) matchObj.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+
+    var grouped = await Lead.aggregate([
+      { $match: matchObj },
+      { $addFields: {
+          _isDeal: { $and: [
+            { $or: [{ $eq: ["$status", "DoneDeal"] }, { $eq: ["$globalStatus", "donedeal"] }] },
+            { $ne: ["$status", "Deal Cancelled"] },
+            { $ne: ["$dealStatus", "Deal Cancelled"] }
+          ]},
+          _isEoi: { $and: [
+            { $ne: ["$eoiStatus", "EOI Cancelled"] },
+            { $in: ["$eoiStatus", ["Pending", "Approved"]] }
+          ]}
+      }},
+      { $group: {
+          _id: { campaign: { $ifNull: ["$campaign", ""] }, project: { $ifNull: ["$project", ""] } },
+          leads: { $sum: 1 },
+          eois:  { $sum: { $cond: ["$_isEoi", 1, 0] } },
+          deals: { $sum: { $cond: ["$_isDeal", 1, 0] } }
+      }}
+    ]);
+
+    // Normalize a raw campaign to its merge base: trim + collapse whitespace,
+    // then repeatedly strip trailing variant tokens (" - Copy", " (Copy)",
+    // " Copy", a standalone number, a 3-letter month) so "Sheraton Commercial
+    // 2/3/Jun/- Copy" all collapse to "Sheraton Commercial". Conservative by
+    // design — only trailing suffixes merge, so distinct bases like "Cali
+    // coast" vs "Cali" or "Naia Sahel" vs "Naia" stay separate.
+    var normCampaign = function(raw){
+      var s = String(raw == null ? "" : raw).trim().replace(/\s+/g, " ");
+      if (!s) return "";
+      var prev;
+      do {
+        prev = s;
+        s = s.replace(/\s*[-–]\s*copy$/i, "");
+        s = s.replace(/\s*\(copy\)$/i, "");
+        s = s.replace(/\s+copy$/i, "");
+        s = s.replace(/\s+\d+$/, "");
+        s = s.replace(/\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i, "");
+        s = s.trim();
+      } while (s !== prev && s.length > 0);
+      return s || String(raw).trim();
+    };
+
+    var byKey = {};
+    (grouped || []).forEach(function(r){
+      var rawCamp = (r._id && r._id.campaign) || "";
+      var project = String((r._id && r._id.project) || "").trim();
+      var base = normCampaign(rawCamp);
+      var isManual = base === "";
+      var key = isManual ? " manual" : base.toLowerCase();
+      var b = byKey[key];
+      if (!b) b = byKey[key] = { manual: isManual, labelCounts: {}, leads: 0, eois: 0, deals: 0, units: {} };
+      b.leads += r.leads; b.eois += r.eois; b.deals += r.deals;
+      if (!isManual) b.labelCounts[base] = (b.labelCounts[base] || 0) + r.leads;
+      if (project) b.units[project] = (b.units[project] || 0) + r.leads;
+    });
+
+    var campaigns = Object.keys(byKey).map(function(key){
+      var b = byKey[key];
+      var label = b.manual ? "No campaign / Manual"
+        : (Object.keys(b.labelCounts).sort(function(a, c){ return b.labelCounts[c] - b.labelCounts[a]; })[0] || "(unnamed)");
+      var topUnits = Object.keys(b.units).sort(function(a, c){ return b.units[c] - b.units[a]; }).slice(0, 3);
+      return { campaign: label, manual: b.manual, unitTypes: topUnits, leads: b.leads, eois: b.eois, deals: b.deals };
+    });
+    // Default order: leads desc then deals desc; the manual bucket always sinks
+    // to the bottom so it never outranks a real campaign on lead volume.
+    campaigns.sort(function(a, c){
+      if (a.manual !== c.manual) return a.manual ? 1 : -1;
+      return (c.leads - a.leads) || (c.deals - a.deals);
+    });
+
+    res.json({ range: { from: fromDate.toISOString(), to: toDate.toISOString() }, campaigns: campaigns });
+  } catch (e) {
+    console.error("[reports/campaigns/performance]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "performance_failed" });
+  }
+});
+
+// GET /api/reports/campaigns/intake?year
+// Monthly lead intake for the year, broken down by SOURCE (Reports >
+// Campaigns > "Monthly intake" sub-view). Attribution = lead createdAt month
+// in Africa/Cairo. Two aggregations, no double-count:
+//   - Lead by {month, source}, EXCLUDING source "Daily Request" (those are DR
+//     deal/EOI mirrors, not intake).
+//   - DailyRequest by month → the real "Daily Request" intake column. This
+//     matches the reports-KPI convention (DR intake from the DR collection,
+//     Lead mirrors excluded).
+// Raw sources are curated onto a fixed column set (canonical SOURCES +
+// Instagram + a merged phone-in "Call"); everything unrecognised folds to
+// "Other". Only columns with data are returned.
+app.get("/api/reports/campaigns/intake", auth, reportsAuth, async function(req, res) {
+  try {
+    var yr = parseInt(req.query.year, 10);
+    if (!isFinite(yr) || yr < 2000 || yr > 3000) yr = new Date().getFullYear();
+    var fromDate = new Date(yr, 0, 1, 0, 0, 0, 0);
+    var toDate = new Date(yr + 1, 0, 1, 0, 0, 0, 0);
+    var TZ = "Africa/Cairo";
+    var scopeIds = await getReportsTeamScope(req.query.team || null);
+
+    var leadMatch = { archived: false, createdAt: { $gte: fromDate, $lt: toDate }, source: { $ne: "Daily Request" } };
+    if (scopeIds) leadMatch.$or = [{ agentId: { $in: scopeIds }}, { splitAgent2Id: { $in: scopeIds }}];
+    var leadAgg = Lead.aggregate([
+      { $match: leadMatch },
+      { $group: {
+          _id: { m: { $month: { date: "$createdAt", timezone: TZ } }, source: { $ifNull: ["$source", ""] } },
+          n: { $sum: 1 }
+      }}
+    ]);
+
+    var drMatch = { archived: false, createdAt: { $gte: fromDate, $lt: toDate } };
+    if (scopeIds) drMatch.agentId = { $in: scopeIds };
+    var drAgg = DailyRequest.aggregate([
+      { $match: drMatch },
+      { $group: { _id: { m: { $month: { date: "$createdAt", timezone: TZ } } }, n: { $sum: 1 } } }
+    ]);
+
+    var parts = await Promise.all([leadAgg, drAgg]);
+
+    // Curate a raw lead.source onto the fixed intake column set. Keyed on a
+    // lowercase-alphanumeric strip so "instagram"/"Instagram" and "call"/
+    // "Call"/"Direct Call" collapse; anything unmapped (Baha, Sahel, blank) →
+    // Other. "Daily Request" never reaches here (excluded from leadMatch).
+    var INTAKE_SOURCE_MAP = {
+      facebook: "Facebook", tiktok: "TikTok", instagram: "Instagram", snapchat: "Snapchat",
+      whatsapp: "WhatsApp", googleads: "Google Ads", referral: "Referral", website: "Website",
+      call: "Call", directcall: "Call"
+    };
+    var curateSource = function(raw){
+      var key = String(raw == null ? "" : raw).toLowerCase().replace(/[^a-z0-9]/g, "");
+      return INTAKE_SOURCE_MAP[key] || "Other";
+    };
+    var COLS = ["Facebook", "TikTok", "Instagram", "Snapchat", "WhatsApp", "Google Ads", "Referral", "Website", "Call", "Daily Request", "Other"];
+
+    var matrix = {};
+    var mi;
+    for (mi = 1; mi <= 12; mi++) { matrix[mi] = {}; COLS.forEach(function(c){ matrix[mi][c] = 0; }); }
+    (parts[0] || []).forEach(function(r){
+      var m = r._id && r._id.m;
+      if (!m || !matrix[m]) return;
+      matrix[m][curateSource(r._id.source)] += (Number(r.n) || 0);
+    });
+    (parts[1] || []).forEach(function(r){
+      var m = r._id && r._id.m;
+      if (!m || !matrix[m]) return;
+      matrix[m]["Daily Request"] += (Number(r.n) || 0);
+    });
+
+    var colTotals = {}; COLS.forEach(function(c){ colTotals[c] = 0; });
+    var months = [];
+    for (mi = 1; mi <= 12; mi++) {
+      var rowTotal = 0;
+      COLS.forEach(function(c){ rowTotal += matrix[mi][c]; colTotals[c] += matrix[mi][c]; });
+      months.push({ month: mi, counts: matrix[mi], total: rowTotal });
+    }
+    var columns = COLS.filter(function(c){ return colTotals[c] > 0; });
+    var grandTotal = columns.reduce(function(s, c){ return s + colTotals[c]; }, 0);
+
+    res.json({ year: yr, columns: columns, months: months, colTotals: colTotals, grandTotal: grandTotal });
+  } catch (e) {
+    console.error("[reports/campaigns/intake]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "intake_failed" });
+  }
+});
+
 app.get("/api/reports/agents/:id/stuck-leads", auth, reportsAuth, async function(req, res) {
   try {
     var sourceFilter = (req.query.source && req.query.source !== "all") ? String(req.query.source) : null;

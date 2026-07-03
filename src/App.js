@@ -5894,6 +5894,9 @@ var LeadsPage = function(p) {
           // for simplicity vs. adding a new exact-mode.
           var srcNeedle = p.specialFilter.source ? String(p.specialFilter.source) : "";
           if (srcNeedle && (l.source || "") !== srcNeedle) return false;
+          // mode "none" — the Campaigns > Performance "No campaign / Manual"
+          // row drills into leads with an empty campaign field.
+          if (p.specialFilter.mode === "none") return String(l.campaign || "").trim() === "";
           var nameNeedle = String(p.specialFilter.name || "").toLowerCase();
           if (nameNeedle === "") return true;
           return String(l.campaign || "").toLowerCase().indexOf(nameNeedle) >= 0;
@@ -16266,6 +16269,15 @@ var ReportsPage = function(p) {
     catch (e) { return "overview"; }
   });
   var selectTab = function(id){ setTab(id); try { localStorage.setItem("crm_reports_tab", id); } catch (e) {} };
+  // Campaigns-tab sub-view. "performance" (VIEW 1, cohort table) is the default;
+  // "intake" (VIEW 2, monthly-by-source matrix) and "roi" (the original tracked-
+  // campaign spend/ROI table) round it out. Persisted like the main tab.
+  var [campaignsView, setCampaignsView] = useState(function(){
+    var valid = { performance:1, intake:1, roi:1 };
+    try { var saved = localStorage.getItem("crm_reports_campaigns_view"); return (saved && valid[saved]) ? saved : "performance"; }
+    catch (e) { return "performance"; }
+  });
+  var selectCampaignsView = function(id){ setCampaignsView(id); try { localStorage.setItem("crm_reports_campaigns_view", id); } catch (e) {} };
   var [filters, setFilters] = useState(function(){
     var now = new Date();
     var monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
@@ -16389,7 +16401,18 @@ var ReportsPage = function(p) {
       })}
     </div>
 
-    {(tab === "overview" || tab === "pipeline" || tab === "agents" || tab === "campaigns") && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+    {tab === "campaigns" && <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
+      {[{ id:"performance", label:"Performance" }, { id:"intake", label:"Monthly intake" }, { id:"roi", label:"ROI / Spend" }].map(function(sv){
+        var active = campaignsView === sv.id;
+        return <button key={sv.id} onClick={function(){ selectCampaignsView(sv.id); }} style={{
+          padding:"6px 14px", borderRadius:8, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0",
+          background: active ? C.accent + "12" : "#fff", color: active ? C.accent : C.textLight,
+          fontSize:12, fontWeight:600, cursor:"pointer"
+        }}>{sv.label}</button>;
+      })}
+    </div>}
+
+    {(tab === "overview" || tab === "pipeline" || tab === "agents" || (tab === "campaigns" && campaignsView === "roi")) && <Card style={{ marginBottom:16, padding:"12px 14px" }}>
       <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center" }}>
         <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
           {presets.map(function(pr){
@@ -16455,8 +16478,13 @@ var ReportsPage = function(p) {
 
     {tab === "leaderboard" && <ReportsLeaderboardBody cu={cu} t={t} token={p.token}/>}
 
-    {tab === "campaigns" && <ReportsCampaignsBody filters={filters} cu={cu} t={t} token={p.token}
+    {tab === "campaigns" && campaignsView === "roi" && <ReportsCampaignsBody filters={filters} cu={cu} t={t} token={p.token}
       nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
+
+    {tab === "campaigns" && campaignsView === "performance" && <ReportsCampaignPerformance cu={cu} t={t} token={p.token}
+      nav={p.nav} setFilter={p.setFilter} setSpecialFilter={p.setSpecialFilter}/>}
+
+    {tab === "campaigns" && campaignsView === "intake" && <ReportsCampaignIntake cu={cu} t={t} token={p.token}/>}
   </div>;
 };
 
@@ -17498,6 +17526,226 @@ var ReportsCampaignsBody = function(p) {
         </table>
       </div>}
     </Card>}
+  </div>;
+};
+
+// Reports > Campaigns > "Performance" (VIEW 1). Cohort per-campaign table keyed
+// off the raw lead.campaign field, attributed by LEAD CREATION DATE. Month/
+// Quarter/Year selector mirrors the Leaderboard tab. Backed by
+// /api/reports/campaigns/performance (one aggregation; variant-merge + top unit
+// types resolved server-side). Distinct from the ROI sub-view (tracked
+// campaigns / spend). In this data campaign≈project-name, project≈unit-type.
+var ReportsCampaignPerformance = function(p) {
+  var now = new Date();
+  var curYear = now.getFullYear();
+  var years = [curYear, curYear - 1, curYear - 2, curYear - 3];
+  var [year, setYear] = useState(curYear);
+  var [quarter, setQuarter] = useState("all");
+  var [month, setMonth] = useState(now.getMonth());
+  var [sortBy, setSortBy] = useState("leads"); // leads | eois | deals
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+
+  // Month and Quarter are mutually exclusive — picking one clears the other
+  // (same rule as the Leaderboard period selector).
+  var pickMonth = function(m){ setMonth(m); if (m !== "all") setQuarter("all"); };
+  var pickQuarter = function(q){ setQuarter(q); if (q !== "all") setMonth("all"); };
+
+  var range = (function(){
+    if (month !== "all") return { from: new Date(year, month, 1).getTime(), to: new Date(year, month + 1, 1).getTime() };
+    if (quarter !== "all") { var qs = { Q1:0, Q2:3, Q3:6, Q4:9 }[quarter]; return { from: new Date(year, qs, 1).getTime(), to: new Date(year, qs + 3, 1).getTime() }; }
+    return { from: new Date(year, 0, 1).getTime(), to: new Date(year + 1, 0, 1).getTime() };
+  })();
+
+  useEffect(function(){
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    apiFetch("/api/reports/campaigns/performance?from=" + range.from + "&to=" + range.to, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [range.from, range.to]);
+
+  var periodLabel = month !== "all" ? (LB_MONTHS[month] + " " + year) : quarter !== "all" ? (quarter + " " + year) : ("Full year " + year);
+  var selStyle = { padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text };
+  var qBtn = function(q){
+    var active = (month === "all") && (quarter === q);
+    return <button key={q} type="button" onClick={function(){ pickQuarter(q); }}
+      style={{ padding:"5px 12px", borderRadius:8, border:"1px solid", borderColor: active ? C.accent : "#E2E8F0", background: active ? C.accent + "12" : "#fff", color: active ? C.accent : C.textLight, fontSize:12, fontWeight:600, cursor:"pointer" }}>{q === "all" ? "All" : q}</button>;
+  };
+
+  var skel = state.loading || !state.data;
+  var rows = (state.data && state.data.campaigns) || [];
+  // Manual bucket always sinks last; real rows sort by the active metric desc,
+  // tie-broken by leads.
+  var sorted = rows.slice().sort(function(a, b){
+    if (a.manual !== b.manual) return a.manual ? 1 : -1;
+    return ((b[sortBy] || 0) - (a[sortBy] || 0)) || (b.leads - a.leads);
+  });
+  var totalLeads = rows.reduce(function(s, r){ return s + (r.leads || 0); }, 0);
+  var realCount = rows.filter(function(r){ return !r.manual; }).length;
+
+  var openCampaign = function(c){
+    if (p.setSpecialFilter) p.setSpecialFilter(c.manual ? { type:"campaign", mode:"none", name:"" } : { type:"campaign", name: c.campaign });
+    if (p.setFilter) p.setFilter("all");
+    if (p.nav) p.nav("leads");
+  };
+
+  var thBase = { fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", padding:"8px 12px", borderBottom:"1px solid #E2E8F0", fontWeight:600, whiteSpace:"nowrap" };
+  var thNum = function(key, label){
+    var active = sortBy === key;
+    return <th onClick={function(){ setSortBy(key); }} style={Object.assign({}, thBase, { textAlign:"right", cursor:"pointer", color: active ? C.accent : C.textLight })}>{label}{active ? " ↓" : ""}</th>;
+  };
+  var tdStyle = { fontSize:13, padding:"9px 12px", borderBottom:"1px solid #F1F5F9", color:C.text };
+  var tdNum = Object.assign({}, tdStyle, { textAlign:"right", fontVariantNumeric:"tabular-nums" });
+
+  return <div>
+    <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+      <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }}>Period</span>
+        <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>{["all","Q1","Q2","Q3","Q4"].map(qBtn)}</div>
+        <select value={month} onChange={function(e){ var v = e.target.value; pickMonth(v === "all" ? "all" : Number(v)); }} style={selStyle}>
+          <option value="all">All months</option>
+          {LB_MONTHS.map(function(mn, i){ return <option key={i} value={i}>{mn}</option>; })}
+        </select>
+        <select value={year} onChange={function(e){ setYear(Number(e.target.value)); }} style={selStyle}>
+          {years.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
+        </select>
+        <div style={{ flex:1, minWidth:8 }}/>
+        <span style={{ fontSize:11, color:C.textLight }}>{periodLabel}</span>
+      </div>
+    </Card>
+
+    <Card style={{ padding:"12px 14px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:4, flexWrap:"wrap", gap:8 }}>
+        <div style={{ fontSize:14, fontWeight:700, color:C.text }}>Campaign performance</div>
+        {!skel && <div style={{ fontSize:11, color:C.textLight }}>{realCount} {realCount === 1 ? "campaign" : "campaigns"} · {totalLeads} leads</div>}
+      </div>
+      <div style={{ fontSize:10.5, color:"#94A3B8", marginBottom:10 }}>
+        By lead creation date (cohort) · variants merged · EOI = Pending/Approved · Deal = Done Deal · click a row to view its leads
+      </div>
+
+      {state.error && <div style={{ fontSize:12, color:"#DC2626", padding:"8px 0" }}>Couldn't load: {state.error}</div>}
+
+      {skel && !state.error && [0,1,2,3,4].map(function(i){ return <div key={i} style={{ height:34, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+      {!skel && !state.error && rows.length === 0 && <div style={{ fontSize:12, color:C.textLight, padding:"28px 8px", textAlign:"center" }}>No leads in {periodLabel}.</div>}
+
+      {!skel && !state.error && rows.length > 0 && <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", minWidth:520 }}>
+          <thead><tr>
+            <th style={Object.assign({}, thBase, { textAlign:"left" })}>Campaign / Project</th>
+            <th style={Object.assign({}, thBase, { textAlign:"left" })}>Top unit types</th>
+            {thNum("leads","Leads")}
+            {thNum("eois","EOIs")}
+            {thNum("deals","Deals")}
+          </tr></thead>
+          <tbody>
+            {sorted.map(function(c, i){
+              return <tr key={i}
+                onClick={function(){ openCampaign(c); }}
+                onMouseEnter={function(e){ e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={function(e){ e.currentTarget.style.background = "transparent"; }}
+                style={{ cursor:"pointer" }}
+                title={c.manual ? "View leads with no campaign" : ("View leads matching " + c.campaign)}>
+                <td style={Object.assign({}, tdStyle, { fontWeight:600, whiteSpace:"nowrap", color: c.manual ? C.textLight : C.text, fontStyle: c.manual ? "italic" : "normal" })}>{c.campaign}</td>
+                <td style={Object.assign({}, tdStyle, { color:C.textLight, maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" })}>{(c.unitTypes && c.unitTypes.length) ? c.unitTypes.join(", ") : "—"}</td>
+                <td style={tdNum}>{c.leads}</td>
+                <td style={Object.assign({}, tdNum, { color: c.eois > 0 ? C.text : "#CBD5E1" })}>{c.eois}</td>
+                <td style={Object.assign({}, tdNum, { color: c.deals > 0 ? C.success : "#CBD5E1", fontWeight: c.deals > 0 ? 700 : 400 })}>{c.deals}</td>
+              </tr>;
+            })}
+          </tbody>
+        </table>
+      </div>}
+    </Card>
+  </div>;
+};
+
+// Reports > Campaigns > "Monthly intake" (VIEW 2). Month × source matrix for
+// the selected year (rows = months with intake, columns = curated sources +
+// Total). Backed by /api/reports/campaigns/intake (two aggregations: Lead by
+// month/source excluding DR mirrors + DailyRequest by month → the "Daily
+// Request" column, so intake never double-counts). Sticky first column keeps
+// the month labels visible while the source columns scroll on mobile.
+var ReportsCampaignIntake = function(p) {
+  var now = new Date();
+  var curYear = now.getFullYear();
+  var years = [curYear, curYear - 1, curYear - 2, curYear - 3];
+  var [year, setYear] = useState(curYear);
+  var [state, setState] = useState({ loading: true, data: null, error: null });
+
+  useEffect(function(){
+    var aborted = false;
+    setState(function(s){ return Object.assign({}, s, { loading: true, error: null }); });
+    apiFetch("/api/reports/campaigns/intake?year=" + year, "GET", null, p.token)
+      .then(function(d){ if (!aborted) setState({ loading: false, data: d, error: null }); })
+      .catch(function(e){ if (!aborted) setState({ loading: false, data: null, error: (e && e.message) || "Failed to load" }); });
+    return function(){ aborted = true; };
+  }, [year]);
+
+  var selStyle = { padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text };
+  var skel = state.loading || !state.data;
+  var data = state.data || {};
+  var columns = data.columns || [];
+  var months = data.months || [];
+  var colTotals = data.colTotals || {};
+  var grandTotal = data.grandTotal || 0;
+  // Only months with intake, so a partial year doesn't show 8 empty rows.
+  var activeMonths = months.filter(function(m){ return (m.total || 0) > 0; });
+
+  var thBase = { fontSize:11, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em", padding:"8px 10px", borderBottom:"1px solid #E2E8F0", fontWeight:600, whiteSpace:"nowrap" };
+  var stickyL = { position:"sticky", left:0, background:"#fff", zIndex:1 };
+  var tdNum = { fontSize:13, padding:"8px 10px", borderBottom:"1px solid #F1F5F9", color:C.text, fontVariantNumeric:"tabular-nums", textAlign:"right" };
+  var totCell = { fontSize:13, padding:"9px 10px", borderTop:"2px solid #E2E8F0", textAlign:"right", fontVariantNumeric:"tabular-nums", fontWeight:700, color:C.text };
+
+  return <div>
+    <Card style={{ marginBottom:16, padding:"12px 14px" }}>
+      <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+        <span style={{ fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }}>Year</span>
+        <select value={year} onChange={function(e){ setYear(Number(e.target.value)); }} style={selStyle}>
+          {years.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
+        </select>
+        <div style={{ flex:1, minWidth:8 }}/>
+        {!skel && <span style={{ fontSize:11, color:C.textLight }}>{grandTotal} leads in {year}</span>}
+      </div>
+    </Card>
+
+    <Card style={{ padding:"12px 14px" }}>
+      <div style={{ fontSize:14, fontWeight:700, color:C.text, marginBottom:4 }}>Monthly intake by source</div>
+      <div style={{ fontSize:10.5, color:"#94A3B8", marginBottom:10 }}>
+        Leads per month by source (lead creation date, Cairo time) · Daily Request counted from daily-request intake
+      </div>
+
+      {state.error && <div style={{ fontSize:12, color:"#DC2626", padding:"8px 0" }}>Couldn't load: {state.error}</div>}
+
+      {skel && !state.error && [0,1,2,3].map(function(i){ return <div key={i} style={{ height:34, marginBottom:6, background:"#F1F5F9", borderRadius:6 }}/>; })}
+
+      {!skel && !state.error && (columns.length === 0 || activeMonths.length === 0) && <div style={{ fontSize:12, color:C.textLight, padding:"28px 8px", textAlign:"center" }}>No intake recorded in {year}.</div>}
+
+      {!skel && !state.error && columns.length > 0 && activeMonths.length > 0 && <div style={{ overflowX:"auto" }}>
+        <table style={{ width:"100%", borderCollapse:"collapse", minWidth: 110 + columns.length * 74 }}>
+          <thead><tr>
+            <th style={Object.assign({}, thBase, { textAlign:"left" }, stickyL)}>Month</th>
+            {columns.map(function(c){ return <th key={c} style={Object.assign({}, thBase, { textAlign:"right" })}>{c}</th>; })}
+            <th style={Object.assign({}, thBase, { textAlign:"right", color:C.text })}>Total</th>
+          </tr></thead>
+          <tbody>
+            {activeMonths.map(function(m){
+              return <tr key={m.month}>
+                <td style={Object.assign({}, tdNum, { textAlign:"left", color:C.text, fontWeight:600, whiteSpace:"nowrap" }, stickyL)}>{LB_MONTHS[m.month - 1]}</td>
+                {columns.map(function(c){ var v = (m.counts && m.counts[c]) || 0; return <td key={c} style={Object.assign({}, tdNum, { color: v > 0 ? C.text : "#CBD5E1" })}>{v}</td>; })}
+                <td style={Object.assign({}, tdNum, { fontWeight:700 })}>{m.total}</td>
+              </tr>;
+            })}
+            <tr>
+              <td style={Object.assign({}, totCell, { textAlign:"left", color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }, stickyL)}>Total</td>
+              {columns.map(function(c){ return <td key={c} style={totCell}>{colTotals[c] || 0}</td>; })}
+              <td style={Object.assign({}, totCell, { fontWeight:800, color:C.accent })}>{grandTotal}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>}
+    </Card>
   </div>;
 };
 
