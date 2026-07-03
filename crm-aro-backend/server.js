@@ -8280,6 +8280,43 @@ async function getClosedPeriod(leaderId, year, quarter) {
   return TargetPeriod.findOne({ leaderId: leaderId, year: year, quarter: quarter, status: "closed" }).lean();
 }
 
+// ===== Phase 6 — auto-close ended quarters (future quarters lock themselves).
+// autoCloseQuarter freezes every active leader's period for (year, quarter) from
+// the live roster + Phase-1 membership events, SKIPPING any leader that already
+// has a period (never clobbers an admin-curated draft / closed snapshot). A daily
+// tick auto-closes the just-ended quarter for ~a month after it ends. Members who
+// left DURING the quarter that the active-only roster misses can still be added by
+// the admin (reopen → Add member); auto-close is the hands-off default for stable
+// rosters. Never touches User.qTargets.
+async function autoCloseQuarter(year, quarter, closedBy) {
+  var leaders = await User.find({ role: { $in: ["manager", "team_leader"] }, active: { $ne: false } }).select("_id").lean();
+  var summary = { closed: 0, skipped: 0, leaders: leaders.length };
+  for (var i = 0; i < leaders.length; i++) {
+    var lid = leaders[i]._id;
+    var roster = await resolveLeaderRoster(lid);
+    if (!roster.length) { summary.skipped++; continue; }
+    var existing = await TargetPeriod.findOne({ leaderId: lid, year: year, quarter: quarter }).select("_id").lean();
+    if (existing) { summary.skipped++; continue; }
+    try { await closePeriod({ leaderId: lid, year: year, quarter: quarter, closedBy: closedBy || null }); summary.closed++; }
+    catch (e) { console.error("[auto-close] leader " + lid + ": " + (e && e.message)); }
+  }
+  return summary;
+}
+async function autoCloseEndedQuarterTick() {
+  try {
+    var d = new Date();
+    var y = d.getUTCFullYear(), q = Math.floor(d.getUTCMonth() / 3) + 1;
+    var qStart = new Date(Date.UTC(y, (q - 1) * 3, 1));
+    var dayOfQ = Math.floor((d.getTime() - qStart.getTime()) / 86400000) + 1;
+    if (dayOfQ > 31) return; // only auto-close in the ~month after a quarter ends
+    var py = y, pq = q - 1; if (pq < 1) { pq = 4; py = y - 1; }
+    var res = await autoCloseQuarter(py, pq, null);
+    if (res.closed > 0) console.log("[target-period auto-close] " + py + "-Q" + pq + ": closed " + res.closed + " period(s), skipped " + res.skipped);
+  } catch (e) { console.error("[target-period auto-close] " + (e && e.message)); }
+}
+setInterval(autoCloseEndedQuarterTick, 24 * 60 * 60 * 1000); // daily
+setTimeout(autoCloseEndedQuarterTick, 90 * 1000);            // once, ~90s after boot
+
 app.post("/api/users", auth, adminOnly, async function(req, res) {
   try {
     // Owner lockdown — see ALLOWED_CREATE_ROLES above. The Owner is seeded
@@ -17656,6 +17693,18 @@ app.delete("/api/target-periods/:id([0-9a-fA-F]{24})", auth, strictAdminOnly, as
     if (period.status === "closed") return res.status(409).json({ error: "Cannot delete a closed period — reopen first" });
     await TargetPeriod.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Auto-close every leader's period for a quarter (Phase 6 — the manual/admin
+// trigger; a daily job does the same for the just-ended quarter). Skips leaders
+// that already have a period. Body: { year, quarter }.
+app.post("/api/target-periods/auto-close", auth, strictAdminOnly, async function(req, res) {
+  try {
+    var year = parseInt(req.body.year, 10), quarter = parseInt(req.body.quarter, 10);
+    if (!year || quarter < 1 || quarter > 4) return res.status(400).json({ error: "year + quarter (1..4) required" });
+    var summary = await autoCloseQuarter(year, quarter, req.user.id);
+    res.json(summary);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

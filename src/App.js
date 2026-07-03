@@ -15068,6 +15068,13 @@ var TargetPeriodsManager = function(pp) {
     try { await apiFetch("/api/target-periods/" + period._id + "/members?key=" + encodeURIComponent(key), "DELETE", null, pp.token, pp.csrfToken); afterChange(); }
     catch(e){ alert(e.message || "Failed to remove"); } finally { setBusy(false); }
   };
+  var autoCloseAll = async function(){
+    if (busy) return;
+    if (!window.confirm("Auto-close ALL leaders for " + qKey + " from the live roster + membership log?\n\nSkips any leader that already has a period. Members who left during the quarter may need a manual add (reopen → Add member).")) return;
+    setBusy(true);
+    try { var r = await apiFetch("/api/target-periods/auto-close", "POST", { year: year, quarter: quarter }, pp.token, pp.csrfToken); afterChange(); alert("Auto-closed " + ((r && r.closed) || 0) + " period(s); skipped " + ((r && r.skipped) || 0) + " (already had a period)."); }
+    catch(e){ alert(e.message || "Failed to auto-close"); } finally { setBusy(false); }
+  };
   var badge = function(status){
     var m = { closed: { bg:"#dcfce7", fg:"#166534", label:"Closed ✓ frozen" }, draft: { bg:"#fef9c3", fg:"#854d0e", label:"Draft" }, open: { bg:"#dbeafe", fg:"#1e40af", label:"Open" } }[status] || { bg:"#f1f5f9", fg:"#475569", label:"No period" };
     return <span style={{ background:m.bg, color:m.fg, padding:"2px 9px", borderRadius:20, fontSize:11, fontWeight:700 }}>{m.label}</span>;
@@ -15076,6 +15083,10 @@ var TargetPeriodsManager = function(pp) {
   return <Modal show={true} onClose={pp.onClose} title={"🎯 Manage Target Periods — " + qKey}>
     <div style={{ fontSize:12.5, color:C.textLight, marginBottom:14, lineHeight:1.5 }}>
       Lock this quarter's team targets to the roster that was actually present. Create a draft, set each member's join / leave dates (blank = present all quarter), then <b>Close</b> to freeze. Closed quarters show frozen numbers on the Sales Team page; individual agents' own targets are never changed.
+    </div>
+    <div style={{ marginBottom:12, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+      <Btn outline disabled={busy} onClick={autoCloseAll} style={{ padding:"5px 11px", fontSize:12 }}>⚡ Auto-close all leaders for {qKey}</Btn>
+      <span style={{ fontSize:11, color:C.textLight }}>freezes every leader from the live roster + membership log (skips ones you've already started; a daily job does this automatically after a quarter ends)</span>
     </div>
     {periods === null
       ? <div style={{ padding:20, textAlign:"center", color:C.textLight }}>Loading…</div>
