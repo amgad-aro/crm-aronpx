@@ -14999,6 +14999,18 @@ var TargetPeriodsManager = function(pp) {
     try { await apiFetch("/api/target-periods/draft", "POST", { leaderId: leaderId, year: year, quarter: quarter, refresh: !!refresh }, pp.token, pp.csrfToken); afterChange(); }
     catch(e){ alert(e.message || "Failed to create draft"); } finally { setBusy(false); }
   };
+  // Target-aggregation mode per leader (direct | subtree). Flipping it changes how
+  // the leader's card/row rolls up on the Sales Team page for OPEN quarters (live
+  // recompute); CLOSED periods stay frozen (the mode used was snapshotted at close).
+  // onChanged() bumps member-stats so the page reflects the flip immediately.
+  var saveScope = async function(leaderId, mode){
+    if (busy) return; setBusy(true);
+    try {
+      await apiFetch("/api/users/" + leaderId, "PUT", { targetScope: mode }, pp.token, pp.csrfToken);
+      if (pp.setUsers) pp.setUsers(function(prev){ return prev.map(function(u){ return String(gid(u)) === String(leaderId) ? Object.assign({}, u, { targetScope: mode }) : u; }); });
+      afterChange();
+    } catch(e){ alert(e.message || "Failed to update roll-up mode"); } finally { setBusy(false); }
+  };
   var openEditor = function(period){
     var lid = String(period.leaderId);
     if (expanded === lid) { setExpanded(null); return; }
@@ -15104,14 +15116,32 @@ var TargetPeriodsManager = function(pp) {
               var period = periodByLeader[lid] || null;
               var status = period ? period.status : "none";
               var isOpen = expanded === lid && period;
+              var leadMode = lead.targetScope === "subtree" ? "subtree" : "direct";
               return <div key={lid} style={{ border:"1px solid "+C.border, borderRadius:10, padding:12, background:"#fff" }}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:180 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:180, flexWrap:"wrap" }}>
                     <span style={{ fontWeight:700, color:C.text }}>{lead.name}</span>
                     <span style={{ fontSize:11, color:C.textLight }}>{lead.role}</span>
                     {badge(status)}
+                    {/* Frozen roll-up mode used at close (transparency) — closed periods only. */}
+                    {status==="closed" && period && <span
+                      title={"Roll-up mode frozen when this period was closed: " + (period.targetScopeUsed==="subtree" ? "full subtree (team leaders' teams included)" : "direct reports only")}
+                      style={{ fontSize:10, fontWeight:700, color: period.targetScopeUsed==="subtree" ? "#3b5cb8" : "#64748b", background: period.targetScopeUsed==="subtree" ? "#eef2ff" : "#f1f5f9", padding:"2px 8px", borderRadius:20 }}>
+                      {period.targetScopeUsed==="subtree" ? "subtree" : "direct"} roll-up
+                    </span>}
                   </div>
                   <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+                    {/* Target roll-up mode — direct reports vs full subtree. Applies to
+                        OPEN quarters live; closed periods stay frozen at the mode used. */}
+                    <span style={{ display:"flex", alignItems:"center", gap:5, marginRight:2 }}
+                      title={"How " + (lead.name||"this leader") + "'s Target/Achieved roll up on the Sales Team page.\nDirect reports = direct reports only (default).\nFull subtree = the entire reporting tree beneath them (team leaders' teams included).\nClosed periods stay frozen at the mode used when closed."}>
+                      <span style={{ fontSize:11, color:C.textLight }}>Roll-up:</span>
+                      <select value={leadMode} disabled={busy} onChange={function(ev){ saveScope(lid, ev.target.value); }}
+                        style={{ fontSize:11, padding:"3px 6px", border:"1px solid "+C.border, borderRadius:6, background:"#fff", color:C.text, cursor:"pointer" }}>
+                        <option value="direct">Direct reports</option>
+                        <option value="subtree">Full subtree</option>
+                      </select>
+                    </span>
                     {period && <span style={{ fontSize:12, color:C.textLight }}>Target <b style={{ color:C.text }}>{fmtEGP(period.teamTarget)}</b>{status==="closed" ? <span> · Achieved <b style={{ color:C.text }}>{fmtEGP(period.teamAchievedSnapshot)}</b></span> : null}</span>}
                     {!period && <Btn outline disabled={busy} onClick={function(){createDraft(lid,false);}} style={{ padding:"5px 10px", fontSize:12 }}>Create draft</Btn>}
                     {period && status!=="closed" && <Btn outline disabled={busy} onClick={function(){openEditor(period);}} style={{ padding:"5px 10px", fontSize:12 }}>{isOpen?"Hide":"Edit roster"}</Btn>}
@@ -15224,6 +15254,9 @@ var TeamPage = function(p) {
   // after the X3 bootstrap shrink. One fetch covers every visible card;
   // we keep the in-memory derivation as a bootstrap-time fallback.
   var [memberStatsMap, setMemberStatsMap] = useState(null);
+  // Company TOTAL for the Teams Comparison table — a member-level de-duplicated,
+  // period-aware roll-up computed server-side (see /api/team/member-stats).
+  var [memberStatsTotal, setMemberStatsTotal] = useState(null);
   // Phase 4 — admin "Manage Target Periods" modal + a bump that re-fetches
   // member-stats after a period is closed/reopened so cards reflect the change.
   var [showPeriods, setShowPeriods] = useState(false);
@@ -15238,6 +15271,7 @@ var TeamPage = function(p) {
         var map = {};
         r.members.forEach(function(m){ if (m && m.uid) map[String(m.uid)] = m; });
         setMemberStatsMap(map);
+        setMemberStatsTotal(r.total || null);
       })
       .catch(function(){});
     return function(){ cancelled = true; };
@@ -15460,13 +15494,11 @@ var TeamPage = function(p) {
     </div>;
   };
 
-  // Activity feed - last 20 activities across all team
-  var teamActivityFeed = p.activities.map(function(a){
-    var uname=a.userId&&a.userId.name?a.userId.name:"";
-    var lname=a.leadId&&a.leadId.name?a.leadId.name:"";
-    var icon=a.type==="call"?"📞":a.type==="meeting"?"🤝":a.type==="status_change"?"🔄":a.type==="reassign"?"↩️":a.type==="note"?"📝":"🔔";
-    return {icon,uname,lname,note:a.note,time:a.createdAt};
-  });
+  // Teams Comparison table — per-leader row + a de-duplicated company TOTAL.
+  // Colors the % with the agent-leaderboard thresholds (≥70 green / ≥30 amber / red).
+  var pctColor = function(pct){ return pct>=70 ? "#16A34A" : pct>=30 ? "#F59E0B" : "#DC2626"; };
+  var fmtM = function(n){ return ((Number(n)||0)/1000000).toFixed(2)+"M"; };
+  var fmtEGP = function(n){ return (Number(n)||0).toLocaleString()+" EGP"; };
 
   return <div className="team-page-v2" style={{ padding:"20px", background:"#f1f5f9", minHeight:"100%", fontFamily:"'Inter','Segoe UI',sans-serif" }}>
     {/* Inter font + the 8 gradient classes used by MemberCard. Scoped under
@@ -15588,24 +15620,71 @@ var TeamPage = function(p) {
       })}
     </div>}
 
-    {/* Activity Feed */}
-    {isAdmin&&<div style={{ marginTop:20 }}>
-      <h3 style={{ fontSize:14, fontWeight:700, marginBottom:12 }}>⚡ Live Activity Feed</h3>
-      <div style={{ background:"#fff", borderRadius:12, border:"1px solid #E8ECF1", overflow:"hidden" }}>
-        {teamActivityFeed.length===0&&<div style={{ padding:24, textAlign:"center", color:C.textLight, fontSize:13 }}>No recent activity</div>}
-        {teamActivityFeed.map(function(a,i){return <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderBottom:"1px solid #F8FAFC" }}>
-          <span style={{ fontSize:16, flexShrink:0 }}>{a.icon}</span>
-          <div style={{ flex:1, minWidth:0 }}>
-            <span style={{ fontSize:12, fontWeight:600, color:C.accent }}>{a.uname}</span>
-            {a.lname&&<span style={{ fontSize:12, color:C.textLight }}> — {a.lname}</span>}
-            {a.note&&<div style={{ fontSize:11, color:C.textLight, marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{maskPhonesInText(a.note)}</div>}
-          </div>
-          <span style={{ fontSize:10, color:C.textLight, flexShrink:0 }}>{timeAgo(a.time,{ago:"ago",minutes:"min",hours:"hr",days:"days",just:"now"})}</span>
-        </div>;})}
+    {/* Teams Comparison — one row per leader + a de-duplicated company TOTAL.
+        Same server data source as the cards above (member-stats / period-aware):
+        frozen for closed periods, live for the current one, honoring selected Q/year.
+        (Replaced the old Live Activity Feed, which duplicated the Dashboard's.) */}
+    {isAdmin && visibleManagers.length>0 && <div style={{ marginTop:20 }}>
+      <div style={{ display:"flex", alignItems:"baseline", gap:8, marginBottom:12, flexWrap:"wrap" }}>
+        <h3 style={{ fontSize:14, fontWeight:700, margin:0 }}>📊 Teams Comparison</h3>
+        <span style={{ fontSize:11, color:C.textLight }}>{viewQ} {viewYear} · same numbers as the cards above</span>
+      </div>
+      <div style={{ background:"#fff", borderRadius:12, border:"1px solid #E8ECF1", overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+        <table style={{ width:"100%", minWidth:560, borderCollapse:"collapse", fontSize:13 }}>
+          <thead>
+            <tr style={{ background:"#F8FAFC", color:"#64748b", textAlign:"left" }}>
+              <th style={{ padding:"10px 14px", fontWeight:700 }}>Team</th>
+              <th style={{ padding:"10px 12px", fontWeight:700, textAlign:"right" }}>Target</th>
+              <th style={{ padding:"10px 12px", fontWeight:700, textAlign:"right" }}>Achieved</th>
+              <th style={{ padding:"10px 12px", fontWeight:700, textAlign:"right" }}>%</th>
+              <th style={{ padding:"10px 12px", fontWeight:700, textAlign:"right" }}>Deals</th>
+              <th style={{ padding:"10px 14px", fontWeight:700, textAlign:"right" }}>EOIs</th>
+            </tr>
+          </thead>
+          <tbody>
+            {memberStatsMap===null && <tr><td colSpan={6} style={{ padding:20, textAlign:"center", color:C.textLight }}>Loading…</td></tr>}
+            {memberStatsMap!==null && visibleManagers.map(function(mgr){
+              var muid=String(gid(mgr));
+              var s = memberStatsMap[muid] || null;
+              var tgt = s ? (s.qTarget||0) : 0;
+              var ach = s ? (s.qRev||0) : 0;
+              var prog = s ? (s.qProg||0) : 0;
+              var deals = s ? (s.qDeals||0) : 0;
+              var eois = s ? (s.qEois||0) : 0;
+              var frozen = !!(s && s.fromPeriod);
+              var subtree = !!(s && s.targetScope==="subtree");
+              return <tr key={muid} style={{ borderTop:"1px solid #F1F5F9" }}>
+                <td style={{ padding:"10px 14px", whiteSpace:"nowrap" }}>
+                  <span style={{ fontWeight:600, color:"#0f172a" }}>{mgr.name}</span>
+                  {subtree && <span title="Subtree mode — rolls up the full reporting tree beneath this leader" style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#3b5cb8", background:"#eef2ff", padding:"1px 6px", borderRadius:10 }}>SUBTREE</span>}
+                  {frozen && <span title="Frozen — this quarter's Target Period is closed" style={{ marginLeft:6, fontSize:9, fontWeight:700, color:"#166534", background:"#dcfce7", padding:"1px 6px", borderRadius:10 }}>FROZEN</span>}
+                </td>
+                <td style={{ padding:"10px 12px", textAlign:"right", color:"#334155" }} title={fmtEGP(tgt)}>{tgt>0?fmtM(tgt):"—"}</td>
+                <td style={{ padding:"10px 12px", textAlign:"right", fontWeight:600, color:"#0f172a" }} title={fmtEGP(ach)}>{fmtM(ach)}</td>
+                <td style={{ padding:"10px 12px", textAlign:"right", fontWeight:700, color:pctColor(prog) }}>{prog}%</td>
+                <td style={{ padding:"10px 12px", textAlign:"right", fontWeight:600, color:deals>0?"#15803d":"#94a3b8" }}>{deals}</td>
+                <td style={{ padding:"10px 14px", textAlign:"right", color:eois>0?"#334155":"#94a3b8" }}>{eois}</td>
+              </tr>;
+            })}
+          </tbody>
+          {memberStatsTotal && <tfoot>
+            <tr style={{ borderTop:"2px solid #E2E8F0", background:"#F8FAFC", fontWeight:800 }}>
+              <td style={{ padding:"11px 14px", color:"#0f172a", whiteSpace:"nowrap" }}>TOTAL <span style={{ fontSize:10, fontWeight:600, color:C.textLight }}>(company · each member once)</span></td>
+              <td style={{ padding:"11px 12px", textAlign:"right", color:"#0f172a" }} title={fmtEGP(memberStatsTotal.target)}>{fmtM(memberStatsTotal.target)}</td>
+              <td style={{ padding:"11px 12px", textAlign:"right", color:"#0f172a" }} title={fmtEGP(memberStatsTotal.achieved)}>{fmtM(memberStatsTotal.achieved)}</td>
+              <td style={{ padding:"11px 12px", textAlign:"right", color:pctColor(memberStatsTotal.prog||0) }}>{memberStatsTotal.prog||0}%</td>
+              <td style={{ padding:"11px 12px", textAlign:"right", color:"#0f172a" }}>{memberStatsTotal.deals||0}</td>
+              <td style={{ padding:"11px 14px", textAlign:"right", color:"#0f172a" }}>{memberStatsTotal.eois||0}</td>
+            </tr>
+          </tfoot>}
+        </table>
+      </div>
+      <div style={{ fontSize:11, color:C.textLight, marginTop:8, lineHeight:1.5 }}>
+        Rows mirror the cards above. The <b>TOTAL</b> counts each member once, so a team leader who also appears inside their manager's row — or a whole sub-team rolled up by a manager in <b>subtree</b> mode — is never double-counted.
       </div>
     </div>}
 
-    {showPeriods && <TargetPeriodsManager token={p.token} csrfToken={p.csrfToken} users={p.users} year={viewYear} quarter={parseInt(String(viewQ).replace("Q",""))||1} t={t} onClose={function(){setShowPeriods(false);}} onChanged={function(){setPeriodBust(function(x){return x+1;});}} />}
+    {showPeriods && <TargetPeriodsManager token={p.token} csrfToken={p.csrfToken} users={p.users} setUsers={p.setUsers} year={viewYear} quarter={parseInt(String(viewQ).replace("Q",""))||1} t={t} onClose={function(){setShowPeriods(false);}} onChanged={function(){setPeriodBust(function(x){return x+1;});}} />}
     {editQModal&&<Modal show={true} onClose={function(){setEditQModal(null);}} title={"🎯 Quarterly Targets — "+editQModal.user.name}>
       <div style={{ fontSize:12, color:C.textLight, marginBottom:14, padding:"8px 12px", background:"#F8FAFC", borderRadius:8 }}>Quarterly target in EGP</div>
       <div style={{ marginBottom:14 }}>

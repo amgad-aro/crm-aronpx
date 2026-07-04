@@ -62,6 +62,11 @@ var User = mongoose.model("User", new mongoose.Schema({
   role:{type:String,enum:["admin","sales_admin","hr","director","manager","team_leader","sales","viewer","office_boy"],default:"sales"},
   title:{type:String,default:""}, active:{type:Boolean,default:true},
   monthlyTarget:{type:Number,default:15}, teamId:{type:String,default:""}, teamName:{type:String,default:""}, lastSeen:{type:Date,default:null}, lastActive:{type:Date,default:null}, qTargets:{type:Object,default:{}}, reportsTo:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  // Target-aggregation mode for a leader/manager card (Sales Team page + member-stats):
+  //   "direct"  = target/achievement summed over the leader's DIRECT reports only (default; the historical behavior).
+  //   "subtree" = summed over the leader's FULL reporting tree (team leaders' teams included, recursively).
+  // Numerator (achievement) and denominator (target) always aggregate over the SAME roster.
+  targetScope:{type:String,enum:["direct","subtree"],default:"direct"},
   startingDate:{type:Date,default:null},
   // Attendance & Salary system (docs/attendance-salary-requirements.md §17).
   // baseSalary in EGP, null for Owner (admin) — excluded from all salary lists.
@@ -1200,6 +1205,13 @@ var TargetPeriod = mongoose.model("TargetPeriod", new mongoose.Schema({
   teamAchievedSnapshot: { type: Number, default: 0 },   // revenue over [self+subs] (immutable when closed)
   teamDealsSnapshot:    { type: Number, default: 0 },   // deal count over [self+subs] at close
   teamLeadsSnapshot:    { type: Number, default: 0 },   // lead count over [self+subs] at close
+  // EOI count over [self+subs] at close. NO schema default on purpose: periods that
+  // were closed BEFORE this field existed read `undefined`, so the member-stats read
+  // branch falls back to a live count over the frozen roster instead of a wrong 0.
+  teamEoisSnapshot:     { type: Number },
+  // Target-aggregation mode this period's roster was built with ("direct" | "subtree").
+  // Snapshotted for transparency — a later leader mode-flip never rewrites a closed period.
+  targetScopeUsed:      { type: String, enum: ["direct", "subtree"], default: "direct" },
   closedAt:             { type: Date, default: null },
   closedBy:             { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
 }, { timestamps: true }));
@@ -2227,6 +2239,33 @@ async function computeAgentDealStats(agentOids, fromDate, toDate, pwMap, sourceF
     revenue += bg * w * splitMult;
   }
   return { leads: leads, deals: dealRows.length, revenue: revenue };
+}
+
+// computeAgentEoiCount — number of leads CURRENTLY in EOI state (status "EOI" or
+// globalStatus "eoi") attributed to the agent set (agentId | splitAgent2Id), whose
+// effective EOI date (eoiDate -> updatedAt -> createdAt) falls in [fromDate,toDate).
+// Distinct-lead count (a split EOI credited to both members inside agentOids is still
+// ONE lead — the aggregate groups by _id implicitly). Leads that progressed to
+// DoneDeal are no longer in EOI state, so they are not counted here. Kept SEPARATE
+// from computeAgentDealStats so the shared leaderboard/deal path stays byte-identical.
+async function computeAgentEoiCount(agentOids, fromDate, toDate) {
+  if (!agentOids || !agentOids.length) return 0;
+  var rows = await Lead.aggregate([
+    { $match: {
+        archived: { $ne: true },
+        $and: [
+          { $or: [{ agentId: { $in: agentOids } }, { splitAgent2Id: { $in: agentOids } }] },
+          { $or: [{ status: "EOI" }, { globalStatus: "eoi" }] }
+        ]
+    }},
+    { $addFields: { _effDate: { $ifNull: [
+      { $convert: { input: "$eoiDate", to: "date", onError: null, onNull: null } },
+      { $ifNull: ["$updatedAt", "$createdAt"] }
+    ]}}},
+    { $match: { _effDate: { $gte: fromDate, $lt: toDate } } },
+    { $count: "n" }
+  ]);
+  return rows.length ? rows[0].n : 0;
 }
 
 // FIX 2 — Batched equivalent of running computeAgentDealStats once PER agent
@@ -8131,9 +8170,42 @@ async function getRawProjectWeightsMap() {
   return (pwDoc && pwDoc.value && typeof pwDoc.value === "object") ? pwDoc.value : {};
 }
 
-// resolveLeaderRoster — the leader's current direct reports (sales + team_leader),
-// IDENTICAL to the member-stats leader-card roster query.
-async function resolveLeaderRoster(leaderId) {
+// resolveSubtreeRoster — the leader's FULL reporting subtree (sales + team_leader,
+// recursively), EXCLUDING the leader themselves. BFS down reportsTo, level by level,
+// deduping by id and hop-capped so a reportsTo cycle can never loop forever. Used by
+// "subtree" target-scope leaders so a manager's card rolls up their team leaders'
+// whole teams, not just direct reports.
+async function resolveSubtreeRoster(leaderId) {
+  var collected = new Map(); // id string -> user doc
+  var rootKey = String(leaderId);
+  var frontier = [leaderId];
+  var hops = 0;
+  while (frontier.length && hops < 50) {
+    hops++;
+    var kids = await User.find({
+      active: { $ne: false },
+      role: { $in: ["sales", "team_leader"] },
+      reportsTo: { $in: frontier }
+    }).select("_id name role qTargets teamId teamName reportsTo").lean();
+    var next = [];
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i];
+      var key = String(k._id);
+      if (key === rootKey || collected.has(key)) continue; // dedupe + never re-descend
+      collected.set(key, k);
+      next.push(k._id); // recurse into this node's own reports next round
+    }
+    frontier = next;
+  }
+  return Array.from(collected.values());
+}
+
+// resolveLeaderRoster — the roster a leader's card/period aggregates over, per the
+// leader's target-scope mode. "direct" (default) = direct reports only (sales +
+// team_leader), IDENTICAL to the member-stats leader-card roster query. "subtree" =
+// the full reporting tree beneath them (resolveSubtreeRoster).
+async function resolveLeaderRoster(leaderId, mode) {
+  if (mode === "subtree") return resolveSubtreeRoster(leaderId);
   return User.find({
     active: { $ne: false },
     role: { $in: ["sales", "team_leader"] },
@@ -8167,8 +8239,11 @@ async function resolveMemberPresence(userId, leaderId, qStart, qEnd) {
 // Does NOT snapshot achievement (closePeriod does that).
 async function buildPeriodMembers(leaderId, year, quarter) {
   var b = qPeriodBounds(year, quarter);
-  var leader = await User.findById(leaderId).select("_id name role qTargets teamId teamName").lean();
-  var roster = await resolveLeaderRoster(leaderId);
+  var leader = await User.findById(leaderId).select("_id name role qTargets teamId teamName targetScope").lean();
+  // Roster follows the leader's CURRENT target-scope mode. An open/draft period
+  // recomputes by this mode on every read; closePeriod snapshots the mode used.
+  var mode = (leader && leader.targetScope === "subtree") ? "subtree" : "direct";
+  var roster = await resolveLeaderRoster(leaderId, mode);
   var members = [];
   if (leader) {
     var lfull = readQTargetServer(leader, year, quarter) || 0;
@@ -8192,7 +8267,7 @@ async function buildPeriodMembers(leaderId, year, quarter) {
       proratedTarget: Math.round(full * frac), achievedSnapshot: 0
     });
   }
-  return { bounds: b, leader: leader, members: members };
+  return { bounds: b, leader: leader, members: members, mode: mode };
 }
 
 // sumTeamTarget — Σ pro-rated targets of the NON-leader members; if that's 0,
@@ -8223,6 +8298,7 @@ async function buildOpenPeriodForLeader(leaderId, year, quarter) {
   var leader = built.leader;
   var agentOids = built.members.map(function(m) { return m.userId; });
   var teamStats = agentOids.length ? await computeAgentDealStats(agentOids, b.qStart, b.qEnd, pwMap) : { leads: 0, deals: 0, revenue: 0 };
+  var teamEois = agentOids.length ? await computeAgentEoiCount(agentOids, b.qStart, b.qEnd) : 0;
   return {
     leaderId: leaderId,
     teamId: leader ? (leader.teamId || "") : "",
@@ -8233,7 +8309,9 @@ async function buildOpenPeriodForLeader(leaderId, year, quarter) {
     teamTarget: sumTeamTarget(built.members),
     teamAchievedSnapshot: teamStats.revenue || 0,
     teamDealsSnapshot: teamStats.deals || 0,
-    teamLeadsSnapshot: teamStats.leads || 0
+    teamLeadsSnapshot: teamStats.leads || 0,
+    teamEoisSnapshot: teamEois,
+    targetScopeUsed: built.mode || "direct"
   };
 }
 
@@ -8254,6 +8332,7 @@ async function closePeriod(opts) {
   }
   var agentOids = built.members.map(function(mm) { return mm.userId; });
   var teamStats = agentOids.length ? await computeAgentDealStats(agentOids, b.qStart, b.qEnd, pwMap) : { leads: 0, deals: 0, revenue: 0 };
+  var teamEois = agentOids.length ? await computeAgentEoiCount(agentOids, b.qStart, b.qEnd) : 0;
   var doc = await TargetPeriod.findOneAndUpdate(
     { leaderId: leaderId, year: year, quarter: quarter },
     { $set: {
@@ -8266,6 +8345,8 @@ async function closePeriod(opts) {
         teamAchievedSnapshot: teamStats.revenue || 0,
         teamDealsSnapshot: teamStats.deals || 0,
         teamLeadsSnapshot: teamStats.leads || 0,
+        teamEoisSnapshot: teamEois,
+        targetScopeUsed: built.mode || "direct",
         closedAt: new Date(),
         closedBy: (opts.closedBy && mongoose.Types.ObjectId.isValid(opts.closedBy)) ? opts.closedBy : null
       } },
@@ -8444,6 +8525,12 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     }
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
     if (req.body.qTargets !== undefined) update["qTargets"] = req.body.qTargets;
+    if (req.body.targetScope !== undefined) {
+      // Leader target-aggregation mode. Only "direct" | "subtree"; anything else
+      // normalizes to the default "direct". Open periods recompute by this mode;
+      // closed periods stay frozen (the mode used is snapshotted at close time).
+      update.targetScope = (req.body.targetScope === "subtree") ? "subtree" : "direct";
+    }
     if (req.body.reportsTo !== undefined) update.reportsTo = req.body.reportsTo || null;
     if (req.body.teamId !== undefined) update.teamId = req.body.teamId;
     if (req.body.teamName !== undefined) update.teamName = req.body.teamName;
@@ -16903,7 +16990,7 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
       var ids = [meUid].concat(directs.map(function(u){ return u._id; }));
       visibleQuery = { _id: { $in: ids } };
     }
-    var members = await User.find(visibleQuery).select("_id name role qTargets reportsTo").lean();
+    var members = await User.find(visibleQuery).select("_id name role qTargets reportsTo targetScope").lean();
 
     // Pre-fetch project-weights map (single AppSetting read)
     var pwDoc = await AppSetting.findOne({ key: "projectWeights" }).lean();
@@ -16934,15 +17021,18 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
     var results = await Promise.all(members.map(async function(u) {
       var uid = u._id;
       var isManagerCard = u.role === "manager" || u.role === "team_leader";
+      var mode = (u.targetScope === "subtree") ? "subtree" : "direct";
       var agentOids = [uid];
       var qTarget = 0;
       if (isManagerCard) {
-        var [subs, teamForTarget] = await Promise.all([
-          User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("_id").lean(),
-          User.find({ active: { $ne: false }, role: { $in: ["sales", "team_leader"] }, reportsTo: uid }).select("qTargets").lean()
-        ]);
-        subs.forEach(function(s){ agentOids.push(s._id); });
-        qTarget = teamForTarget.reduce(function(s,m){ return s + (readQTargetServer(m, year, quarter) || 0); }, 0);
+        // Roster follows the leader's target-scope mode: "direct" (default) = direct
+        // reports only — the historical behavior; "subtree" = the full reporting tree
+        // beneath them (team leaders' teams included, recursively). One roster query
+        // feeds BOTH agentOids (revenue numerator) and qTarget (denominator), so the
+        // two always aggregate over the SAME set.
+        var roster = await resolveLeaderRoster(uid, mode);
+        roster.forEach(function(s){ agentOids.push(s._id); });
+        qTarget = roster.reduce(function(s,m){ return s + (readQTargetServer(m, year, quarter) || 0); }, 0);
         if (!qTarget) qTarget = readQTargetServer(u, year, quarter) || 0;
       } else {
         qTarget = readQTargetServer(u, year, quarter) || 0;
@@ -16977,23 +17067,115 @@ app.get("/api/team/member-stats", auth, async function(req, res) {
       var outUids   = frozen ? (frozen.members || []).map(function(m){ return String(m.userId); }) : agentOids.map(function(o){ return String(o); });
       var qProg = outTarget > 0 ? Math.min(100, Math.round((outRev / outTarget) * 100)) : 0;
 
+      // EOIs — frozen at close alongside the other numbers: a closed period serves
+      // its stored teamEoisSnapshot. Periods closed before that field existed read
+      // `undefined`, so we fall back to a live count over the FROZEN roster (no
+      // retroactive collapse of who's counted). Open/sales cards count live over
+      // agentOids. A lead that advanced to DoneDeal is a deal, not an EOI, so it
+      // isn't counted here.
+      var qEois;
+      if (frozen && typeof frozen.teamEoisSnapshot === "number") {
+        qEois = frozen.teamEoisSnapshot;
+      } else {
+        var eoiRoster = frozen
+          ? (frozen.members || []).map(function(m){ return m.userId; }).filter(Boolean)
+          : agentOids;
+        qEois = await computeAgentEoiCount(eoiRoster, qStart, qEnd);
+      }
+
       return {
         uid: String(uid),
         name: u.name || "",
         role: u.role,
         isManagerCard: isManagerCard,
+        targetScope: mode,
         teamUids: outUids,
         qTarget: outTarget,
         qLeads: outLeads,
         qDeals: outDeals,
         qCalls: qCalls,
+        qEois: qEois,
         qRev: outRev,
         qProg: qProg,
         fromPeriod: !!frozen
       };
     }));
 
-    res.json({ year: year, quarter: quarter, members: results });
+    // ===== Company TOTAL — member-level de-duplication (period-aware, mode-invariant).
+    // Rule: the TOTAL counts each DISTINCT member exactly once, so it never double-
+    // counts a member who shows up in more than one row — a team leader who appears
+    // both inside their manager's row and as their own row, or an entire sub-team
+    // pulled into a manager's row when that manager is in "subtree" mode. A direct
+    // consequence (and correctness check): the TOTAL is INVARIANT to target-scope
+    // mode — flipping a leader direct<->subtree only redistributes production across
+    // the per-team rows, never changing the company TOTAL.
+    var visIdSet = new Set(members.map(function(u){ return String(u._id); }));
+    // Frozen lookups from CLOSED periods of VISIBLE leaders only (respects role scope).
+    var visClosedPeriods = _closedPeriods.filter(function(pr){ return visIdSet.has(String(pr.leaderId)); });
+    var frozenSoloRev = {};   // uid -> frozen solo achievedSnapshot (identical in any period)
+    var frozenSubTarget = {}; // uid -> frozen proratedTarget where the member is a sub
+    visClosedPeriods.forEach(function(pr){
+      (pr.members || []).forEach(function(m){
+        var mid = String(m.userId || "");
+        if (!mid) return;
+        if (typeof m.achievedSnapshot === "number") frozenSoloRev[mid] = m.achievedSnapshot;
+        if (!m.isLeader) frozenSubTarget[mid] = m.proratedTarget || 0;
+      });
+    });
+    // A leader with ≥1 in-scope sub has their OWN target excluded from the company
+    // total (represented by their reports) — mirrors each card's subs-only target.
+    var leaderWithSubs = new Set();
+    members.forEach(function(u){
+      var rt = u.reportsTo && u.reportsTo._id ? String(u.reportsTo._id) : (u.reportsTo ? String(u.reportsTo) : "");
+      if (rt && visIdSet.has(rt)) leaderWithSubs.add(rt);
+    });
+    var totalTarget = 0;
+    members.forEach(function(u){
+      var mid = String(u._id);
+      if (leaderWithSubs.has(mid)) return; // represented by their reports; don't add on top
+      var tv = (frozenSubTarget[mid] !== undefined) ? frozenSubTarget[mid] : (readQTargetServer(u, year, quarter) || 0);
+      totalTarget += tv;
+    });
+    // Departed members frozen into a visible closed period as a sub (no longer in the
+    // active roster) — add their frozen pro-rated target so a closed quarter's TOTAL
+    // target doesn't silently drop them. Guarded by !visIdSet so active members
+    // (already summed above) can't be counted twice.
+    Object.keys(frozenSubTarget).forEach(function(mid){
+      if (!visIdSet.has(mid)) totalTarget += (frozenSubTarget[mid] || 0);
+    });
+    // Revenue: frozen solo achievement where a member is inside a visible closed
+    // period, live union revenue for everyone else. Each member once; a split between
+    // two in-company members nets to 1.0 (each side contributes its 0.5).
+    var liveOnlyOids = members
+      .filter(function(u){ return frozenSoloRev[String(u._id)] === undefined; })
+      .map(function(u){ return u._id; });
+    var liveRevStats = liveOnlyOids.length ? await computeAgentDealStats(liveOnlyOids, qStart, qEnd, pwMap) : { revenue: 0 };
+    var totalRev = liveRevStats.revenue;
+    Object.keys(frozenSoloRev).forEach(function(mid){ totalRev += (frozenSoloRev[mid] || 0); });
+    // Deals / Leads / EOIs: one de-duplicated pass over the DISTINCT union of every
+    // visible member — plus any departed member frozen into a visible closed period,
+    // so a past quarter's counts don't collapse when someone leaves. Split deals are
+    // one lead, counted once (the aggregate groups by _id).
+    var totalUnionMap = new Map();
+    members.forEach(function(u){ totalUnionMap.set(String(u._id), u._id); });
+    visClosedPeriods.forEach(function(pr){
+      (pr.members || []).forEach(function(m){ if (m.userId) totalUnionMap.set(String(m.userId), m.userId); });
+    });
+    var totalUnionOids = Array.from(totalUnionMap.values());
+    var totalCountStats = totalUnionOids.length ? await computeAgentDealStats(totalUnionOids, qStart, qEnd, pwMap) : { deals: 0, leads: 0 };
+    var totalEois = totalUnionOids.length ? await computeAgentEoiCount(totalUnionOids, qStart, qEnd) : 0;
+    var companyTotal = {
+      target: totalTarget,
+      achieved: totalRev,
+      deals: totalCountStats.deals || 0,
+      leads: totalCountStats.leads || 0,
+      eois: totalEois,
+      prog: totalTarget > 0 ? Math.min(100, Math.round((totalRev / totalTarget) * 100)) : 0,
+      memberCount: members.length,
+      hasFrozen: Object.keys(frozenSoloRev).length > 0
+    };
+
+    res.json({ year: year, quarter: quarter, members: results, total: companyTotal });
   } catch (e) {
     console.error("[GET /api/team/member-stats]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "member_stats_failed" });
@@ -17471,7 +17653,8 @@ async function generateDraftPeriod(leaderId, year, quarter, refresh) {
         teamName: leader ? (leader.teamName || "") : "",
         qKey: built.bounds.qKey, status: "draft",
         members: built.members, teamTarget: sumTeamTarget(built.members),
-        teamAchievedSnapshot: 0, teamDealsSnapshot: 0, teamLeadsSnapshot: 0,
+        teamAchievedSnapshot: 0, teamDealsSnapshot: 0, teamLeadsSnapshot: 0, teamEoisSnapshot: 0,
+        targetScopeUsed: built.mode || "direct",
         closedAt: null, closedBy: null
       } },
     { new: true, upsert: true, setDefaultsOnInsert: true }
