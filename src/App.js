@@ -27225,7 +27225,7 @@ var CommissionsPage = function(p) {
                         </div>
                         <span style={{ fontSize:12 }}>{statusIcon}</span>
                       </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:6, fontSize:11, marginInlineStart:80 }}>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Owed:&nbsp;</span><span style={{ color:C.text }}>{nAmb(owed)}</span></div>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Paid:&nbsp;</span><span style={{ color:C.text }}>{nAmb(paid)}</span></div>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Rem:&nbsp;</span><span style={{ color:remColor, fontWeight:700 }}>{remValue}</span></div>
@@ -27395,7 +27395,7 @@ var CommissionsPage = function(p) {
                         </div>
                         <span style={{ fontSize:12 }}>{brokerIcon}</span>
                       </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:6, fontSize:11, marginInlineStart:80 }}>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Owed:&nbsp;</span><span style={{ color:C.text }}>{n2(brokerOwed)}</span></div>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Paid:&nbsp;</span><span style={{ color:C.text }}>{n2(brokerPaid)}</span></div>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Rem:&nbsp;</span><span style={{ color:brokerRemColor, fontWeight:700 }}>{brokerRemValue}</span></div>
@@ -27410,7 +27410,7 @@ var CommissionsPage = function(p) {
                           <span style={{ fontSize:12, fontWeight:700, color:C.textLight }}>(company keep)</span>
                         </div>
                       </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:6, fontSize:11, marginInlineStart:80 }}>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
                         <div style={{ textAlign:"right" }}><span style={{ color:C.textLight }}>Owed:&nbsp;</span><span style={{ color:C.text }}>{n2(aroOwed)}</span></div>
                         <div style={{ textAlign:"right", color:"#CBD5E1" }}>—</div>
                         <div style={{ textAlign:"right", color:"#CBD5E1" }}>—</div>
@@ -27494,7 +27494,7 @@ var CommissionsPage = function(p) {
                         )}
                       </div>
                     </div>
-                    <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:6, fontSize:11, marginInlineStart:80 }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, fontSize:11, marginInlineStart:80 }}>
                       <div style={{ textAlign:"right" }}>
                         <span style={{ color:C.textLight }}>Owed:&nbsp;</span>
                         <span style={{ color:C.text }}>{n2(x.owed)}</span>
@@ -27516,7 +27516,7 @@ var CommissionsPage = function(p) {
                   borderTop:"2px solid #CBD5E1",
                   background:"#F8FAFC",
                   display:"grid",
-                  gridTemplateColumns:"80px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)",
+                  gridTemplateColumns:"80px 1fr 1fr 1fr",
                   gap:6,
                   fontSize:11,
                   alignItems:"baseline"
@@ -27743,7 +27743,7 @@ var CommissionsPage = function(p) {
   var TabBtn = function(props){
     var active = activeTab === props.id;
     return <button onClick={function(){ setActiveTab(props.id); }} style={{
-      padding:"10px 4px", marginInlineEnd: 24, border:"none", flexShrink:0, whiteSpace:"nowrap",
+      padding:"10px 4px", marginInlineEnd: 24, border:"none",
       borderBottom: active ? "2px solid " + C.accent : "2px solid transparent",
       background:"transparent", cursor:"pointer", fontSize:14,
       fontWeight: active ? 700 : 500,
@@ -27775,7 +27775,7 @@ var CommissionsPage = function(p) {
       </div>;
     })()}
 
-    <div style={{ borderBottom:"1px solid #E8ECF1", marginBottom:14, display:"flex", overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
+    <div style={{ borderBottom:"1px solid #E8ECF1", marginBottom:14, display:"flex" }}>
       <TabBtn id="deals"      label="Claims"/>
       <TabBtn id="calculator" label="Calculator"/>
       <TabBtn id="duePayouts" label="Due Payouts"/>
@@ -28070,8 +28070,8 @@ var CommissionsPage = function(p) {
           <div style={{ marginBottom:18 }}>
             <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Monthly VAT</div>
             {byMonth.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No claims for this year</div>}
-            {byMonth.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", overflowY:"auto", maxHeight:TABLE_MAX_H, WebkitOverflowScrolling:"touch" }}>
-              <table style={{ width:"100%", minWidth:520, borderCollapse:"collapse", fontSize:12 }}>
+            {byMonth.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowY:"auto", maxHeight:TABLE_MAX_H }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
                   <tr>
                     <th style={Object.assign({}, stickyTh, { width:30, padding:"8px 0 8px 12px" })}></th>
@@ -28146,8 +28146,8 @@ var CommissionsPage = function(p) {
           <div style={{ marginBottom:18 }}>
             <div style={{ fontSize:13, fontWeight:700, color:C.text, marginBottom:8 }}>Withholding by deal</div>
             {byDeal.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No claims for this year</div>}
-            {byDeal.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", overflowY:"auto", maxHeight:TABLE_MAX_H, WebkitOverflowScrolling:"touch" }}>
-              <table style={{ width:"100%", minWidth:560, borderCollapse:"collapse", fontSize:12 }}>
+            {byDeal.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowY:"auto", maxHeight:TABLE_MAX_H }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                 <thead>
                   <tr>
                     <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Customer / Project</th>
@@ -28325,8 +28325,8 @@ var CommissionsPage = function(p) {
                       return <Modal show={true} onClose={function(){ setExpenseMonthModal(null); }}
                         title={monthNames[mi] + " " + yearStr + " — Expenses"} w={640}>
                         {entries.length === 0 && <div style={{ padding:"24px 4px", textAlign:"center", color:C.textLight, fontSize:13 }}>No expense entries for this month.</div>}
-                        {entries.length > 0 && <div style={{ border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-                          <table style={{ width:"100%", minWidth:520, borderCollapse:"collapse", fontSize:12 }}>
+                        {entries.length > 0 && <div style={{ border:"1px solid #E8ECF1", borderRadius:10, overflow:"hidden" }}>
+                          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                             <thead>
                               <tr style={{ background:"#F8FAFC", borderBottom:"1px solid #E8ECF1" }}>
                                 <th style={{ textAlign:"start", padding:"7px 10px", fontWeight:700, color:C.textLight, width:92 }}>Date</th>
@@ -28455,8 +28455,8 @@ var CommissionsPage = function(p) {
                   </div>
                   {profitByDealLoading && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>Loading…</div>}
                   {!profitByDealLoading && allDeals.length === 0 && <div style={{ padding:"20px 14px", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, color:C.textLight, fontSize:12 }}>No deals for this year</div>}
-                  {!profitByDealLoading && allDeals.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowX:"auto", overflowY:"auto", maxHeight:TABLE_MAX_H, WebkitOverflowScrolling:"touch" }}>
-                    <table style={{ width:"100%", minWidth:760, borderCollapse:"collapse", fontSize:12 }}>
+                  {!profitByDealLoading && allDeals.length > 0 && <div style={{ background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, overflowY:"auto", maxHeight:TABLE_MAX_H }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                       <thead>
                         <tr>
                           <th style={Object.assign({}, stickyTh, { textAlign:"start", padding:"8px 12px", fontWeight:700, color:C.textLight })}>Customer</th>
@@ -29566,8 +29566,8 @@ var DiagnosticsPage = function(p) {
           {lookupResult.project ? " · " + lookupResult.project : ""}
           {" · "} <b style={{ color:C.text }}>{lookupResult.count}</b> commission record(s)
         </div>
-        <div style={{ border:"1px solid "+C.border, borderRadius:10, overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-          <table style={{ width:"100%", minWidth:720, borderCollapse:"collapse", fontSize:11 }}>
+        <div style={{ border:"1px solid "+C.border, borderRadius:10, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
             <thead>
               <tr style={{ background:"#F8FAFC", borderBottom:"1px solid "+C.border }}>
                 <th style={{ textAlign:"start", padding:"8px 10px", fontWeight:700, color:C.textLight }}>Commission ID</th>
