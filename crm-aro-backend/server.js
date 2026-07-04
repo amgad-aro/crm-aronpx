@@ -8335,6 +8335,17 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
     if (!req.body.password || !String(req.body.password).trim()) {
       return res.status(400).json({ error: "password_required", message: "Password is required" });
     }
+    // Starting Date required + not in the future (Cairo business day). Mirrors the
+    // FE Add-User validation so the rule holds regardless of client.
+    var startingDateRaw = req.body.startingDate ? String(req.body.startingDate).slice(0, 10) : "";
+    if (!startingDateRaw) {
+      return res.status(400).json({ error: "startingDate_required", message: "Starting Date is required" });
+    }
+    var _cpAdd = getCairoDateParts(new Date());
+    var cairoTodayAdd = _cpAdd.year + "-" + String(_cpAdd.month).padStart(2, "0") + "-" + String(_cpAdd.day).padStart(2, "0");
+    if (startingDateRaw > cairoTodayAdd) {
+      return res.status(400).json({ error: "startingDate_future", message: "Starting Date cannot be in the future" });
+    }
     var hashed = await bcrypt.hash(req.body.password, 10);
     var teamId = req.body.teamId || "";
     var teamName = req.body.teamName || "";
@@ -8436,7 +8447,16 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     if (req.body.reportsTo !== undefined) update.reportsTo = req.body.reportsTo || null;
     if (req.body.teamId !== undefined) update.teamId = req.body.teamId;
     if (req.body.teamName !== undefined) update.teamName = req.body.teamName;
-    if (req.body.startingDate !== undefined) update.startingDate = req.body.startingDate || null;
+    if (req.body.startingDate !== undefined) {
+      // EDIT: not required, but if provided it may not be in the future (Cairo day).
+      var _sdEdit = req.body.startingDate ? String(req.body.startingDate).slice(0, 10) : "";
+      if (_sdEdit) {
+        var _cpEdit = getCairoDateParts(new Date());
+        var cairoTodayEdit = _cpEdit.year + "-" + String(_cpEdit.month).padStart(2, "0") + "-" + String(_cpEdit.day).padStart(2, "0");
+        if (_sdEdit > cairoTodayEdit) return res.status(400).json({ error: "startingDate_future", message: "Starting Date cannot be in the future" });
+      }
+      update.startingDate = req.body.startingDate || null;
+    }
     // Attendance hotfix — Saturday schedule (doc §3). Validate enum + clear
     // the pattern start date when not in alternating mode.
     if (req.body.saturdaySchedule !== undefined) {

@@ -14643,6 +14643,7 @@ var BrokersPage = function(p) {
 var UsersPage = function(p) {
   var t=p.t; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"; var [showAdd,setShowAdd]=useState(false); var [saving,setSaving]=useState(false);
   var [nU,setNU]=useState({name:"",username:"",password:"",email:"",phone:"",role:"sales",title:"",monthlyTarget:15,teamId:"",teamName:"",startingDate:""});
+  var todayStr=(function(){var d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");})();
   var [pwModal,setPwModal]=useState(null); // {userId, userName}
   var [pwForm,setPwForm]=useState({newPass:"",confirmPass:""});
   var [pwMsg,setPwMsg]=useState(""); var [pwSaving,setPwSaving]=useState(false);
@@ -14655,6 +14656,11 @@ var UsersPage = function(p) {
     // Saturday schedule validation: alternating requires a pattern start date.
     if (editModal.saturdaySchedule === "alternating" && !editModal.saturdayPatternStartDate) {
       alert("Pattern start date is required when Saturday schedule is Alternating. Pick a Saturday that is a working day to anchor the pattern.");
+      return;
+    }
+    // EDIT: starting date stays optional, but may not be in the future.
+    if (editModal.startingDate && editModal.startingDate > todayStr) {
+      alert("Starting Date cannot be in the future");
       return;
     }
     setEditSaving(true);
@@ -14685,7 +14691,7 @@ var UsersPage = function(p) {
   var getRoleLabel=function(u){if(u.role==="manager"&&u.reportsTo)return "Team Leader";if(u.role==="manager")return "Manager";return u.role==="admin"?"Admin":"Sales";};
   var rl={admin:t.admin,sales_admin:"Sales Admin",director:"Sales Director",manager:t.salesManager,team_leader:"Team Leader",sales:t.salesAgent,viewer:t.viewer,office_boy:"Office Boy"};
   var changePassword=async function(){if(!pwForm.newPass||!pwForm.confirmPass)return;if(pwForm.newPass!==pwForm.confirmPass){setPwMsg(t.passwordMismatch);return;}setPwSaving(true);try{await apiFetch("/api/users/"+pwModal.userId,"PUT",{password:pwForm.newPass},p.token);setPwMsg(t.passwordSuccess);setTimeout(function(){setPwModal(null);setPwMsg("");setPwForm({newPass:"",confirmPass:""});},1500);}catch(e){setPwMsg(t.passwordError);}setPwSaving(false);};
-  var add=async function(){if(!nU.name||!nU.username)return;if(!nU.password||!nU.password.trim()){alert("Please enter a password");return;}setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
+  var add=async function(){if(!nU.name||!nU.username)return;if(!nU.password||!nU.password.trim()){alert("Please enter a password");return;}if(!nU.startingDate){alert("Please select a Starting Date");return;}if(nU.startingDate>todayStr){alert("Starting Date cannot be in the future");return;}setSaving(true);try{var user=await apiFetch("/api/users","POST",nU,p.token);p.setUsers(function(prev){return prev.concat([user]);});setShowAdd(false);setNU({name:"",username:"",password:"",email:"",phone:"",role:"sales",title:"",monthlyTarget:15});}catch(e){alert(e.message);}setSaving(false);};
   var toggleActive=async function(u){var uid=gid(u);try{var upd=await apiFetch("/api/users/"+uid,"PUT",{active:!u.active},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?upd:x;});});}catch(e){}};
   var del=async function(uid){if(!window.confirm(t.deleteConfirm))return;try{await apiFetch("/api/users/"+uid,"DELETE",null,p.token);p.setUsers(function(prev){return prev.filter(function(x){return gid(x)!==uid;});});}catch(e){alert(e.message);}};
   var updateTarget=async function(u,val){var uid=gid(u);try{await apiFetch("/api/users/"+uid,"PUT",{monthlyTarget:Number(val)},p.token);p.setUsers(function(prev){return prev.map(function(x){return gid(x)===uid?Object.assign({},x,{monthlyTarget:Number(val)}):x;});});}catch(e){}};
@@ -14855,7 +14861,7 @@ var UsersPage = function(p) {
       {!editModal.isOwner&&<div style={{fontSize:11,color:C.textLight,marginTop:-6,marginBottom:12}}>Selecting a Job Title auto-sets the Role. You can override the Role for edge cases.</div>}
       <div style={{ marginBottom:12 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
-        <input type="date" value={editModal.startingDate||""} onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{startingDate:e.target.value});});}}
+        <input type="date" max={todayStr} value={editModal.startingDate||""} onChange={function(e){setEditModal(function(prev){return Object.assign({},prev,{startingDate:e.target.value});});}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
       </div>
       <div style={{ marginBottom:12 }}>
@@ -14916,7 +14922,7 @@ var UsersPage = function(p) {
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={nU.name} onChange={function(e){setNU(Object.assign({},nU,{name:e.target.value}));}}/></div>
         <Inp label={t.username} req value={nU.username} onChange={function(e){setNU(Object.assign({},nU,{username:e.target.value}));}}/>
-        <Inp label={t.password} value={nU.password} onChange={function(e){setNU(Object.assign({},nU,{password:e.target.value}));}}/>
+        <Inp label={t.password} req value={nU.password} onChange={function(e){setNU(Object.assign({},nU,{password:e.target.value}));}}/>
         <Inp label={t.title} type="select" value={nU.title}
           onChange={function(e){
             var newTitle=e.target.value;
@@ -14928,8 +14934,8 @@ var UsersPage = function(p) {
         <div style={{ gridColumn:"1/-1" }}><Inp label={t.phone} value={nU.phone} onChange={function(e){setNU(Object.assign({},nU,{phone:e.target.value}));}}/></div>
         {nU.role==="sales" && <Inp label={t.monthlyTarget} type="number" value={nU.monthlyTarget} onChange={function(e){setNU(Object.assign({},nU,{monthlyTarget:Number(e.target.value)}));}}/>}
         <div style={{ marginBottom:12 }}>
-          <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date</label>
-          <input type="date" value={nU.startingDate||""} onChange={function(e){setNU(Object.assign({},nU,{startingDate:e.target.value}));}}
+          <label style={{ display:"block", fontSize:13, fontWeight:600, marginBottom:5 }}>Starting Date<span style={{ color:C.danger, marginRight:3 }}>*</span></label>
+          <input type="date" max={todayStr} value={nU.startingDate||""} onChange={function(e){setNU(Object.assign({},nU,{startingDate:e.target.value}));}}
             style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
         </div>
       {(nU.role==="sales"||nU.role==="manager"||nU.role==="team_leader")&&<div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 12px" }}>
