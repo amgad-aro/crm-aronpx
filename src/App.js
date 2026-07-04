@@ -27116,7 +27116,7 @@ var CommissionsPage = function(p) {
             {canSeeLeadIds(p.cu) && <span>{formatLeadId(c.leadDisplayId)} · </span>}
             {snap.projectName || "—"}
             {snap.unitDetails && <span> · {snap.unitDetails}</span>}
-            <span> · closed {fmtDate(snap.dealDate)}</span>
+            <span> · closed {fmtDate(snap.dealDate || c.effectiveDealDate)}</span>
             {/* Feature B — closing company (admin/SA only; data attached by the
                 /api/commissions leadId→closingCompany join). */}
             {canSeeClosingCompany(p.cu) && c.closingCompany && c.closingCompany.name && <span> · Closed via <b style={{ color:C.text }}>{c.closingCompany.name}</b></span>}

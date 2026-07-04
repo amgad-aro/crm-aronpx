@@ -3206,6 +3206,30 @@ function recipientFromUser(user, role) {
   };
 }
 
+// effectiveDealDateIso — the unified effective close date for a lead as a date-only
+// "YYYY-MM-DD" string. Mirrors the FE getDealDate + the _effDate aggregation chain
+// (dealDate -> eoiDate -> updatedAt -> createdAt). MUST stay date-only (not a full
+// ISO datetime): snapshot.dealDate is compared AS A STRING against the date-only
+// quarter/range bounds (qBoundsFromDate .slice(0,10), the /api/commissions from/to
+// filter, recomputeQuarterSiblings), so a datetime would silently fail the $lte.
+// The string sources (dealDate/eoiDate) are sliced to their date; the Date fallbacks
+// (updatedAt/createdAt) are Cairo-shifted (+3h) to match how dealDate is stamped.
+function effectiveDealDateIso(lead) {
+  if (!lead) return "";
+  var toCairoDay = function(v){
+    var dt = (v instanceof Date) ? v : new Date(v);
+    if (isNaN(dt.getTime())) return "";
+    return new Date(dt.getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+  };
+  var strSrc = lead.dealDate || lead.eoiDate || "";
+  if (strSrc) {
+    var s = String(strSrc).slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;   // already a date-only / ISO date string
+    return toCairoDay(strSrc);                      // some other parseable format
+  }
+  return toCairoDay(lead.updatedAt || lead.createdAt || "");   // Date fallbacks
+}
+
 // buildSnapshotForLead — assemble the full snapshot block from a Lead doc.
 // Walks reportsTo upward for the primary sales agent and (if split) for the
 // second sales agent. Both chains stand independent — same manager appearing
@@ -3300,7 +3324,10 @@ async function buildSnapshotForLead(leadDoc) {
     unitDetails: "",
     projectName: leadDoc.project || "",
     dealTotal: parseDealTotalFromBudget(leadDoc.budget),
-    dealDate: leadDoc.dealDate || "",
+    // Effective close date (dealDate -> eoiDate -> updatedAt -> createdAt), so a lead
+    // whose raw dealDate is empty still freezes a real date instead of "" — the bug
+    // where the card read "closed —" while the Deals page showed a date.
+    dealDate: effectiveDealDateIso(leadDoc),
     salesAgent: primaryRecipient,
     teamLeader: primaryChain.teamLeader,
     manager: primaryChain.manager,
@@ -23950,17 +23977,21 @@ app.get("/api/commissions", auth, salesAdminOnly, async function(req, res) {
         // the numeric display id, while r.leadId on the commission is the lead's
         // _id (ObjectId). Attached as r.leadDisplayId to avoid that name clash.
         var ccLeads = await Lead.find({ _id: { $in: commLeadIds } })
-          .select("closingCompanyId developerId leadId").populate("closingCompanyId", "name").populate("developerId", "name").lean();
-        var ccByLead = {}, ldByLead = {}, devByLead = {};
+          .select("closingCompanyId developerId leadId dealDate eoiDate updatedAt createdAt").populate("closingCompanyId", "name").populate("developerId", "name").lean();
+        var ccByLead = {}, ldByLead = {}, devByLead = {}, effByLead = {};
         ccLeads.forEach(function(l){
           ccByLead[String(l._id)]  = l.closingCompanyId || null;
           devByLead[String(l._id)] = l.developerId || null;   // Developer (D4)
           ldByLead[String(l._id)]  = (typeof l.leadId === "number") ? l.leadId : null;
+          // Fix C — live effective close date, so a card whose frozen snapshot.dealDate
+          // is empty (pre-backfill) still renders a real date instead of "closed —".
+          effByLead[String(l._id)] = effectiveDealDateIso(l);
         });
         rows.forEach(function(r){
           r.closingCompany = r.leadId ? (ccByLead[String(r.leadId)] || null) : null;
           r.developer      = r.leadId ? (devByLead[String(r.leadId)] || null) : null;   // Developer (D4) — live name for the card pill
           r.leadDisplayId  = r.leadId ? (ldByLead[String(r.leadId)] != null ? ldByLead[String(r.leadId)] : null) : null;
+          r.effectiveDealDate = r.leadId ? (effByLead[String(r.leadId)] || "") : "";     // Fix C — display fallback
         });
       }
     } catch(ccErr){ console.error("[commissions closing-company join]", ccErr && ccErr.message); }
