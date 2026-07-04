@@ -12305,6 +12305,22 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         return res.status(400).json({ error: "Developer is required when converting to EOI/Deal. Pick from the list or enter a new name.", code: "developer_required" });
       }
     }
+    // Unit Code hard-require — DOOR C (status transition to DoneDeal via PUT, e.g. the
+    // StatusModal). Targeted + legacy-safe: fires ONLY when the lead is moving INTO a
+    // DoneDeal from a non-deal state (it wasn't already DoneDeal / globalStatus
+    // donedeal), and only when BOTH the incoming body and the stored lead have an
+    // empty unitCode. Editing an existing deal (already a deal) and every other save
+    // are untouched. The /eoi-to-deal door (B) has its own guard and never routes here.
+    if (req.body.status === "DoneDeal" && oldLead) {
+      var wasDealPut = oldLead.status === "DoneDeal" || oldLead.globalStatus === "donedeal";
+      if (!wasDealPut) {
+        var incomingUnitCode = String((req.body && req.body.unitCode) || "").trim();
+        var existingUnitCode = String((oldLead.unitCode) || "").trim();
+        if (!incomingUnitCode && !existingUnitCode) {
+          return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required when marking a lead as a Done Deal." });
+        }
+      }
+    }
     // Approve-push pre-read: capture prior approve flags + name ONLY when an
     // approve flag is present in the body (not in trackedBody, so the toggle-only
     // PUT skips the load above). Lets the push below fire on a true falsy->true
