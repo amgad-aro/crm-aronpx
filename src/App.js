@@ -11883,6 +11883,36 @@ var EOIPage = function(p) {
     return <div ref={eoiPanelRef} style={styleObj}>
       <div style={{ background:"#F5F3FF", border:"1px solid #DDD6FE", borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
       <div style={{ background:"#F5F3FF", borderBottom:"1px solid #DDD6FE", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
+        {/* Journey strip: Pending → Approved → Deal. Current stage = colored pill
+            (amber Pending / green Approved / green Deal); passed = green check;
+            future = muted. Hidden for cancelled EOIs (they keep the standalone
+            "EOI Cancelled" badge on the right — see the action block below). */}
+        {(function(){
+          var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
+          if (isCancelled) return null;
+          var stageIdx = selectedEOI.status==="DoneDeal" ? 2 : (selectedEOI.eoiApproved ? 1 : 0);
+          var stages = [
+            { label:"Pending",  icon:"⏳", pill:{ bg:"#FEF3C7", fg:"#B45309" } },
+            { label:"Approved", icon:"✅", pill:{ bg:"#DCFCE7", fg:"#15803D" } },
+            { label:"Deal",     icon:"🎉", pill:{ bg:"#DCFCE7", fg:"#15803D" } },
+          ];
+          return <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginBottom:12 }}>
+            {stages.map(function(s,i){
+              return <Fragment key={s.label}>
+                {i>0 && <span style={{ fontSize:11, color:C.textLight, opacity:0.5 }}>→</span>}
+                {i<stageIdx
+                  ? <span style={{ fontSize:11, fontWeight:700, color:"#15803D", whiteSpace:"nowrap" }}>✓ {s.label}</span>
+                  : i===stageIdx
+                  ? <span style={{ fontSize:11, fontWeight:700, color:s.pill.fg, background:s.pill.bg, padding:"3px 10px", borderRadius:20, whiteSpace:"nowrap" }}>{s.icon} {s.label}</span>
+                  : <span style={{ fontSize:11, fontWeight:600, color:C.textLight, opacity:0.55, whiteSpace:"nowrap" }}>{s.label}</span>}
+              </Fragment>;
+            })}
+            {/* Walk an approval back to Pending — admin cluster only, and only
+                when currently Approved (not yet a deal). Reuses the same
+                toggleApproved handler as the Approve action. */}
+            {isOnlyAdmin && selectedEOI.eoiApproved && selectedEOI.status!=="DoneDeal" && <button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} title="Move this EOI back to Pending" style={{ marginLeft:"auto", background:"none", border:"none", padding:0, color:C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", textDecoration:"underline", whiteSpace:"nowrap" }}>↩ Revert to pending</button>}
+          </div>;
+        })()}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"8px 10px", flexWrap:"wrap" }}>
           <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0, flex:"1 1 auto" }}>
             <button onClick={function(){setSelectedEOI(null);}} style={{ background:"#fff", border:"1px solid #DDD6FE", borderRadius:6, width:24, height:24, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", color:"#6D28D9", flexShrink:0 }}><X size={11}/></button>
@@ -11897,20 +11927,27 @@ var EOIPage = function(p) {
             {(function(){
               var isCancelled = selectedEOI.eoiStatus==="EOI Cancelled" || selectedEOI.eoiStatus==="Deal Cancelled" || selectedEOI.status==="Deal Cancelled";
               if (isCancelled) return <span style={{ background:C.danger+"18", borderRadius:8, padding:"4px 10px", color:C.danger, fontSize:11, fontWeight:700 }}>❌ EOI Cancelled</span>;
-              var isDoneDeal = selectedEOI.status==="DoneDeal";
-              return <>
-                {(p.cu.role==="admin"||p.cu.role==="sales_admin")&&<div style={{ display:"flex", gap:6 }}>
-                  <button onClick={function(){if(!isDoneDeal) toggleApproved(selectedEOI,"eoiApproved");}} disabled={isDoneDeal} style={{ background:selectedEOI.eoiApproved?C.success+"22":"transparent", border:"1px solid "+(selectedEOI.eoiApproved?C.success:C.border), borderRadius:8, padding:"4px 10px", cursor:isDoneDeal?"default":"pointer", color:selectedEOI.eoiApproved?C.success:C.textLight, fontSize:11, fontWeight:700, opacity:isDoneDeal?0.7:1 }}>
-                    {selectedEOI.eoiApproved?"✅ Approved":"⏳ Approve"}
-                  </button>
-                  {!isDoneDeal&&<button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"transparent", border:"1px solid "+C.danger, borderRadius:8, padding:"4px 10px", cursor:cancelling?"wait":"pointer", color:C.danger, fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
-                    {cancelling?"Cancelling…":"❌ Cancel"}
-                  </button>}
-                </div>}
-                {isOnlyAdmin&&<button disabled={convertingDeal} onClick={function(){openConvert(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
-                  {convertingDeal?"Converting…":"✅ Done Deal"}
-                </button>}
-              </>;
+              // Already a deal (edge case — filtered out of the pending/approved
+              // tabs): the journey strip shows "Deal"; no actions to offer.
+              if (selectedEOI.status==="DoneDeal") return <span style={{ background:"#DCFCE7", borderRadius:8, padding:"4px 10px", color:"#15803D", fontSize:11, fontWeight:700 }}>🎉 Done Deal</span>;
+              // Approve / Cancel / Convert were all gated to admin||sales_admin (== isOnlyAdmin).
+              if (!isOnlyAdmin) return null;
+              // State-aware primary action (same handlers as before):
+              //   Pending  → Approve (green). No convert yet.
+              //   Approved → Convert to Deal (blue). "Approved" now lives as the
+              //              journey-strip badge, not a toggle button.
+              return <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", justifyContent:"flex-end" }}>
+                {selectedEOI.eoiApproved
+                  ? <button disabled={convertingDeal} onClick={function(){openConvert(selectedEOI);}} style={{ background:C.info, border:"none", borderRadius:8, padding:"6px 14px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(59,130,246,0.35)" }}>
+                      {convertingDeal?"Converting…":"Convert to Deal"}
+                    </button>
+                  : <button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"6px 14px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
+                      ✅ Approve
+                    </button>}
+                <button disabled={cancelling} onClick={function(){cancelEOI(selectedEOI);}} style={{ background:"transparent", border:"1px solid "+C.danger, borderRadius:8, padding:"6px 12px", cursor:cancelling?"wait":"pointer", color:C.danger, fontSize:11, fontWeight:700, opacity:cancelling?0.6:1 }}>
+                  {cancelling?"Cancelling…":"Cancel"}
+                </button>
+              </div>;
             })()}
           </div>
         </div>
