@@ -114,7 +114,7 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // because the Google Apps Script intake didn't send a source field). Apps
   // Script + Sheet now send source explicitly, and POST /api/leads validates
   // non-empty source server-side — see server.js:2337 area.
-  source:{type:String,default:""}, project:{type:String,default:""}, unitType:{type:String,default:""}, campaign:{type:String,default:""},
+  source:{type:String,default:""}, project:{type:String,default:""}, unitType:{type:String,default:""}, unitCode:{type:String,default:""}, campaign:{type:String,default:""},
   // fieldsV2 — marks a lead created/migrated under the corrected field model:
   // development lives in `project`, unit type in `unitType`, `campaign` = the
   // real ad-campaign name. Legacy (v1 — this flag false/absent) leads carry the
@@ -10773,7 +10773,12 @@ app.post("/api/leads", auth, async function(req, res) {
       }
       var budgetNumCreate = parseDealTotalFromBudget(req.body.budget);
       if (!(budgetNumCreate > 0)) {
-        return res.status(400).json({ error: "budget_required_for_commission", message: "Budget (EGP) is required and must be greater than 0 to compute the commission." });
+        return res.status(400).json({ error: "budget_required_for_commission", message: "Unit Price (EGP) is required and must be greater than 0 to compute the commission." });
+      }
+      // Unit Code — required for the "Add Lead (Done Deal)" creation path (PATH A).
+      // Validated only for the direct DoneDeal create; other statuses are unaffected.
+      if (!String((req.body && req.body.unitCode) || "").trim()) {
+        return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required for a Done Deal." });
       }
       req.body.commissionRate   = crNumCreate;
       req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
@@ -10838,6 +10843,7 @@ app.post("/api/leads", auth, async function(req, res) {
       source:           normalizedSource,
       project:          req.body.project || "",
       unitType:         req.body.unitType || "",
+      unitCode:         req.body.unitCode || "",
       campaign:         req.body.campaign || "",
       // fieldsV2 — new-field-model marker. Set by the corrected intake paths
       // (Lead form, paste-import, Apps Script) so readers treat project as the
@@ -11826,6 +11832,16 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       }
     }
     if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
+    // PATH B requirements — Unit Price (budget) must be present + positive, and Unit
+    // Code is required. Validation only; the rest of this (commission-sensitive) flow
+    // is left untouched.
+    if (!(parseDealTotalFromBudget(existing.budget) > 0)) {
+      return res.status(400).json({ error: "budget_required_for_deal", message: "Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal." });
+    }
+    var e2dUnitCode = String((req.body && req.body.unitCode) || "").trim();
+    if (!e2dUnitCode) {
+      return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required to convert to a Done Deal." });
+    }
     // Date-only Cairo-local (YYYY-MM-DD), unified with every dealDate write path.
     var todayIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0,10);
     var update = {
@@ -11836,6 +11852,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       // Clear eoiStatus so the record no longer shows in any EOI tab — it belongs to Deals now.
       eoiStatus: "",
       globalStatus: "donedeal",
+      unitCode: e2dUnitCode,
       lastActivityTime: new Date()
     };
     // Feature A — safety mint: a converted EOI normally already has an id (minted

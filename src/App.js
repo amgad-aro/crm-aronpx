@@ -946,6 +946,7 @@ var StatusModal = function(p) {
   var [cbTime, setCbTime] = useState("");
   var [dealProject, setDealProject] = useState("");
   var [dealUnitType, setDealUnitType] = useState("");
+  var [dealUnitCode, setDealUnitCode] = useState("");
   var [dealBudget, setDealBudget] = useState("");
   var [eoiDeposit, setEoiDeposit] = useState("");
   var [eoiDateInput, setEoiDateInput] = useState("");
@@ -979,7 +980,7 @@ var StatusModal = function(p) {
   var needsBudgetFields = needsPotFields&&!hasBudget;
 
   useEffect(function(){
-    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setEoiDocFiles([]); setRejectNote("");
+    setComment(""); setCbTime(""); setDealProject(""); setDealUnitType(""); setDealUnitCode(""); setDealBudget(""); setEoiDeposit(""); setEoiDateInput(""); setEoiDocFiles([]); setRejectNote("");
     setPotBudget(""); setPotDeposit(""); setPotInstalment(""); setErr("");
     setFbVisibility("private"); setFbTargetAgentId("");
     setDevSelId(""); setDevPendName(""); setDevPendOpen(false);   // N2
@@ -1007,13 +1008,15 @@ var StatusModal = function(p) {
     if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
     if (isReject && !rejectNote.trim())  { setErr("Feedback is required"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
+    // Unit Code required on the DoneDeal status-transition door (gated to isDoneDeal).
+    if (isDoneDeal && !dealUnitCode.trim()){ setErr("Please enter the Unit Code (e.g. B1-204)"); return; }
     if ((isDoneDeal||isEOI) && p.requireDeveloper && !devSelId && !devPendName.trim()){ setErr("Please pick a developer or enter a new name"); return; }   // N2
     if (needsBudgetFields && !potBudget.trim()){ setErr("Please enter the Budget"); return; }
     if (needsBudgetFields && !potDeposit.trim()){ setErr("Please enter the Down Payment"); return; }
     if (needsBudgetFields && !potInstalment.trim()){ setErr("Please enter the Installments"); return; }
     setSaving(true);
     var extra = (isDoneDeal||isEOI)
-      ? { project: dealProject, unitType: dealUnitType, budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: (isEOI||isDoneDeal) ? eoiDocFiles : [],
+      ? { project: dealProject, unitType: dealUnitType, unitCode: dealUnitCode.trim(), budget: dealBudget, eoiDeposit: eoiDeposit, eoiDate: eoiDateInput, eoiDocumentFiles: (isEOI||isDoneDeal) ? eoiDocFiles : [],
           developerId: (p.requireDeveloper && devSelId) ? devSelId : "", developerPending: (p.requireDeveloper && !devSelId) ? devPendName.trim() : "" }   // N2
       : (needsPotFields && (potBudget||potDeposit||potInstalment))
         ? { budget: potBudget, deposit: potDeposit, instalment: potInstalment }
@@ -1128,6 +1131,12 @@ var StatusModal = function(p) {
           {["","Apartment","Duplex","Townhouse","Twinhouse","Standalone","Commercial","Admin","Clinic","Service Apartment","Chalet"].map(function(x){return <option key={x} value={x}>{x||"- Select -"}</option>;})}
         </select>
       </div>
+      {/* Unit Code — required for the DoneDeal status-transition door only. */}
+      {isDoneDeal&&<div style={{ marginBottom:11 }}>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🔖 Unit Code <span style={{color:C.danger}}>*</span></label>
+        <input type="text" placeholder="e.g. B1-204" value={dealUnitCode} onChange={function(e){setDealUnitCode(e.target.value);setErr("");}}
+          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+      </div>}
       <div style={{ marginBottom:11 }}>
         <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>💰 Amount (EGP) <span style={{color:C.danger}}>*</span></label>
         <input type="text" placeholder="" value={dealBudget}
@@ -2893,6 +2902,14 @@ var LeadForm = function(p) {
       alert("Deal Date is required");
       return;
     }
+    // Unit Price (budget) + Unit Code — required for the Add-Deal (Done Deal) CREATE
+    // path (PATH A). Not enforced on edit: existing deals aren't force-backfilled
+    // (the admin commission block below still re-checks budget > 0 on any admin save).
+    if (isDoneDealForm && !p.editId) {
+      var unitPriceNum = (function(){ var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
+      if (!(unitPriceNum > 0)) { alert("Please enter a valid Unit Price (EGP) greater than 0"); return; }
+      if (!String(form.unitCode || "").trim()) { alert("Please enter the Unit Code (e.g. B1-204)"); return; }
+    }
     // Commission Rate (%) — required > 0 for any DoneDeal save (Internal +
     // External). Mirrors backend rejection at POST/PUT /api/leads. BE computes
     // commissionAmount = budget × rate / 100 server-side; FE only sends rate.
@@ -3037,7 +3054,7 @@ var LeadForm = function(p) {
   return <div>
     {draftRestored&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#EFF6FF", borderRadius:10, fontSize:13, fontWeight:500, color:"#1E40AF", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
       <span>↩︎ Unsaved draft restored{draftHadAttach?" — re-attach any documents/images":""}</span>
-      <button type="button" onClick={function(){ clearLeadDraft(draftKey); setDevSelId(""); setDevPendName(""); setDraftRestored(false); setDraftHadAttach(false); setForm(function(f){ return Object.assign({},f,{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", notes:"", eoiDeposit:"", eoiDate:"", dealDate:"", callbackTime:"", source:p.isReq?"Daily Request":"", agentId:"", downPaymentPct:"", installmentYears:"", commissionRate:"" }); }); }} style={{ flexShrink:0, background:"none", border:"none", padding:"2px 6px", color:C.danger, fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline" }}>Discard</button>
+      <button type="button" onClick={function(){ clearLeadDraft(draftKey); setDevSelId(""); setDevPendName(""); setDraftRestored(false); setDraftHadAttach(false); setForm(function(f){ return Object.assign({},f,{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", unitCode:"", notes:"", eoiDeposit:"", eoiDate:"", dealDate:"", callbackTime:"", source:p.isReq?"Daily Request":"", agentId:"", downPaymentPct:"", installmentYears:"", commissionRate:"" }); }); }} style={{ flexShrink:0, background:"none", border:"none", padding:"2px 6px", color:C.danger, fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline" }}>Discard</button>
     </div>}
     {dupWarning&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#FEF3C7", borderRadius:10, fontSize:13, fontWeight:500, color:"#B45309", display:"flex", alignItems:"center", gap:8 }}>
       <AlertCircle size={16}/> {t.duplicateFound} — <b>{dupWarning.name}</b>
@@ -3047,7 +3064,7 @@ var LeadForm = function(p) {
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
       <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
-      <Inp label={isEOIForm?"💰 Amount (EGP)":t.budget} req={isEOIForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+      <Inp label={isEOIForm?"💰 Amount (EGP)":isDoneDealForm?"💰 Unit Price (EGP)":t.budget} req={isEOIForm||isDoneDealForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
     <Inp label="📣 Ad Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Cali Coast – June – Lookalike"/>
     {showStatusPicker&&<Inp label="Status" type="select" value={form.status||"NewLead"} onChange={function(e){upd("status",e.target.value);}} options={[
@@ -3059,6 +3076,9 @@ var LeadForm = function(p) {
     ]}/>}
     <Inp label={"🏢 " + t.project + " / Development"} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
     <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
+    {/* Unit Code — required on the Add-Deal (Done Deal) CREATE path. On edit it's
+        shown + editable but optional (existing deals aren't force-backfilled). */}
+    {isDoneDealForm&&<Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>}
     {/* Developer (N3) — REQUIRED for create-mode EOI/DoneDeal. Pick from the 505
         OR type a new name (mutually exclusive). */}
     {(isEOIForm||isDoneDealForm)&&!p.editId&&<div style={{ marginBottom:13 }}>
@@ -6150,6 +6170,7 @@ var LeadsPage = function(p) {
         if(extra.budget)     upData.budget     = extra.budget;
         if(extra.project)    upData.project    = extra.project;
         if(extra.unitType)   upData.unitType   = extra.unitType;
+        if(extra.unitCode)   upData.unitCode   = extra.unitCode;
         if(extra.eoiDeposit) upData.eoiDeposit = extra.eoiDeposit;
         if(extra.developerId)      upData.developerId      = extra.developerId;      // N2
         if(extra.developerPending) upData.developerPending = extra.developerPending; // N2
@@ -6807,6 +6828,7 @@ var LeadsPage = function(p) {
                 {lead.campaign&&<span style={{ fontSize:11, color:"#0369A1", fontWeight:700, background:"#E0F2FE", padding:"2px 8px", borderRadius:6 }}>📣 {lead.campaign}</span>}
                 {lead.project?<span style={{ fontSize:11, color:"#6D28D9", fontWeight:700, background:"#EDE9FE", padding:"2px 8px", borderRadius:6 }}>📍 {lead.project}</span>:<span style={{ color:C.textLight, fontSize:11 }}>—</span>}
                 {lead.unitType&&<span style={{ fontSize:11, color:"#B45309", fontWeight:700, background:"#FEF3C7", padding:"2px 8px", borderRadius:6 }}>🏷️ {lead.unitType}</span>}
+                {lead.unitCode&&<span style={{ fontSize:11, color:"#0F766E", fontWeight:700, background:"#CCFBF1", padding:"2px 8px", borderRadius:6 }}>🔖 {lead.unitCode}</span>}
               </div>
               <span style={{ fontSize:11, color:actColor, fontWeight:600 }}>🕐 {lastAct}</span>
             </div>
@@ -7088,6 +7110,7 @@ var LeadsPage = function(p) {
                 { l:"Campaign",       v: selected.campaign },
                 { l:t.project,         v: selected.project },
                 { l:"Unit Type",      v: selected.unitType },
+                { l:"Unit Code",      v: (selected.status==="DoneDeal"||selected.globalStatus==="donedeal") ? (selected.unitCode||"—") : null },
                 { l:t.source,          v: isAdmin ? selected.source : null },
                 { l:t.budget,          v: selected.budget },
                 { l:t.callbackTime,    v: selected.callbackTime ? selected.callbackTime.slice(0,16).replace("T"," ") : null },
@@ -11626,6 +11649,12 @@ var EOIPage = function(p) {
   var [docUploading,setDocUploading]=useState(false);
   var [cancelling,setCancelling]=useState(false);
   var [convertingDeal,setConvertingDeal]=useState(false);
+  // PATH B — Convert-to-Deal modal. The EOI→Deal conversion used to be a one-click
+  // confirm; it now opens a small modal to collect the REQUIRED Unit Code (and to
+  // re-confirm the Unit Price) before hitting /eoi-to-deal. convertModal holds the
+  // EOI lead being converted; convertUnitCode is the input value.
+  var [convertModal,setConvertModal]=useState(null);
+  var [convertUnitCode,setConvertUnitCode]=useState("");
   // Side-panel hydration tracker. The /api/leads bootstrap strips heavy fields
   // (eoiImage, eoiDocuments) to keep the payload small; we refetch the full
   // doc when the panel opens. panelHydratedEoiId === selectedEOI._id once the
@@ -11753,9 +11782,15 @@ var EOIPage = function(p) {
     setCancelling(false);
   };
 
-  var convertToDeal=async function(lead){
+  var convertToDeal=async function(lead, unitCode){
     if(p.cu.role!=="admin"&&p.cu.role!=="sales_admin"&&p.cu.role!=="sales") { alert("Only admin or sales can convert an EOI to a deal"); return; }
     if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
+    // PATH B validation (mirrors the backend /eoi-to-deal guards): Unit Price
+    // (budget) must be present + positive, and Unit Code is required.
+    var priceNum = (function(){ var s=String(lead.budget||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; })();
+    if(!(priceNum>0)) { alert("Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal."); return; }
+    var code = String(unitCode||"").trim();
+    if(!code) { alert("Please enter the Unit Code (e.g. B1-204)"); return; }
     // Phase R-1: warn when the deal's dealDate falls outside the current year.
     // Commission attribution uses dealDate's quarter, so a cross-year close can
     // retroactively change last year's commission shares.
@@ -11765,12 +11800,11 @@ var EOIPage = function(p) {
     if (dealYr && isFinite(dealYr) && dealYr !== curYr) {
       if (!window.confirm("⚠ This deal's date is in " + dealYr + " (not the current year " + curYr + "). Commission shares will be attributed to " + dealYr + " — confirm continue?")) return;
     }
-    if(!window.confirm("Convert this EOI to a Done Deal? The lead will move to the Deals page.")) return;
     setConvertingDeal(true);
     var leadId = gid(lead);
     console.log("[convertToDeal] POST /api/leads/"+leadId+"/eoi-to-deal", { role: p.cu.role, eoiStatus: lead.eoiStatus, source: lead.source });
     try{
-      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",{},p.token);
+      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",{unitCode:code},p.token);
       if (!updated || !updated._id) {
         console.error("[convertToDeal] empty response", updated);
         alert("Convert failed — empty response from server. Please refresh and try again.");
@@ -11778,10 +11812,11 @@ var EOIPage = function(p) {
         return;
       }
       console.log("[convertToDeal] ok", { status: updated.status, globalStatus: updated.globalStatus, eoiStatus: updated.eoiStatus });
-      // Close the EOI side panel BEFORE touching p.leads. If bubbling from
-      // the row click had already opened the detail panel, this ensures the
-      // next render doesn't keep it open on a row that's about to disappear
-      // from eoiScope.
+      // Close the convert modal + the EOI side panel BEFORE touching p.leads. If
+      // bubbling from the row click had already opened the detail panel, this
+      // ensures the next render doesn't keep it open on a row that's about to
+      // disappear from eoiScope.
+      setConvertModal(null); setConvertUnitCode("");
       setSelectedEOI(null);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===leadId?updated:l;});});
       // Belt-and-suspenders refresh — make absolutely sure the Deals page sees
@@ -11798,6 +11833,8 @@ var EOIPage = function(p) {
     }
     setConvertingDeal(false);
   };
+  // Open the Convert-to-Deal modal for an EOI lead (pre-fills any existing Unit Code).
+  var openConvert=function(lead){ if(!lead) return; setConvertUnitCode(lead.unitCode||""); setConvertModal(lead); };
 
   var handleDocUpload=async function(e,lead){
     var file=e.target.files[0]; if(!file) return;
@@ -11870,7 +11907,7 @@ var EOIPage = function(p) {
                     {cancelling?"Cancelling…":"❌ Cancel"}
                   </button>}
                 </div>}
-                {isOnlyAdmin&&<button disabled={convertingDeal} onClick={function(){convertToDeal(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
+                {isOnlyAdmin&&<button disabled={convertingDeal} onClick={function(){openConvert(selectedEOI);}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"5px 12px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
                   {convertingDeal?"Converting…":"✅ Done Deal"}
                 </button>}
               </>;
@@ -12015,6 +12052,36 @@ var EOIPage = function(p) {
         onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);if(selectedEOI&&gid(selectedEOI)===gid(updated))setSelectedEOI(updated);}}/>
     </Modal>}
 
+    {/* PATH B — Convert-to-Deal modal: collects the REQUIRED Unit Code and re-confirms
+        the Unit Price before hitting /eoi-to-deal (which creates the commission). */}
+    {convertModal&&<Modal show={true} onClose={function(){ if(!convertingDeal){ setConvertModal(null); setConvertUnitCode(""); } }} title="🎉 Convert to Done Deal">
+      {(function(){
+        var priceNum = (function(){ var s=String(convertModal.budget||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; })();
+        var priceOk = priceNum>0;
+        var codeOk = !!String(convertUnitCode||"").trim();
+        var blocked = convertingDeal||!priceOk||!codeOk;
+        return <div>
+          <div style={{ fontSize:13, color:C.text, marginBottom:14 }}>Convert <b>{convertModal.name||"this EOI"}</b> to a Done Deal. It will move to the Deals page.</div>
+          <div style={{ marginBottom:12, padding:"10px 12px", background:priceOk?"#F0FDF4":"#FEF2F2", border:"1px solid "+(priceOk?"#BBF7D0":"#FECACA"), borderRadius:10 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:".3px", marginBottom:2 }}>Unit Price (EGP)</div>
+            <div style={{ fontSize:15, fontWeight:800, color:priceOk?"#15803D":C.danger }}>{priceOk?priceNum.toLocaleString()+" EGP":"Missing — set a Unit Price on the EOI first"}</div>
+          </div>
+          <div style={{ marginBottom:16 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🔖 Unit Code <span style={{color:C.danger}}>*</span></label>
+            <input type="text" value={convertUnitCode} placeholder="e.g. B1-204" autoFocus
+              onChange={function(e){setConvertUnitCode(e.target.value);}}
+              style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
+          </div>
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={function(){ setConvertModal(null); setConvertUnitCode(""); }} disabled={convertingDeal}
+              style={{ flex:1, padding:"10px 0", borderRadius:10, border:"1px solid "+C.border, background:"#fff", color:C.text, fontSize:13, fontWeight:700, cursor:convertingDeal?"not-allowed":"pointer" }}>Cancel</button>
+            <button onClick={function(){ convertToDeal(convertModal, convertUnitCode); }} disabled={blocked}
+              style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", background:blocked?"#9CA3AF":"#15803D", color:"#fff", fontSize:13, fontWeight:700, cursor:blocked?"not-allowed":"pointer" }}>{convertingDeal?"Converting…":"Convert to Deal"}</button>
+          </div>
+        </div>;
+      })()}
+    </Modal>}
+
     {eoiLeads.length===0&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
       <div style={{ fontSize:48, marginBottom:12 }}>🎯</div>
       <div style={{ fontSize:16, fontWeight:700 }}>No EOI clients yet</div>
@@ -12047,7 +12114,7 @@ var EOIPage = function(p) {
               The button MUST call both stopPropagation and preventDefault so
               the outer card's onClick (which opens the details panel) doesn't
               fire on the same click. */}
-          {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
+          {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();openConvert(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
             {convertingDeal?"Converting…":"✅ Convert to Deal"}
           </button>}
         </div>;
@@ -12083,7 +12150,7 @@ var EOIPage = function(p) {
                     stopPropagation on the button itself is belt-and-suspenders
                     alongside the td's stopPropagation — keeps the row's
                     detail-panel onClick from firing on the same click. */}
-                {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();convertToDeal(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
+                {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();openConvert(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
                   {convertingDeal?"…":"Convert to Deal"}
                 </button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
@@ -12749,6 +12816,10 @@ var DealsPage = function(p) {
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:10 }}>
         {[
           {l:"Project", v:selectedDeal.project||"-", icon:"🏠"},
+          {l:"Unit Type", v:selectedDeal.unitType||"-", icon:"🏷️"},
+          // Unit Code — read-only; em-dash (not "-") so it survives the v!=="-" filter
+          // below and existing deals with no code still render a "—".
+          {l:"Unit Code", v:selectedDeal.unitCode||"—", icon:"🔖"},
           {l:"Budget", v:(function(){
             var raw=parseBudget(selectedDeal.budget);
             var weight=getProjectWeight(selectedDeal.project,selectedDeal);
