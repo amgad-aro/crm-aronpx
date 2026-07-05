@@ -11577,7 +11577,7 @@ var DashboardPage = function(p) {
 // ===== EOI PAGE =====
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
-  var [eoiTab,setEoiTab]=useState("approved");
+  var [eoiTab,setEoiTab]=useState("active");
   // STEP 4-4 — paginated EOI fetch from /api/eois?status=all. Replaces the
   // in-memory p.leads.filter scan which would silently miss EOIs once
   // STEP 4-5 shrinks the bootstrap. Falls back to the in-memory filter
@@ -11621,10 +11621,27 @@ var EOIPage = function(p) {
   // predicate already rejects DoneDeal docs (matches only EOI Cancelled /
   // Deal Cancelled status values).
   var isConvertedDeal = function(l){ return !!(l && (l.status==="DoneDeal" || l.globalStatus==="donedeal")); };
-  var eoiPending = eoiScope.filter(function(l){ if(isConvertedDeal(l)) return false; return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
-  var eoiApprovedList = eoiScope.filter(function(l){ if(isConvertedDeal(l)) return false; return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
-  var eoiCancelled = eoiScope.filter(function(l){ return l.eoiStatus==="EOI Cancelled" || l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; });
-  var eoiLeads = eoiTab==="pending" ? eoiPending : eoiTab==="approved" ? eoiApprovedList : eoiCancelled;
+  // A cancelled EOI (EOI Cancelled / Deal Cancelled). Once cancelled the old
+  // Pending/Approved approval state is irrelevant — the row badge shows
+  // "Cancelled" and the journey strip is hidden. Single source of truth for the
+  // Cancelled tab filter AND the row badge, and it's excluded from the active
+  // lists below so Active and Cancelled stay mutually exclusive (a legacy row
+  // carrying both eoiStatus="Approved" and status="Deal Cancelled" is cancelled).
+  var isEoiCancelledRow = function(l){ return l.eoiStatus==="EOI Cancelled" || l.eoiStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; };
+  var eoiPending = eoiScope.filter(function(l){ if(isConvertedDeal(l)||isEoiCancelledRow(l)) return false; return l.eoiStatus ? l.eoiStatus==="Pending" : (l.status==="EOI" && !l.eoiApproved); });
+  var eoiApprovedList = eoiScope.filter(function(l){ if(isConvertedDeal(l)||isEoiCancelledRow(l)) return false; return l.eoiStatus ? l.eoiStatus==="Approved" : (l.status==="EOI" && l.eoiApproved); });
+  var eoiCancelled = eoiScope.filter(isEoiCancelledRow);
+  // TAB MERGE — "Active" = everything not cancelled (Pending + Approved together).
+  // Ordered by the BADGE state (eoiApproved) so Pending rows — the ones that
+  // still need action — sort first, then Approved. Sorting on eoiApproved (the
+  // same flag the row badge reads) rather than the eoiStatus bucket keeps the
+  // order consistent with the badge even when the two drift apart: an EOI with
+  // eoiStatus="Approved" but eoiApproved=false renders a Pending badge and
+  // correctly sorts first. That drift is also why the tabs were merged — such a
+  // row now lands in Active either way instead of hiding in the wrong per-state
+  // tab. Array.sort is stable (ES2019+), so each group keeps its eoiScope order.
+  var eoiActive = eoiPending.concat(eoiApprovedList).sort(function(a,b){ return (a.eoiApproved?1:0)-(b.eoiApproved?1:0); });
+  var eoiLeads = eoiTab==="cancelled" ? eoiCancelled : eoiActive;
   var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
@@ -12079,7 +12096,7 @@ var EOIPage = function(p) {
       {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
-      {[["approved","\u2705 Approved",eoiApprovedList.length,"#15803D","#DCFCE7"],["pending","\u23f3 Pending",eoiPending.length,"#B45309","#FEF3C7"],["cancelled","\u274c EOI Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
+      {[["active","\ud83d\udccb Active",eoiActive.length,"#1D4ED8","#DBEAFE"],["cancelled","\u274c Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
         var active = eoiTab===tab[0];
         return <button key={tab[0]} onClick={function(){setSelectedEOI(null);setEoiTab(tab[0]);}} style={{ padding:"7px 14px", borderRadius:9, border:active?"1px solid "+tab[3]:"1px solid #E8ECF1", background:active?tab[4]:"#fff", color:active?tab[3]:C.textLight, fontSize:12, fontWeight:active?700:600, cursor:"pointer" }}>{tab[1]} ({tab[2]})</button>;
       })}
@@ -12145,7 +12162,9 @@ var EOIPage = function(p) {
         return <div key={gid(d)} onClick={function(){setSelectedEOI(isSel?null:d);}} style={{ background:isSel?"#F0FDF4":"#fff", borderRadius:14, padding:14, border:"2px solid "+(isSel?"#22C55E":"#E8ECF1"), cursor:"pointer" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
             <div style={{ fontSize:15, fontWeight:700 }}>{d.name}{canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight, marginTop:1 }}>{formatLeadId(d.leadId)}</div>}</div>
-            {d.eoiApproved
+            {isEoiCancelledRow(d)
+              ?<span style={{ background:"#FEE2E2", color:"#B91C1C", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>❌</span>
+              :d.eoiApproved
               ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
               :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
           </div>
@@ -12186,7 +12205,9 @@ var EOIPage = function(p) {
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, textAlign:"left" }}>{eoiDateStr}</td>
             <td style={{ padding:"11px 12px", textAlign:"left" }}>
-              {d.eoiApproved
+              {isEoiCancelledRow(d)
+                ?<span style={{ background:"#FEE2E2", color:"#B91C1C", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>❌ Cancelled</span>
+                :d.eoiApproved
                 ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅ Approved</span>
                 :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳ Pending</span>}
             </td>
