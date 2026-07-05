@@ -2887,6 +2887,18 @@ var LeadForm = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.source, isDoneDealForm]);
 
+  // Resale hides the down-payment + installment fields (direct full-payment) —
+  // clear any stale values when the deal form switches to Resale so they aren't
+  // submitted. dealDate (the single Resale Deal Date) is intentionally kept.
+  useEffect(function(){
+    if (isDoneDealForm && form.saleType === "Resale") {
+      ["downPayment","downPaymentPct","downPaymentDate","reservationDate","contractionDate","installmentYears"].forEach(function(k){
+        if (form[k]) upd(k, "");
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.saleType, isDoneDealForm]);
+
   // Draft autosave (add mode only) — debounced persist of text/scalar fields.
   // Attachments (documentFiles) are excluded; we only record whether any exist so
   // the restore banner can prompt a re-pick. An emptied form clears its draft.
@@ -2963,31 +2975,43 @@ var LeadForm = function(p) {
       if (!String(form.project || "").trim()) { alert("Please enter the Project / Compound"); return; }
       if (!String(form.unitType || "").trim()) { alert("Please select a Unit Type"); return; }
       if (form.saleType !== "Primary" && form.saleType !== "Resale") { alert("Please select a Sale Type"); return; }
-      var dpNum = (function(){ var s = String(form.downPayment || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
-      if (!(dpNum > 0)) { alert("Please enter the Down Payment (EGP)"); return; }
-      if (!String(form.downPaymentDate || "").trim()) { alert("Please enter the Down Payment Date"); return; }
-      if (!String(form.reservationDate || "").trim()) { alert("Please enter the Reservation Date"); return; }
-      if (!String(form.contractionDate || "").trim()) { alert("Please enter the Contraction Date"); return; }
-      if (!String(form.installmentYears || "").trim()) { alert("Please enter the Installments (years)"); return; }
+      if (form.saleType === "Resale") {
+        // Resale — direct full-payment: no down payment / installments; a single Deal Date.
+        if (!String(form.dealDate || "").trim()) { alert("Please enter the Deal Date"); return; }
+      } else {
+        var dpNum = (function(){ var s = String(form.downPayment || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
+        if (!(dpNum > 0)) { alert("Please enter the Down Payment (EGP)"); return; }
+        if (!String(form.downPaymentDate || "").trim()) { alert("Please enter the Down Payment Date"); return; }
+        if (!String(form.reservationDate || "").trim()) { alert("Please enter the Reservation Date"); return; }
+        if (!String(form.contractionDate || "").trim()) { alert("Please enter the Contraction Date"); return; }
+        if (!String(form.installmentYears || "").trim()) { alert("Please enter the Installments (years)"); return; }
+      }
     }
     // Commission Rate (%) — required > 0 for any DoneDeal save (Internal +
     // External). Mirrors backend rejection at POST/PUT /api/leads. BE computes
     // commissionAmount = budget × rate / 100 server-side; FE only sends rate.
     if (isDoneDealForm && isOnlyAdmin) {
-      var crInputStr = String(form.commissionRate || "").trim();
-      var crInputNum = Number(crInputStr);
-      if (!crInputStr || !isFinite(crInputNum) || crInputNum <= 0 || crInputNum > 100) {
-        alert("Please enter a valid Commission Rate (%) between 0 and 100");
-        return;
-      }
       var budgetCheck = (function(){
         var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
         var n = parseFloat(s);
         return isFinite(n) ? n : 0;
       })();
       if (!(budgetCheck > 0)) {
-        alert("Please enter a Budget (EGP) greater than 0 — commission is computed as Budget × Rate%");
+        alert("Please enter a Unit Price (EGP) greater than 0 first — the commission is computed against it");
         return;
+      }
+      if (form.saleType === "Resale") {
+        // Resale — commission is a typed EGP amount (no tax), required and ≤ price.
+        var caInput = (function(){ var s = String(form.commissionAmount || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
+        if (!(caInput > 0)) { alert("Please enter the Commission Amount (EGP)"); return; }
+        if (caInput > budgetCheck) { alert("Commission Amount cannot exceed the Unit Price"); return; }
+      } else {
+        var crInputStr = String(form.commissionRate || "").trim();
+        var crInputNum = Number(crInputStr);
+        if (!crInputStr || !isFinite(crInputNum) || crInputNum <= 0 || crInputNum > 100) {
+          alert("Please enter a valid Commission Rate (%) between 0 and 100");
+          return;
+        }
       }
     }
     inflight.current = true;
@@ -3013,9 +3037,20 @@ var LeadForm = function(p) {
         if (devSelId) payload.developerId = devSelId;
         else if (devPendName.trim()) payload.developerPending = devPendName.trim();
       }
-      // Phase R-13 — FE sends commissionRate only; BE recomputes commissionAmount
-      // server-side from budget × rate / 100. Never trust the client number.
+      // Commission normalization. Primary: FE sends commissionRate only; BE
+      // recomputes commissionAmount = budget × rate/100 (client amount stripped).
+      // Resale: amount (EGP) is canonical (no tax) — send it; BE derives the rate.
+      // The resale branch is the ONLY place a client commissionAmount is sent.
       (function(){
+        if (isDoneDealForm && form.saleType === "Resale") {
+          var sa = String(payload.commissionAmount || "").replace(/,/g, "").trim();
+          var na = Number(sa);
+          payload.commissionAmount = (sa && isFinite(na) && na > 0) ? na : null;
+          var sr = String(payload.commissionRate || "").replace(/,/g, "").trim();
+          var nr = Number(sr);
+          payload.commissionRate = (sr && isFinite(nr) && nr > 0) ? nr : null;
+          return;
+        }
         var s = String(payload.commissionRate || "").replace(/,/g, "").trim();
         var n = Number(s);
         payload.commissionRate = (s && isFinite(n) && n > 0 && n <= 100) ? n : null;
@@ -3174,6 +3209,10 @@ var LeadForm = function(p) {
       var num=function(v){ var s=String(v||"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
       var priceN=num(form.budget), dpN=num(form.downPayment);
       var pct=(priceN>0&&dpN>0)?(Math.round((dpN/priceN)*10000)/100):null;
+      // Resale = direct full-payment: NO developer down payment, NO installments.
+      // Hide the Down Payment amount + the 4-field row; show a single Deal Date
+      // (which drives the backbone dealDate). Primary keeps the full sale form.
+      var isResale = form.saleType === "Resale";
       // Deal Date ≡ Contraction Date — a Done Deal's close date can't be in the
       // future (backbone dealDate feeds quarter attribution). Cap the picker at
       // today (Cairo) on create; edit is unconstrained so admins can correct.
@@ -3195,22 +3234,28 @@ var LeadForm = function(p) {
           <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
           <Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>
         </div>
-        <div style={g2}>
-          <Inp label="💰 Unit Price (EGP)" req value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
-          <Inp label="💵 Down Payment (EGP)" req={!p.editId} value={form.downPayment||""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("downPayment",raw?Number(raw).toLocaleString():"");}} placeholder="e.g. 500,000"/>
-        </div>
-        <div style={{ marginTop:-6, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+        {isResale
+          ? <Inp label="💰 Unit Price (EGP)" req value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+          : <>
+              <div style={g2}>
+                <Inp label="💰 Unit Price (EGP)" req value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+                <Inp label="💵 Down Payment (EGP)" req={!p.editId} value={form.downPayment||""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("downPayment",raw?Number(raw).toLocaleString():"");}} placeholder="e.g. 500,000"/>
+              </div>
+              <div style={{ marginTop:-6, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+            </>}
         {developerBlock ? <div style={g2}>{developerBlock}{sourceField}</div> : sourceField}
         {isAdSource(form.source) && campaignField}
 
         {hdr("💰 Sales")}
         <Inp label="🏷️ Sale Type" req={!p.editId} type="select" value={form.saleType||"Primary"} onChange={function(e){upd("saleType",e.target.value);}} options={[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]}/>
-        <div style={g4}>
-          <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
-          <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
-          <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
-          <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
-        </div>
+        {isResale
+          ? <Inp label="📅 Deal Date" req={!p.editId} type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={maxDay}/>
+          : <div style={g4}>
+              <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
+              <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
+              <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
+              <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
+            </div>}
         <div style={g2}>{agentField}<Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/></div>
       </div>;
     })() : <div>
@@ -3245,49 +3290,55 @@ var LeadForm = function(p) {
         external fields when flipping back to internal so no stale config
         lingers on the lead. */}
     {isDoneDealForm&&isOnlyAdmin&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
-      {/* Phase R-13 — Commission Rate (%) applies to BOTH Internal and External.
-          Required > 0, ≤ 100. Backend recomputes commissionAmount on save from
-          budget × rate / 100. Read-only display below shows the formula result. */}
-      <Inp label="💰 Commission Rate (%)" req
-        value={form.commissionRate || ""}
-        onChange={function(e){
-          var raw = e.target.value.replace(/[^0-9.]/g, "");
-          var firstDot = raw.indexOf(".");
-          if (firstDot >= 0) {
-            raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
-          }
-          var parts = raw.split(".");
-          var intPart = parts[0] || "";
-          var hasDec = parts.length > 1;
-          var decPart = hasDec ? parts[1].slice(0, 4) : "";
-          var formatted = intPart === ""
-            ? (hasDec ? "0." + decPart : "")
-            : (hasDec ? intPart + "." + decPart : intPart);
-          upd("commissionRate", formatted);
-        }}
-        placeholder="e.g. 3"/>
+      {/* Commission input — saleType-aware. Primary: Rate (%) canonical, amount =
+          budget × rate/100 (state-tax model applies downstream). Resale: linked
+          amount ⇄ percent pair (BOTH stored; amount canonical) and the commission
+          enters WHOLE — no VAT, no withholding. */}
       {(function(){
-        var budgetNum = (function(){
-          var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
-          var n = parseFloat(s);
-          return isFinite(n) ? n : 0;
-        })();
-        var rateNum = Number(form.commissionRate);
+        var isResaleC = form.saleType === "Resale";
+        var numC = function(v){ var s=String(v||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
+        var budgetNum = numC(form.budget);
         var fmtMoney = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
-        if (!(budgetNum > 0)) {
-          return <div style={{ marginBottom:12, padding:"6px 10px", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:6, fontSize:11, color:"#92400E" }}>
-            Set Budget (EGP) above to see the computed Commission Amount.
-          </div>;
+        if (isResaleC) {
+          var g2C = { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" };
+          var amtDisplay = form.commissionAmount ? Number(String(form.commissionAmount).replace(/,/g,"")).toLocaleString() : "";
+          return <>
+            <div style={g2C}>
+              <Inp label="💰 Commission Amount (EGP)" req value={amtDisplay} onChange={function(e){
+                var raw = e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");
+                upd("commissionAmount", raw ? Number(raw).toLocaleString() : "");
+                var a = numC(raw), b = numC(form.budget);
+                upd("commissionRate", (a>0 && b>0) ? String(Math.round(a/b*10000)/100) : "");
+              }} placeholder="e.g. 150,000"/>
+              <Inp label="Commission %" value={form.commissionRate || ""} onChange={function(e){
+                var raw = e.target.value.replace(/[^0-9.]/g,"");
+                var fd = raw.indexOf("."); if (fd>=0) raw = raw.slice(0,fd+1) + raw.slice(fd+1).replace(/\./g,"");
+                var parts = raw.split("."); var dp = parts.length>1 ? parts[1].slice(0,4) : "";
+                var formatted = parts[0]==="" ? (parts.length>1?"0."+dp:"") : (parts.length>1?parts[0]+"."+dp:parts[0]);
+                upd("commissionRate", formatted);
+                var r = numC(formatted), b = numC(form.budget);
+                upd("commissionAmount", (r>0 && b>0) ? Number(Math.round(b*r)/100).toLocaleString() : "");
+              }} placeholder="e.g. 3"/>
+            </div>
+            <div style={{ marginTop:-4, marginBottom:12, padding:"6px 10px", background:"#ECFDF5", border:"1px solid #A7F3D0", borderRadius:6, fontSize:11, color:"#065F46" }}>
+              🏷️ Resale — commission enters WHOLE (no VAT, no withholding). {budgetNum>0 && numC(form.commissionAmount)>0 ? <b>Net = {fmtMoney(numC(form.commissionAmount))} EGP</b> : "Enter Unit Price + an amount or %."}
+            </div>
+          </>;
         }
-        if (!(isFinite(rateNum) && rateNum > 0)) {
-          return <div style={{ marginBottom:12, padding:"6px 10px", background:"#F1F5F9", border:"1px solid #E2E8F0", borderRadius:6, fontSize:11, color:C.textLight }}>
-            Commission Amount = Budget ({fmtMoney(budgetNum)}) × Rate% = <b>—</b>
-          </div>;
-        }
-        var amt = Math.round(budgetNum * rateNum) / 100;
-        return <div style={{ marginBottom:12, padding:"6px 10px", background:"#ECFDF5", border:"1px solid #A7F3D0", borderRadius:6, fontSize:11, color:"#065F46" }}>
-          Commission Amount = Budget ({fmtMoney(budgetNum)}) × {rateNum}% = <b>{fmtMoney(amt)} EGP</b>
-        </div>;
+        var rateNum = Number(form.commissionRate);
+        return <>
+          <Inp label="💰 Commission Rate (%)" req value={form.commissionRate || ""} onChange={function(e){
+            var raw = e.target.value.replace(/[^0-9.]/g, "");
+            var firstDot = raw.indexOf("."); if (firstDot >= 0) raw = raw.slice(0, firstDot+1) + raw.slice(firstDot+1).replace(/\./g, "");
+            var parts = raw.split("."); var intPart = parts[0] || ""; var hasDec = parts.length > 1; var decPart = hasDec ? parts[1].slice(0, 4) : "";
+            upd("commissionRate", intPart === "" ? (hasDec ? "0." + decPart : "") : (hasDec ? intPart + "." + decPart : intPart));
+          }} placeholder="e.g. 3"/>
+          {!(budgetNum > 0)
+            ? <div style={{ marginBottom:12, padding:"6px 10px", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:6, fontSize:11, color:"#92400E" }}>Set Budget (EGP) above to see the computed Commission Amount.</div>
+            : !(isFinite(rateNum) && rateNum > 0)
+            ? <div style={{ marginBottom:12, padding:"6px 10px", background:"#F1F5F9", border:"1px solid #E2E8F0", borderRadius:6, fontSize:11, color:C.textLight }}>Commission Amount = Budget ({fmtMoney(budgetNum)}) × Rate% = <b>—</b></div>
+            : <div style={{ marginBottom:12, padding:"6px 10px", background:"#ECFDF5", border:"1px solid #A7F3D0", borderRadius:6, fontSize:11, color:"#065F46" }}>Commission Amount = Budget ({fmtMoney(budgetNum)}) × {rateNum}% = <b>{fmtMoney(Math.round(budgetNum * rateNum) / 100)} EGP</b></div>}
+        </>;
       })()}
       <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:8 }}>Deal Type</label>
       {/* Phase R-12 Part 5 — commission-lock banner. Mirrors the backend
@@ -3567,11 +3618,21 @@ var LeadForm = function(p) {
           amber preview above (no VAT / withholding). */}
       {(function(){
         if (form.dealType === "external" || form.dealType === "ambassador") return null;
-        var budgetNum = (function(){
-          var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, "");
-          var n = parseFloat(s);
-          return isFinite(n) ? n : 0;
-        })();
+        var parseMoney = function(v){ var s = String(v || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; };
+        var fmt = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
+        if (form.saleType === "Resale") {
+          // Resale — commission enters WHOLE: no VAT, no withholding. Net = gross;
+          // the agent tier share comes out of this and the remainder is company net.
+          var grossR = parseMoney(form.commissionAmount);
+          if (!(grossR > 0)) return null;
+          return <div style={{ padding:"10px 12px", background:"#ECFDF5", borderRadius:8, fontSize:12, color:"#065F46", lineHeight:1.6, marginTop:10 }}>
+            <div style={{ fontWeight:600, marginBottom:4 }}>📊 Live Preview — Resale (no VAT / withholding):</div>
+            <div>Gross commission:&nbsp;&nbsp;<b>{fmt(grossR)} EGP</b></div>
+            <div style={{ marginTop:4, paddingTop:4, borderTop:"1px solid #A7F3D0", fontWeight:700 }}>Net (enters whole):&nbsp;&nbsp;{fmt(grossR)} EGP</div>
+            <div style={{ marginTop:2, fontSize:11, fontWeight:400 }}>Agent tier share comes out of this; the remainder is company net.</div>
+          </div>;
+        }
+        var budgetNum = parseMoney(form.budget);
         var rateNum = Number(form.commissionRate);
         if (!(budgetNum > 0) || !(isFinite(rateNum) && rateNum > 0)) return null;
         var gross    = budgetNum * rateNum / 100;
@@ -3579,7 +3640,6 @@ var LeadForm = function(p) {
         var vat      = gross - netOfVat;
         var with5    = netOfVat * 0.05;
         var netDue   = gross - with5;
-        var fmt = function(n){ return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); };
         return <div style={{ padding:"10px 12px", background:"#EFF6FF", borderRadius:8, fontSize:12, color:"#1E3A8A", lineHeight:1.6, marginTop:10 }}>
           <div style={{ fontWeight:600, marginBottom:4 }}>📊 Live Preview — on a {fmt(gross)} EGP gross claim:</div>
           <div>Net of VAT (÷ 1.14):&nbsp;&nbsp;<b>{fmt(netOfVat)} EGP</b></div>
@@ -11792,7 +11852,7 @@ var EOIPage = function(p) {
   // EOI lead + editable) before hitting /eoi-to-deal. convertModal holds the EOI
   // lead being converted; convertForm holds the editable sale-form values.
   var [convertModal,setConvertModal]=useState(null);
-  var [convertForm,setConvertForm]=useState({ name:"", phone:"", project:"", unitType:"", unitCode:"", budget:"", saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"", installmentYears:"" });
+  var [convertForm,setConvertForm]=useState({ name:"", phone:"", project:"", unitType:"", unitCode:"", budget:"", saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"", installmentYears:"", dealDate:"" });
   var setConvF=function(k,v){ setConvertForm(function(f){ var n=Object.assign({},f); n[k]=v; return n; }); };
   // Optional deal documents attached in the convert modal ([{fileData,fileName}]);
   // uploaded to /eoi-documents AFTER the conversion succeeds (same endpoint the
@@ -11956,17 +12016,25 @@ var EOIPage = function(p) {
     var priceNum = num(f.budget);
     if(!(priceNum>0)) { alert("Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal."); return; }
     if(f.saleType!=="Primary"&&f.saleType!=="Resale") { alert("Please select a Sale Type"); return; }
-    if(!(num(f.downPayment)>0)) { alert("Please enter the Down Payment (EGP)"); return; }
-    if(!String(f.downPaymentDate||"").trim()) { alert("Please enter the Down Payment Date"); return; }
-    if(!String(f.reservationDate||"").trim()) { alert("Please enter the Reservation Date"); return; }
-    if(!String(f.contractionDate||"").trim()) { alert("Please enter the Contraction Date"); return; }
-    if(!String(f.installmentYears||"").trim()) { alert("Please enter the Installments (years)"); return; }
+    if(f.saleType==="Resale") {
+      // Resale conversion is BLOCKED when the EOI carries a deposit — a deposit is
+      // a developer down payment, incompatible with a resale (direct full-payment).
+      if(num(lead.eoiDeposit)>0) { alert("This EOI has a deposit — it can't be converted to a Resale deal (resales have no down payment). Convert as Primary instead."); return; }
+      if(!String(f.dealDate||"").trim()) { alert("Please enter the Deal Date"); return; }
+    } else {
+      if(!(num(f.downPayment)>0)) { alert("Please enter the Down Payment (EGP)"); return; }
+      if(!String(f.downPaymentDate||"").trim()) { alert("Please enter the Down Payment Date"); return; }
+      if(!String(f.reservationDate||"").trim()) { alert("Please enter the Reservation Date"); return; }
+      if(!String(f.contractionDate||"").trim()) { alert("Please enter the Contraction Date"); return; }
+      if(!String(f.installmentYears||"").trim()) { alert("Please enter the Installments (years)"); return; }
+    }
     // Phase R-1: warn when the deal's dealDate falls outside the current year.
     // Commission attribution uses dealDate's quarter, so a cross-year close can
-    // retroactively change last year's commission shares. dealDate ≡ Contraction
-    // Date (unified) — check the contraction year the convert is about to write.
+    // retroactively change last year's commission shares. The date that becomes
+    // dealDate is the Contraction Date (Primary) or the Deal Date (Resale).
+    var effConvDate = f.saleType==="Resale" ? f.dealDate : f.contractionDate;
     var dealYr = null;
-    try { if (f.contractionDate) dealYr = new Date(f.contractionDate).getUTCFullYear(); } catch(e){}
+    try { if (effConvDate) dealYr = new Date(effConvDate).getUTCFullYear(); } catch(e){}
     var curYr = new Date().getUTCFullYear();
     if (dealYr && isFinite(dealYr) && dealYr !== curYr) {
       if (!window.confirm("⚠ This deal's date is in " + dealYr + " (not the current year " + curYr + "). Commission shares will be attributed to " + dealYr + " — confirm continue?")) return;
@@ -11981,7 +12049,10 @@ var EOIPage = function(p) {
         budget: f.budget||"", saleType: f.saleType||"",
         downPayment: f.downPayment||"", downPaymentDate: f.downPaymentDate||"",
         reservationDate: f.reservationDate||"", contractionDate: f.contractionDate||"",
-        installmentYears: f.installmentYears||""
+        installmentYears: f.installmentYears||"",
+        // Resale-only: the single Deal Date (backend writes it into dealDate). The
+        // backend clears the down-payment/installment fields for a resale anyway.
+        dealDate: f.dealDate||""
       },p.token);
       if (!updated || !updated._id) {
         console.error("[convertToDeal] empty response", updated);
@@ -12032,7 +12103,7 @@ var EOIPage = function(p) {
     budget: lead.budget||"", saleType: lead.saleType||"Primary",
     downPayment: lead.downPayment||"", downPaymentDate: lead.downPaymentDate||"",
     reservationDate: lead.reservationDate||"", contractionDate: lead.contractionDate||"",
-    installmentYears: lead.installmentYears||""
+    installmentYears: lead.installmentYears||"", dealDate: lead.dealDate||""
   }); setConvertDocs([]); setConvertModal(lead); };
 
   var handleDocUpload=async function(e,lead){
@@ -12309,8 +12380,12 @@ var EOIPage = function(p) {
         var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 10px" };
         // Deal Date ≡ Contraction Date — the deal's close date can't be in the
         // future (backbone dealDate feeds quarter attribution), so cap the
-        // Contraction Date picker at today (Cairo).
+        // Deal / Contraction Date picker at today (Cairo).
         var todayIso=new Date(Date.now()+3*3600*1000).toISOString().slice(0,10);
+        // Resale conversion is blocked when the EOI has a deposit (a deposit is a
+        // developer down payment). Only Primary is selectable in that case.
+        var hasDeposit = num(convertModal.eoiDeposit) > 0;
+        var isResaleConv = !hasDeposit && convertForm.saleType === "Resale";
         return <div>
           <div style={{ fontSize:13, color:C.text, marginBottom:6 }}>Complete the sale form to convert <b>{convertModal.name||"this EOI"}</b> to a Done Deal. It will move to the Deals page.</div>
 
@@ -12325,20 +12400,27 @@ var EOIPage = function(p) {
             {cField("🏷️ Unit Type","unitType",{type:"select",options:UNIT_TYPES.map(function(x){return {value:x,label:x||"- Select -"};})})}
             {cField("🔖 Unit Code","unitCode",{placeholder:"e.g. B1-204"})}
           </div>
-          <div style={g2}>
-            {cField("💰 Unit Price (EGP)","budget",{money:true,placeholder:"e.g. 1,500,000"})}
-            {cField("💵 Down Payment (EGP)","downPayment",{money:true,placeholder:"e.g. 500,000"})}
-          </div>
-          <div style={{ marginTop:-4, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+          {isResaleConv
+            ? cField("💰 Unit Price (EGP)","budget",{money:true,placeholder:"e.g. 1,500,000"})
+            : <>
+                <div style={g2}>
+                  {cField("💰 Unit Price (EGP)","budget",{money:true,placeholder:"e.g. 1,500,000"})}
+                  {cField("💵 Down Payment (EGP)","downPayment",{money:true,placeholder:"e.g. 500,000"})}
+                </div>
+                <div style={{ marginTop:-4, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+              </>}
 
           {sectionHdr("💰 Sales")}
-          {cField("🏷️ Sale Type","saleType",{type:"select",options:[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]})}
-          <div style={g4}>
-            {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
-            {cField("📅 Reservation Date","reservationDate",{type:"date"})}
-            {cField("📅 Contraction Date","contractionDate",{type:"date",max:todayIso})}
-            {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 7"})}
-          </div>
+          {cField("🏷️ Sale Type","saleType",{type:"select",options: hasDeposit ? [{value:"Primary",label:"Primary"}] : [{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]})}
+          {hasDeposit && <div style={{ marginTop:-4, marginBottom:10, fontSize:11, color:"#B45309", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:6, padding:"6px 10px" }}>This EOI has a deposit ({convertModal.eoiDeposit}) — only Primary is available (resales have no down payment).</div>}
+          {isResaleConv
+            ? cField("📅 Deal Date","dealDate",{type:"date",max:todayIso})
+            : <div style={g4}>
+                {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
+                {cField("📅 Reservation Date","reservationDate",{type:"date"})}
+                {cField("📅 Contraction Date","contractionDate",{type:"date",max:todayIso})}
+                {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 7"})}
+              </div>}
 
           {sectionHdr("📎 Documents (optional)")}
           <DocumentsUpload files={convertDocs} onChange={setConvertDocs} label="📎 Upload Deal Documents (optional)"/>
@@ -13142,12 +13224,15 @@ var DealsPage = function(p) {
             return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
           })(), icon:"💰"},
           {l:"Sale Type", v:saleType||"—", icon:"🏷️"},
-          {l:"Down Payment", v:(function(){ var a=parseBudget(downPayAmt); return a>0?a.toLocaleString()+" EGP":"—"; })(), icon:"💵"},
-          {l:"Down Payment %", v:downPct?downPct+"%":"—", icon:"📊"},
-          {l:"Down Payment Date", v:dpDateStr||"—", icon:"📅"},
-          {l:"Reservation Date", v:resDateStr||"—", icon:"📅"},
-          {l:"Contraction Date", v:contrDateStr||"—", icon:"📅"},
-          {l:"Installments", v:instYears?instYears+" yrs":"—", icon:"📆"},
+          // Resale = direct full-payment: no down payment / installments. Blank
+          // these (the tile filter drops empty values) and show a single Deal Date
+          // instead of Contraction Date.
+          {l:"Down Payment", v:saleType==="Resale" ? "" : (function(){ var a=parseBudget(downPayAmt); return a>0?a.toLocaleString()+" EGP":"—"; })(), icon:"💵"},
+          {l:"Down Payment %", v:saleType==="Resale" ? "" : (downPct?downPct+"%":"—"), icon:"📊"},
+          {l:"Down Payment Date", v:saleType==="Resale" ? "" : (dpDateStr||"—"), icon:"📅"},
+          {l:"Reservation Date", v:saleType==="Resale" ? "" : (resDateStr||"—"), icon:"📅"},
+          {l:(saleType==="Resale" ? "Deal Date" : "Contraction Date"), v:(saleType==="Resale" ? (dealDateStr||"—") : (contrDateStr||"—")), icon:"📅"},
+          {l:"Installments", v:saleType==="Resale" ? "" : (instYears?instYears+" yrs":"—"), icon:"📆"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
@@ -26105,6 +26190,10 @@ var CommissionCycleStageModal = function(p) {
           : ca;
         return round2(ambNr).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       }
+      if (c && c.snapshot && c.snapshot.saleType === "Resale") {
+        // Resale — no VAT / withholding: net received == gross claim.
+        return round2(ca).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
       // Phase R-5 — exact formula: netReceived = grossClaim − (grossClaim / 1.14) × 0.05.
       // Pre-fill at piaster precision; MoneyInput preserves the decimal until the
       // admin edits the field (its onChange strip is integer-only — pre-R-5 behavior).
@@ -26162,6 +26251,7 @@ var CommissionCycleStageModal = function(p) {
   var stgAmbTaxPct = stgAmbTaxOn ? Number(c.ambassadorSplit.developerTaxRate) : 0;
   var stgAmbTaxAmt = stgAmbTaxOn ? gross * stgAmbTaxPct / 100 : 0;
   var stgAmbNet    = gross - stgAmbTaxAmt;
+  var stgIsResale  = !!(c && c.snapshot && c.snapshot.saleType === "Resale");
 
   // Phase R-1: per-recipient payouts moved off the cycle. The received-stage
   // modal now collects amount only (cash flow from the developer); recipient
@@ -26211,7 +26301,12 @@ var CommissionCycleStageModal = function(p) {
         {stgAmbTaxOn && <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Developer Tax ({stgAmbTaxPct}%)</span><span>−{fmtMoney2(stgAmbTaxAmt)}</span></div>}
         <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #FDE68A", color:"#B45309", fontWeight:700 }}><span>ARO Net</span><span>{fmtMoney2(stgAmbNet)}</span></div>
       </div>}
-      {gross > 0 && !stgIsAmb && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
+      {gross > 0 && stgIsResale && <div style={{ background:"#ECFDF5", border:"1px dashed #A7F3D0", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:"#065F46" }}>
+        {/* Resale claim preview — no VAT, no withholding: net == gross claim. */}
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (Resale — no VAT)</span><b>{fmtMoney2(gross)}</b></div>
+        <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #A7F3D0", fontWeight:700 }}><span>Expected Net Received</span><span>{fmtMoney2(gross)}</span></div>
+      </div>}
+      {gross > 0 && !stgIsAmb && !stgIsResale && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (incl. VAT)</span><b>{fmtMoney2(gross)}</b></div>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(netOfVat)}</span></div>
         <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
@@ -26268,6 +26363,7 @@ var CommissionClaimBackfillModal = function(p) {
   var bfAmbTaxPct = bfAmbTaxOn ? Number(c.ambassadorSplit.developerTaxRate) : 0;
   var bfAmbTaxAmt = bfAmbTaxOn ? gross * bfAmbTaxPct / 100 : 0;
   var bfAmbNet    = gross - bfAmbTaxAmt;
+  var bfIsResale  = !!(c && c.snapshot && c.snapshot.saleType === "Resale");
 
   var claimDateStr = "—";
   try {
@@ -26315,7 +26411,12 @@ var CommissionClaimBackfillModal = function(p) {
       {bfAmbTaxOn && <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Developer Tax ({bfAmbTaxPct}%)</span><span>−{fmtMoney2(bfAmbTaxAmt)}</span></div>}
       <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #FDE68A", color:"#B45309", fontWeight:700 }}><span>ARO Net</span><span>{fmtMoney2(bfAmbNet)}</span></div>
     </div>}
-    {gross > 0 && !bfIsAmb && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
+    {gross > 0 && bfIsResale && <div style={{ background:"#ECFDF5", border:"1px dashed #A7F3D0", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:"#065F46" }}>
+      {/* Resale claim preview — no VAT, no withholding: net == gross claim. */}
+      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (Resale — no VAT)</span><b>{fmtMoney2(gross)}</b></div>
+      <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #A7F3D0", fontWeight:700 }}><span>Expected Net Received</span><span>{fmtMoney2(gross)}</span></div>
+    </div>}
+    {gross > 0 && !bfIsAmb && !bfIsResale && <div style={{ background:"#F8FAFC", border:"1px dashed #CBD5E1", borderRadius:8, padding:"10px 12px", marginBottom:10, fontSize:12, color:C.text }}>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Claim Total (incl. VAT)</span><b>{fmtMoney2(gross)}</b></div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(netOfVat)}</span></div>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(vat)}</span></div>
@@ -27338,12 +27439,19 @@ var CommissionsPage = function(p) {
           render at piaster precision (round2) for Excel-reconcile parity. */}
       {Number(cycle.claimAmount || 0) > 0 && (function(){
         var ga    = Number(cycle.claimAmount);
+        var rateP = Number(cycle.commissionRate || 0) * 100;
+        var fmt   = function(n){ return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+        if (c && c.snapshot && c.snapshot.saleType === "Resale") {
+          // Resale — no VAT / withholding: Expected Net == gross claim.
+          return <div style={{ marginTop:8, paddingTop:6, borderTop:"1px dashed #E2E8F0", fontSize:10, color:C.textLight, lineHeight:1.6 }}>
+            <div>Unit Value {fmt(cycle.claimUnitValue)} EGP  •  Rate {rateP.toFixed(2)}%  •  Total {fmt(ga)} EGP</div>
+            <div style={{ color:"#059669" }}>Resale — no VAT / withholding  •  Expected Net {fmt(ga)} EGP</div>
+          </div>;
+        }
         var nv    = ga / 1.14;
         var vt    = ga - nv;
         var wh    = nv * 0.05;
         var nr    = ga - wh;
-        var rateP = Number(cycle.commissionRate || 0) * 100;
-        var fmt   = function(n){ return round2(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
         return <div style={{ marginTop:8, paddingTop:6, borderTop:"1px dashed #E2E8F0", fontSize:10, color:C.textLight, lineHeight:1.6 }}>
           <div>Unit Value {fmt(cycle.claimUnitValue)} EGP  •  Rate {rateP.toFixed(2)}%  •  Total {fmt(ga)} EGP</div>
           <div>Net of VAT {fmt(nv)}  •  VAT {fmt(vt)}  •  Withholding 5% {fmt(wh)}  •  Expected Net {fmt(nr)} EGP</div>

@@ -321,12 +321,15 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   developerPending:{type:String,default:"",trim:true},
   // ===== Full sale form (2026-07-05) — sale metadata collected on the two
   // deal-CREATION paths: the EOI "Convert to Deal" modal and the "Add Deal"
-  // form. Purely informational — NO impact on commission/tax/payout math (like
-  // closingCompanyId/developerId above). REQUIRED on those two creation paths
-  // (validated at the write sites, not at schema level, so pre-existing deals
-  // with empty values stay editable and render "—" — no backfill).
-  // downPaymentPct is AUTO-derived from downPayment ÷ budget by
-  // computeDownPaymentPctStr() on every write; it is never typed by hand.
+  // form. REQUIRED on those two creation paths (validated at the write sites,
+  // not at schema level, so pre-existing deals with empty values stay editable
+  // and render "—" — no backfill). downPaymentPct is AUTO-derived from
+  // downPayment ÷ budget by computeDownPaymentPctStr() on every write.
+  // saleType (2026-07-06) DOES affect commission economics: "Resale" freezes
+  // snapshot.saleType="Resale" at close → the commission enters whole (no VAT,
+  // no withholding) while keeping the normal per-1000 team chain. Resale deals
+  // are direct full-payment (no developer down payment): the down-payment +
+  // installment fields are hidden and a single Deal Date drives dealDate.
   saleType:{type:String,default:""},          // "" | "Primary" | "Resale"
   downPayment:{type:String,default:""},        // EGP amount (typed input)
   downPaymentPct:{type:String,default:""},     // % of unit price (derived, server-computed)
@@ -769,6 +772,11 @@ var commissionSchema = new mongoose.Schema({
     projectName:     { type: String, default: "" },
     dealTotal:       { type: Number, default: 0 },      // EGP (parsed Lead.budget)
     dealDate:        { type: String, default: "" },     // ISO from Lead.dealDate
+    // Frozen sale type at close. "" / "Primary" = taxed (VAT 14% + withholding
+    // 5%); "Resale" = commission enters WHOLE (no VAT, no withholding), read by
+    // isResaleSnapshot() in the 3 analytics aggregators. Existing commissions
+    // have no value here → taxed path unchanged (new resale deals only).
+    saleType:        { type: String, default: "" },     // "" | "Primary" | "Resale"
     // Phase R-12 — broker-only external deals have NO internal sales agent
     // (externalSalesAgentEnabled=false AND Lead.agentId=null). buildSnapshotForLead
     // returns salesAgent:null for that shape, so this MUST default to null rather
@@ -3364,6 +3372,10 @@ async function buildSnapshotForLead(leadDoc) {
     // whose raw dealDate is empty still freezes a real date instead of "" — the bug
     // where the card read "closed —" while the Deals page showed a date.
     dealDate: effectiveDealDateIso(leadDoc),
+    // Freeze sale type at close so a later Lead.saleType edit can't retroactively
+    // change the tax treatment of an already-closed commission (drives the no-VAT/
+    // no-withholding resale path in the analytics aggregators).
+    saleType: leadDoc.saleType || "",
     salesAgent: primaryRecipient,
     teamLeader: primaryChain.teamLeader,
     manager: primaryChain.manager,
@@ -10830,42 +10842,51 @@ app.post("/api/leads", auth, async function(req, res) {
     }
     var extCheck = await validateAndNormalizeExternalDeal(req.body, null);
     if (!extCheck.ok) return res.status(400).json({ error: extCheck.error });
-    // Phase R-13 — Commission rate + amount (canonical state-tax model).
-    // FE sends commissionRate (percent); BE always recomputes commissionAmount
-    // from round2(budget × rate / 100). Client-supplied commissionAmount is
-    // ignored. Both required > 0 on admin's DoneDeal save; budget > 0 too.
+    // Commission + sale fields — saleType-aware (Resale, 2026-07-06).
+    //   Primary: rate (%) is canonical → commissionAmount = round2(budget × rate/100);
+    //            full sale form (down payment + 4 dates/installments) required.
+    //   Resale:  amount (EGP) is canonical (typed, no VAT/withholding) →
+    //            commissionRate = round2(amount/budget×100) for display; a single
+    //            Deal Date is required; down-payment/installment fields are cleared.
+    // The resale path is the ONLY place a client commissionAmount is trusted (the
+    // linked amount⇄% pair is the design); Primary still ignores client amounts.
     var __round2 = function(n){ return Math.round(Number(n||0) * 100) / 100; };
     if ((req.user.role === "admin" || req.user.role === "sales_admin") && initialStatus === "DoneDeal") {
-      var crRawCreate = req.body.commissionRate;
-      var crNumCreate = Number(crRawCreate);
-      if (crRawCreate === undefined || crRawCreate === null || crRawCreate === "" || !isFinite(crNumCreate) || crNumCreate <= 0 || crNumCreate > 100) {
-        return res.status(400).json({ error: "commission_rate_required", message: "Commission Rate (%) is required and must be between 0 and 100." });
-      }
       var budgetNumCreate = parseDealTotalFromBudget(req.body.budget);
       if (!(budgetNumCreate > 0)) {
         return res.status(400).json({ error: "budget_required_for_commission", message: "Unit Price (EGP) is required and must be greater than 0 to compute the commission." });
       }
       // Unit Code — required for the "Add Lead (Done Deal)" creation path (PATH A).
-      // Validated only for the direct DoneDeal create; other statuses are unaffected.
       if (!String((req.body && req.body.unitCode) || "").trim()) {
         return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required for a Done Deal." });
       }
-      // Full sale form (PATH 2) — ALL FIELDS REQUIRED (Yosra). Mirror the FE
-      // guards so the Add-Deal create can never persist a half-filled sale.
-      // Applies to the direct DoneDeal create only (this whole block is gated on
-      // initialStatus === "DoneDeal"); pre-existing deals + other statuses are
-      // untouched. downPaymentPct is derived below in the create object.
       if (!String((req.body && req.body.project)  || "").trim()) return res.status(400).json({ error: "project_required",  message: "Project / Compound is required." });
       if (!String((req.body && req.body.unitType) || "").trim()) return res.status(400).json({ error: "unit_type_required", message: "Unit Type is required." });
       var sfSaleType = String((req.body && req.body.saleType) || "").trim();
       if (sfSaleType !== "Primary" && sfSaleType !== "Resale") return res.status(400).json({ error: "sale_type_required", message: "Sale Type (Primary or Resale) is required." });
-      if (!(parseDealTotalFromBudget(req.body && req.body.downPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
-      if (!String((req.body && req.body.downPaymentDate) || "").trim()) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
-      if (!String((req.body && req.body.reservationDate) || "").trim()) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
-      if (!String((req.body && req.body.contractionDate) || "").trim()) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
-      if (!String((req.body && req.body.installmentYears) || "").trim()) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
-      req.body.commissionRate   = crNumCreate;
-      req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
+      if (sfSaleType === "Resale") {
+        if (!String((req.body && req.body.dealDate) || "").trim()) return res.status(400).json({ error: "deal_date_required", message: "Deal Date is required." });
+        var caResale = parseDealTotalFromBudget(req.body && req.body.commissionAmount);
+        if (!(caResale > 0)) return res.status(400).json({ error: "commission_amount_required", message: "Commission Amount (EGP) is required and must be greater than 0." });
+        if (caResale > budgetNumCreate) return res.status(400).json({ error: "commission_exceeds_price", message: "Commission Amount cannot exceed the Unit Price." });
+        req.body.commissionAmount = __round2(caResale);
+        req.body.commissionRate   = __round2(caResale / budgetNumCreate * 100);
+        // Resale has no down-payment / installment fields — clear any strays.
+        req.body.downPayment = ""; req.body.downPaymentDate = ""; req.body.reservationDate = ""; req.body.contractionDate = ""; req.body.installmentYears = "";
+      } else {
+        var crRawCreate = req.body.commissionRate;
+        var crNumCreate = Number(crRawCreate);
+        if (crRawCreate === undefined || crRawCreate === null || crRawCreate === "" || !isFinite(crNumCreate) || crNumCreate <= 0 || crNumCreate > 100) {
+          return res.status(400).json({ error: "commission_rate_required", message: "Commission Rate (%) is required and must be between 0 and 100." });
+        }
+        if (!(parseDealTotalFromBudget(req.body && req.body.downPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
+        if (!String((req.body && req.body.downPaymentDate) || "").trim()) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
+        if (!String((req.body && req.body.reservationDate) || "").trim()) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
+        if (!String((req.body && req.body.contractionDate) || "").trim()) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
+        if (!String((req.body && req.body.installmentYears) || "").trim()) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
+        req.body.commissionRate   = crNumCreate;
+        req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
+      }
 
       // Phase R-13.1 — DoneDeal recipient guard. Rules differ by dealType:
       //   - Internal: Lead.agentId required (primary sales agent).
@@ -11946,9 +11967,10 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     var e2dReservationDate   = String(b.reservationDate  || "").slice(0,10);
     var e2dContractionDate   = String(b.contractionDate  || "").slice(0,10);
     var e2dInstallmentYears  = String(b.installmentYears != null ? b.installmentYears : "").trim();
-    // ALL FIELDS REQUIRED (Yosra) — mirror the FE guards so a direct API call
-    // (or a stale client) can never create a half-filled deal. Legacy deals are
-    // never affected: this validation lives on the convert path only.
+    var e2dDealDate          = String(b.dealDate || "").slice(0,10);   // Resale-only: the single Deal Date
+    // Required fields are saleType-aware (Resale, 2026-07-06). Mirror the FE
+    // guards so a direct API call can never create a half-filled deal. Legacy
+    // deals are never affected: this validation lives on the convert path only.
     if (!e2dName)     return res.status(400).json({ error: "name_required",    message: "Client name is required." });
     if (!e2dPhone)    return res.status(400).json({ error: "phone_required",   message: "Client phone is required." });
     if (!e2dProject)  return res.status(400).json({ error: "project_required", message: "Project / Compound is required." });
@@ -11956,11 +11978,19 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     if (!e2dUnitCode) return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required to convert to a Done Deal." });
     if (!(e2dBudgetNum > 0)) return res.status(400).json({ error: "budget_required_for_deal", message: "Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal." });
     if (e2dSaleType !== "Primary" && e2dSaleType !== "Resale") return res.status(400).json({ error: "sale_type_required", message: "Sale Type (Primary or Resale) is required." });
-    if (!(parseDealTotalFromBudget(e2dDownPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
-    if (!e2dDownPaymentDate) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
-    if (!e2dReservationDate) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
-    if (!e2dContractionDate) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
-    if (!e2dInstallmentYears) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
+    if (e2dSaleType === "Resale") {
+      // Resale conversion is BLOCKED when the EOI carries a deposit — an EOI
+      // deposit IS a developer down payment, which contradicts a resale (direct
+      // full-payment, no down payment). Yosra's rule.
+      if (parseDealTotalFromBudget(existing.eoiDeposit) > 0) return res.status(400).json({ error: "resale_blocked_deposit", message: "This EOI has a deposit — it can't be converted to a Resale deal (resales have no down payment). Convert as Primary instead." });
+      if (!e2dDealDate) return res.status(400).json({ error: "deal_date_required", message: "Deal Date is required." });
+    } else {
+      if (!(parseDealTotalFromBudget(e2dDownPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
+      if (!e2dDownPaymentDate) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
+      if (!e2dReservationDate) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
+      if (!e2dContractionDate) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
+      if (!e2dInstallmentYears) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
+    }
     // Client preservation — when the final buyer's name/phone differ from the EOI
     // originals, stash the EOI-time values (only if not already preserved) so the
     // Deal card can show them as a secondary "EOI contact"; the Lead's own
@@ -11969,6 +11999,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     var preservePhone = (e2dPhone !== String(existing.phone || "").trim() && !existing.eoiOriginalPhone) ? String(existing.phone || "") : undefined;
     // Date-only Cairo-local (YYYY-MM-DD), unified with every dealDate write path.
     var todayIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0,10);
+    var isResaleConvert = e2dSaleType === "Resale";
     var update = {
       status: "DoneDeal",
       name: e2dName,
@@ -11978,19 +12009,19 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       unitCode: e2dUnitCode,
       budget: e2dBudgetRaw,
       saleType: e2dSaleType,
-      downPayment: e2dDownPayment,
+      // Resale = direct full-payment: no down payment / installments. Clear them
+      // so a resale deal never carries developer-payment metadata.
+      downPayment: isResaleConvert ? "" : e2dDownPayment,
       // downPaymentPct is ALWAYS server-derived from amount ÷ price — never trusted from the client.
-      downPaymentPct: computeDownPaymentPctStr(e2dDownPayment, e2dBudgetRaw),
-      downPaymentDate: e2dDownPaymentDate,
-      reservationDate: e2dReservationDate,
-      contractionDate: e2dContractionDate,
-      installmentYears: e2dInstallmentYears,
-      // Field unification (Yosra): Deal Date ≡ Contraction Date. The Contraction
-      // Date is the single source — mirror it into dealDate (the backbone field
-      // read by quarter filters / TargetPeriods / leaderboard / commission
-      // snapshot's effective-date chain). e2dContractionDate is required above,
-      // so it is always present; the fallbacks only guard a hypothetical bypass.
-      dealDate: e2dContractionDate || existing.dealDate || todayIso,
+      downPaymentPct: isResaleConvert ? "" : computeDownPaymentPctStr(e2dDownPayment, e2dBudgetRaw),
+      downPaymentDate: isResaleConvert ? "" : e2dDownPaymentDate,
+      reservationDate: isResaleConvert ? "" : e2dReservationDate,
+      contractionDate: isResaleConvert ? "" : e2dContractionDate,
+      installmentYears: isResaleConvert ? "" : e2dInstallmentYears,
+      // dealDate (backbone: quarter filters / TargetPeriods / leaderboard /
+      // commission snapshot). Primary: Deal Date ≡ Contraction Date. Resale: its
+      // own single Deal Date. The fallbacks only guard a hypothetical bypass.
+      dealDate: (isResaleConvert ? e2dDealDate : e2dContractionDate) || existing.dealDate || todayIso,
       dealStatus: "",
       preDealStatus: existing.status || "EOI",
       // Clear eoiStatus so the record no longer shows in any EOI tab — it belongs to Deals now.
@@ -12315,11 +12346,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       delete req.body.commissionRate;
       delete req.body.commissionAmount;
     } else if (req.body.status === "DoneDeal") {
+      // Resale (2026-07-06) — the commission is a typed EGP AMOUNT (no tax),
+      // canonical; derive the rate for display. Primary keeps rate-canonical
+      // (amount = budget × rate). Budget is looked up only when a resale amount
+      // OR a valid rate is present, so a rate-less quick-close still costs no query.
+      var saleTypePut = String(req.body.saleType || "").trim();
+      var caRawPut = parseDealTotalFromBudget(req.body.commissionAmount);
       var crRawPut = req.body.commissionRate;
       var crNumPut = Number(crRawPut);
       var crValidPut = !(crRawPut === undefined || crRawPut === null || crRawPut === "" || !isFinite(crNumPut) || crNumPut <= 0 || crNumPut > 100);
-      if (crValidPut) {
-        // Budget can come from the body, OR fall back to the lead's existing budget.
+      var wantResalePut = (saleTypePut === "Resale" && caRawPut > 0);
+      if (wantResalePut || crValidPut) {
         var budgetForCalcPut;
         if (req.body.budget !== undefined && req.body.budget !== null && req.body.budget !== "") {
           budgetForCalcPut = parseDealTotalFromBudget(req.body.budget);
@@ -12327,18 +12364,20 @@ app.put("/api/leads/:id", auth, async function(req, res) {
           var budgetOldLead = await Lead.findById(req.params.id).select("budget").lean();
           budgetForCalcPut = parseDealTotalFromBudget(budgetOldLead && budgetOldLead.budget);
         }
-        if (budgetForCalcPut > 0) {
+        if (wantResalePut && budgetForCalcPut > 0 && caRawPut <= budgetForCalcPut) {
+          req.body.commissionAmount = __round2Put(caRawPut);
+          req.body.commissionRate   = __round2Put(caRawPut / budgetForCalcPut * 100);
+        } else if (crValidPut && budgetForCalcPut > 0) {
           req.body.commissionRate   = crNumPut;
           req.body.commissionAmount = __round2Put(budgetForCalcPut * crNumPut / 100);
         } else {
-          // Rate supplied but no usable budget to compute against — drop both so
-          // we never persist a rate without its matching amount. Cycle 1 seeds
-          // zeroed; admin sets the value later on the Commissions page.
+          // Supplied value(s) but no usable budget (or amount > price) — drop both
+          // so we never persist a rate/amount without a matching pair.
           delete req.body.commissionRate;
           delete req.body.commissionAmount;
         }
       } else {
-        // No valid rate supplied — strip any partial values; do NOT reject.
+        // No valid rate and no resale amount — strip any partial values; do NOT reject.
         delete req.body.commissionRate;
         delete req.body.commissionAmount;
       }
@@ -24850,6 +24889,15 @@ function ambDevTaxFraction(doc) {
   return (isFinite(r) && r > 0) ? (r / 100) : 0;
 }
 
+// Resale deals pay commission WHOLE — no VAT, no withholding (like Ambassador's
+// no-tax, but keeping the normal per-1000 team chain and with NO developer tax:
+// net revenue = full gross claim). The flag is FROZEN on the snapshot at close
+// (buildSnapshotForLead), so existing commissions (no snapshot.saleType) stay on
+// the taxed path — the new math applies to newly-closed resale deals ONLY.
+function isResaleSnapshot(doc) {
+  return !!(doc && doc.snapshot && doc.snapshot.saleType === "Resale");
+}
+
 // ===== Phase R-5 annual summary + VAT payments =====
 // Annual summary aggregates cycles with claimAmount > 0 (i.e. created under
 // R-5+). Old cycles created before R-5 have claimAmount = 0 and are excluded
@@ -24902,6 +24950,7 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
       // deduction is the developer tax. Branch the per-cycle accumulation.
       var isAmb = !!(doc.ambassadorSplit && doc.ambassadorSplit.isAmbassador);
       var ambFrac = ambDevTaxFraction(doc);
+      var isResale = isResaleSnapshot(doc);
       for (var j = 0; j < doc.cycles.length; j++) {
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
@@ -24924,6 +24973,12 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
             grossClaim      += ca;
             netOfVatTotal   += ca;
             netRevenueTotal += (ca - devTaxCyc);
+          } else if (isResale) {
+            // Resale: commission enters WHOLE — no VAT, no withholding. Net of
+            // VAT == gross, Net Revenue == gross. NOT added to withholdingByDeal.
+            grossClaim      += ca;
+            netOfVatTotal   += ca;
+            netRevenueTotal += ca;
           } else {
             grossClaim       += ca;
             netOfVatTotal    += nv;
@@ -24954,7 +25009,7 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         // collection. Drives the VAT 14% card and the Monthly VAT table.
         // Ambassador deals never issue a government invoice → no VAT, skip.
         var id_ = cy.invoice_submitted && cy.invoice_submitted.date;
-        if (!isAmb && typeof id_ === "string" && id_.slice(0, 4) === year) {
+        if (!isAmb && !isResale && typeof id_ === "string" && id_.slice(0, 4) === year) {
           vatTotal += vt;
           var claimMonth = id_.slice(0, 7);
           if (!vatByMonthMap[claimMonth]) vatByMonthMap[claimMonth] = { vatAmount: 0, grossClaim: 0, leads: [] };
@@ -25148,6 +25203,7 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
       // VAT / withholding); broker = 0; team = ambassador recipient payouts.
       var isAmbD = !!(d.ambassadorSplit && d.ambassadorSplit.isAmbassador);
       var ambFracD = ambDevTaxFraction(d);
+      var isResaleD = isResaleSnapshot(d);
 
       // Revenue — same per-cycle math as /api/annual-pnl: cycles with
       // claimAmount > 0 whose received.date falls in the year. Internal/external:
@@ -25162,6 +25218,8 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
           if (typeof rd !== "string" || rd.slice(0, 4) !== year) continue;
           if (isAmbD) {
             revenue += (ca - ca * ambFracD);
+          } else if (isResaleD) {
+            revenue += ca;   // Resale: no VAT, no withholding — full claim is revenue
           } else {
             var nv = ca / 1.14;
             var vt = ca - nv;
@@ -25806,6 +25864,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
       // developer tax. Matches the annual-summary cards so the two never diverge.
       var isAmbP = !!(doc.ambassadorSplit && doc.ambassadorSplit.isAmbassador);
       var ambFracP = ambDevTaxFraction(doc);
+      var isResaleP = isResaleSnapshot(doc);
       for (var j = 0; j < doc.cycles.length; j++) {
         var cy = doc.cycles[j];
         var ca = Number(cy.claimAmount || 0);
@@ -25816,6 +25875,10 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
           grossClaim      += ca;
           netOfVatTotal   += ca;
           netRevenueTotal += (ca - ca * ambFracP);
+        } else if (isResaleP) {
+          grossClaim      += ca;   // Resale: no VAT, no withholding — full claim is net revenue
+          netOfVatTotal   += ca;
+          netRevenueTotal += ca;
         } else {
           var nv = ca / 1.14;
           var vt = ca - nv;
