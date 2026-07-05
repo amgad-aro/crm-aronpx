@@ -11655,6 +11655,10 @@ var EOIPage = function(p) {
   // EOI lead being converted; convertUnitCode is the input value.
   var [convertModal,setConvertModal]=useState(null);
   var [convertUnitCode,setConvertUnitCode]=useState("");
+  // Convert-to-Deal accent — Yosra's pick: soft mint background with dark-green
+  // text (~8:1 contrast), unified across the row buttons, the card button, and
+  // the modal confirm so all three "Convert to Deal" affordances read as one.
+  var MINT_BG="#5DCAA5", MINT_FG="#04342C";
   // Side-panel hydration tracker. The /api/leads bootstrap strips heavy fields
   // (eoiImage, eoiDocuments) to keep the payload small; we refetch the full
   // doc when the panel opens. panelHydratedEoiId === selectedEOI._id once the
@@ -11755,10 +11759,20 @@ var EOIPage = function(p) {
 
   var toggleApproved=async function(lead,field){
     try{
-      var update={}; update[field]=!lead[field];
+      var newVal=!lead[field];
+      var update={}; update[field]=newVal;
+      // Keep eoiStatus in lock-step with the approval flag. The Pending/Approved
+      // tab filters key off eoiStatus (falling back to eoiApproved only when it's
+      // blank), so flipping eoiApproved alone leaves eoiStatus="Approved" and the
+      // row stays in the Approved tab. Persisting both keeps FE + BE consistent
+      // and lets the filter re-file the row into the right tab.
+      if(field==="eoiApproved") update.eoiStatus = newVal ? "Approved" : "Pending";
       var updated=await apiFetch("/api/leads/"+gid(lead),"PUT",update,p.token);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(lead)?updated:l;});});
       if(selectedEOI&&gid(selectedEOI)===gid(lead))setSelectedEOI(updated);
+      // Follow the row to its destination tab so the open card isn't orphaned on a
+      // list it no longer belongs to (fix 4) — and the admin sees where it landed.
+      if(field==="eoiApproved") setEoiTab(newVal ? "approved" : "pending");
     }catch(e){alert(e.message);}
   };
 
@@ -11934,11 +11948,11 @@ var EOIPage = function(p) {
               if (!isOnlyAdmin) return null;
               // State-aware primary action (same handlers as before):
               //   Pending  → Approve (green). No convert yet.
-              //   Approved → Convert to Deal (blue). "Approved" now lives as the
+              //   Approved → Convert to Deal (mint). "Approved" now lives as the
               //              journey-strip badge, not a toggle button.
               return <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", justifyContent:"flex-end" }}>
                 {selectedEOI.eoiApproved
-                  ? <button disabled={convertingDeal} onClick={function(){openConvert(selectedEOI);}} style={{ background:C.info, border:"none", borderRadius:8, padding:"6px 14px", cursor:convertingDeal?"wait":"pointer", color:"#fff", fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(59,130,246,0.35)" }}>
+                  ? <button disabled={convertingDeal} onClick={function(){openConvert(selectedEOI);}} style={{ background:MINT_BG, border:"none", borderRadius:8, padding:"6px 14px", cursor:convertingDeal?"wait":"pointer", color:MINT_FG, fontSize:11, fontWeight:700, opacity:convertingDeal?0.6:1, boxShadow:"0 1px 3px rgba(4,52,44,0.18)" }}>
                       {convertingDeal?"Converting…":"Convert to Deal"}
                     </button>
                   : <button onClick={function(){toggleApproved(selectedEOI,"eoiApproved");}} style={{ background:"#15803D", border:"none", borderRadius:8, padding:"6px 14px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:700, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}>
@@ -12006,26 +12020,23 @@ var EOIPage = function(p) {
               }}/>}
         </div>}
 
-        {/* EOI Image */}
+        {/* EOI Image — mirrors the Deal card's Contract Images: the whole section
+            (incl. any upload affordance) is shown ONLY when an image already
+            exists. No image → hidden entirely; EOI Documents below (which accepts
+            image or PDF) is the sole upload area. Existing images keep Replace. */}
+        {isEoiHydrated && selectedEOI.eoiImage &&
         <div style={{ marginTop:12 }}>
           <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📎 EOI Image</div>
-          {!isEoiHydrated
-            ?<div style={{ padding:"16px", borderRadius:8, border:"1px dashed #E2E8F0", color:C.textLight, fontSize:11, textAlign:"center" }}>⌛ Loading…</div>
-            :selectedEOI.eoiImage
-            ?<div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-start" }}>
-              <div style={{ position:"relative", width:80, height:80, flex:"0 0 auto" }}>
-                <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:80, height:80, objectFit:"cover", borderRadius:8, cursor:"zoom-in", display:"block" }} alt="EOI" title="Click to view full size"/>
-              </div>
-              <label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box" }}>
-                🔄 Replace Image
-                <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
-              </label>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-start" }}>
+            <div style={{ position:"relative", width:80, height:80, flex:"0 0 auto" }}>
+              <img src={selectedEOI.eoiImage} onClick={function(){var w=window.open();w.document.write("<img src='"+selectedEOI.eoiImage+"' style='max-width:100%;'>");}} style={{ width:80, height:80, objectFit:"cover", borderRadius:8, cursor:"zoom-in", display:"block" }} alt="EOI" title="Click to view full size"/>
             </div>
-            :<label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box" }}>
-              {imgUploading?"Uploading...":"📤 Upload EOI Image"}
+            <label style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", width:80, height:80, flex:"0 0 auto", borderRadius:8, border:"1px dashed "+C.accent, background:C.accent+"08", color:C.accent, fontSize:10, fontWeight:600, cursor:"pointer", textAlign:"center", boxSizing:"border-box" }}>
+              {imgUploading?"Uploading…":"🔄 Replace Image"}
               <input type="file" accept="image/*" style={{ display:"none" }} onChange={function(e){handleImageUpload(e,selectedEOI,"eoi");}}/>
-            </label>}
-        </div>
+            </label>
+          </div>
+        </div>}
 
         {/* EOI Documents (images + PDFs) */}
         <div style={{ marginTop:12 }}>
@@ -12113,7 +12124,7 @@ var EOIPage = function(p) {
             <button onClick={function(){ setConvertModal(null); setConvertUnitCode(""); }} disabled={convertingDeal}
               style={{ flex:1, padding:"10px 0", borderRadius:10, border:"1px solid "+C.border, background:"#fff", color:C.text, fontSize:13, fontWeight:700, cursor:convertingDeal?"not-allowed":"pointer" }}>Cancel</button>
             <button onClick={function(){ convertToDeal(convertModal, convertUnitCode); }} disabled={blocked}
-              style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", background:blocked?"#9CA3AF":"#15803D", color:"#fff", fontSize:13, fontWeight:700, cursor:blocked?"not-allowed":"pointer" }}>{convertingDeal?"Converting…":"Convert to Deal"}</button>
+              style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", background:blocked?"#9CA3AF":MINT_BG, color:blocked?"#fff":MINT_FG, fontSize:13, fontWeight:700, cursor:blocked?"not-allowed":"pointer" }}>{convertingDeal?"Converting…":"Convert to Deal"}</button>
           </div>
         </div>;
       })()}
@@ -12151,7 +12162,7 @@ var EOIPage = function(p) {
               The button MUST call both stopPropagation and preventDefault so
               the outer card's onClick (which opens the details panel) doesn't
               fire on the same click. */}
-          {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();openConvert(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:"#15803D", color:"#fff", fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
+          {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();openConvert(d);}} onMouseDown={function(e){e.stopPropagation();}} onTouchStart={function(e){e.stopPropagation();}} disabled={convertingDeal} style={{ marginTop:10, width:"100%", padding:"8px 12px", borderRadius:9, border:"none", background:MINT_BG, color:MINT_FG, fontSize:12, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1 }}>
             {convertingDeal?"Converting…":"✅ Convert to Deal"}
           </button>}
         </div>;
@@ -12187,7 +12198,7 @@ var EOIPage = function(p) {
                     stopPropagation on the button itself is belt-and-suspenders
                     alongside the td's stopPropagation — keeps the row's
                     detail-panel onClick from firing on the same click. */}
-                {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();openConvert(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:"#15803D", color:"#fff", fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
+                {isOnlyAdmin&&<button onClick={function(e){e.stopPropagation();e.preventDefault();openConvert(d);}} onMouseDown={function(e){e.stopPropagation();}} disabled={convertingDeal} title="Convert to Deal" style={{ padding:"6px 10px", borderRadius:6, border:"none", background:MINT_BG, color:MINT_FG, fontSize:11, fontWeight:700, cursor:convertingDeal?"wait":"pointer", opacity:convertingDeal?0.6:1, whiteSpace:"nowrap" }}>
                   {convertingDeal?"…":"Convert to Deal"}
                 </button>}
                 {isOnlyAdmin&&<button onClick={function(){setEditLead(d);}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Edit size={13} color={C.info}/></button>}
