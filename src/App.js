@@ -2641,10 +2641,17 @@ var LeadForm = function(p) {
   var initialDraft = draftRef.current;
   var [form, setForm] = useState((function(){
     var base = p.initial||{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", source:p.isReq?"Daily Request":"", agentId:"", callbackTime:"", notes:"", status:"NewLead", dealDate:"", eoiDate:"", eoiDeposit:"", downPaymentPct:"", installmentYears:"" };
-    // Load saved extra fields from localStorage if editing a deal
+    // Full sale form (2026-07-05) — ensure the sale-form fields are always present
+    // so the inputs stay controlled even when p.initial (Add Deal / Add EOI) omits
+    // them. Server values (p.initial) win; these only fill gaps.
+    base=Object.assign({ saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"" }, base);
+    // Load saved extra fields from localStorage if editing a deal. Now that the
+    // sale fields persist server-side (downPayment/downPaymentPct/installmentYears/
+    // dealDate on the Lead), the SERVER value wins — the old localStorage "extra"
+    // only backfills a legacy deal that predates server persistence.
     if(p.editId){
       var extra=getDealExtra(String(p.editId));
-      if(extra) base=Object.assign({},base,{downPaymentPct:extra.downPaymentPct||"",installmentYears:extra.installmentYears||"",dealDate:extra.dealDate||""});
+      if(extra) base=Object.assign({},base,{downPaymentPct:base.downPaymentPct||extra.downPaymentPct||"",installmentYears:base.installmentYears||extra.installmentYears||"",dealDate:base.dealDate||extra.dealDate||""});
       // Also read dealDate from lead object if available
       if(p.initial&&p.initial.dealDate&&!base.dealDate) base=Object.assign({},base,{dealDate:p.initial.dealDate});
     }
@@ -2909,6 +2916,16 @@ var LeadForm = function(p) {
       var unitPriceNum = (function(){ var s = String(form.budget || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
       if (!(unitPriceNum > 0)) { alert("Please enter a valid Unit Price (EGP) greater than 0"); return; }
       if (!String(form.unitCode || "").trim()) { alert("Please enter the Unit Code (e.g. B1-204)"); return; }
+      // Full sale form — ALL REQUIRED on create (Yosra). Mirrors the backend guards.
+      if (!String(form.project || "").trim()) { alert("Please enter the Project / Compound"); return; }
+      if (!String(form.unitType || "").trim()) { alert("Please select a Unit Type"); return; }
+      if (form.saleType !== "Primary" && form.saleType !== "Resale") { alert("Please select a Sale Type"); return; }
+      var dpNum = (function(){ var s = String(form.downPayment || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
+      if (!(dpNum > 0)) { alert("Please enter the Down Payment (EGP)"); return; }
+      if (!String(form.downPaymentDate || "").trim()) { alert("Please enter the Down Payment Date"); return; }
+      if (!String(form.reservationDate || "").trim()) { alert("Please enter the Reservation Date"); return; }
+      if (!String(form.contractionDate || "").trim()) { alert("Please enter the Contraction Date"); return; }
+      if (!String(form.installmentYears || "").trim()) { alert("Please enter the Installments (years)"); return; }
     }
     // Commission Rate (%) — required > 0 for any DoneDeal save (Internal +
     // External). Mirrors backend rejection at POST/PUT /api/leads. BE computes
@@ -2983,6 +3000,15 @@ var LeadForm = function(p) {
       })();
       // Strip client-only fields the API doesn't need
       delete payload.documentFiles;
+      // Sale-form fields belong ONLY to Done-Deal forms. Strip them on every
+      // other form (regular Lead / EOI / Daily Request) so an edit or create
+      // there never persists a stray saleType/down-payment onto a non-deal lead.
+      // (form defaults saleType:"Primary", so without this a plain lead edit
+      // would silently write it.) Now that these are real schema fields, the
+      // strict-mode drop no longer protects us.
+      if (!isDoneDealForm) {
+        ["saleType","downPayment","downPaymentPct","downPaymentDate","reservationDate","contractionDate","installmentYears"].forEach(function(k){ delete payload[k]; });
+      }
       // Managerial roles editing an existing lead: strip notes/lastFeedback
       // — the backend now hard-rejects those fields via PUT for these roles
       // (admin/sales_admin/manager). They use the dedicated feedback flow on
@@ -3020,10 +3046,9 @@ var LeadForm = function(p) {
       var result = p.editId
         ? await apiFetch("/api/leads/"+p.editId, "PUT", payload, p.token, p.csrfToken)
         : await apiFetch("/api/leads", "POST", payload, p.token, p.csrfToken);
-      // Also save extra deal fields to localStorage as backup
-      if(result && result._id && (form.downPaymentPct||form.installmentYears||form.dealDate)){
-        saveDealExtra(String(result._id),{downPaymentPct:form.downPaymentPct||"",installmentYears:form.installmentYears||"",dealDate:form.dealDate||""});
-      }
+      // (Removed the localStorage "deal extra" backup — downPayment / downPaymentPct
+      // / installmentYears / dealDate now persist server-side on the Lead, so the
+      // old per-browser cache was a duplicate parallel store.)
       if (payload.phone2) {
         result.phone2 = payload.phone2;
         // Cache phone2 in localStorage
@@ -3119,10 +3144,28 @@ var LeadForm = function(p) {
     {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
     <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
     {isDoneDealForm&&<Inp label="Deal Date" type="date" req value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
-    {isDoneDealForm&&<div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
-      <Inp label="Down Payment %" value={form.downPaymentPct||""} onChange={function(e){upd("downPaymentPct",e.target.value.replace(/[^0-9.]/g,""));}} placeholder="e.g. 10"/>
-      <Inp label="Installment Years" value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
-    </div>}
+    {/* Sales Information (full sale form) — REQUIRED on the Add-Deal CREATE path
+        (req={!p.editId}); optional on edit so legacy deals with empty values stay
+        editable. Down Payment is a typed EGP amount; its % of unit price is
+        derived live below and recomputed server-side into downPaymentPct on save
+        (never hand-typed). */}
+    {isDoneDealForm&&(function(){
+      var num=function(v){ var s=String(v||"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
+      var priceN=num(form.budget), dpN=num(form.downPayment);
+      var pct=(priceN>0&&dpN>0)?(Math.round((dpN/priceN)*10000)/100):null;
+      return <div style={{ marginTop:2, marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
+        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:".3px", marginBottom:10 }}>🧾 Sales Information</div>
+        <Inp label="🏷️ Sale Type" req={!p.editId} type="select" value={form.saleType||"Primary"} onChange={function(e){upd("saleType",e.target.value);}} options={[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]}/>
+        <Inp label="💵 Down Payment (EGP)" req={!p.editId} value={form.downPayment||""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("downPayment",raw?Number(raw).toLocaleString():"");}} placeholder="e.g. 500,000"/>
+        <div style={{ marginTop:-8, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
+          <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
+          <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
+          <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}}/>
+          <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
+        </div>
+      </div>;
+    })()}
     {/* Phase R-12 Part 3 — Deal Type toggle (Internal / External). Surfaces
         only on Done-Deal forms for admin/sales_admin (matches backend gate).
         Edit-Deal can flip mid-stream; the backend write-site validator clears
@@ -11667,11 +11710,17 @@ var EOIPage = function(p) {
   var [cancelling,setCancelling]=useState(false);
   var [convertingDeal,setConvertingDeal]=useState(false);
   // PATH B — Convert-to-Deal modal. The EOI→Deal conversion used to be a one-click
-  // confirm; it now opens a small modal to collect the REQUIRED Unit Code (and to
-  // re-confirm the Unit Price) before hitting /eoi-to-deal. convertModal holds the
-  // EOI lead being converted; convertUnitCode is the input value.
+  // confirm; it now opens a FULL sale form (all fields required, prefilled from the
+  // EOI lead + editable) before hitting /eoi-to-deal. convertModal holds the EOI
+  // lead being converted; convertForm holds the editable sale-form values.
   var [convertModal,setConvertModal]=useState(null);
-  var [convertUnitCode,setConvertUnitCode]=useState("");
+  var [convertForm,setConvertForm]=useState({ name:"", phone:"", project:"", unitType:"", unitCode:"", budget:"", saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"", installmentYears:"" });
+  var setConvF=function(k,v){ setConvertForm(function(f){ var n=Object.assign({},f); n[k]=v; return n; }); };
+  // Optional deal documents attached in the convert modal ([{fileData,fileName}]);
+  // uploaded to /eoi-documents AFTER the conversion succeeds (same endpoint the
+  // Add-Deal form uses for deal docs). Not required — the sale form is complete
+  // without them.
+  var [convertDocs,setConvertDocs]=useState([]);
   // Convert-to-Deal accent — Yosra's pick: soft mint background with dark-green
   // text (~8:1 contrast), unified across the row buttons, the card button, and
   // the modal confirm so all three "Convert to Deal" affordances read as one.
@@ -11813,15 +11862,27 @@ var EOIPage = function(p) {
     setCancelling(false);
   };
 
-  var convertToDeal=async function(lead, unitCode){
+  var convertToDeal=async function(lead, form){
     if(p.cu.role!=="admin"&&p.cu.role!=="sales_admin"&&p.cu.role!=="sales") { alert("Only admin or sales can convert an EOI to a deal"); return; }
     if(lead.eoiStatus!=="Approved") { alert("EOI must be Approved before converting to a Done Deal"); return; }
-    // PATH B validation (mirrors the backend /eoi-to-deal guards): Unit Price
-    // (budget) must be present + positive, and Unit Code is required.
-    var priceNum = (function(){ var s=String(lead.budget||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; })();
-    if(!(priceNum>0)) { alert("Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal."); return; }
-    var code = String(unitCode||"").trim();
+    // Full sale form validation (mirrors the backend /eoi-to-deal guards) — ALL
+    // fields required (Yosra). Unit Price + Down Payment are money amounts.
+    var f = form || {};
+    var num = function(v){ var s=String(v||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
+    if(!String(f.name||"").trim()) { alert("Client Name is required"); return; }
+    if(!String(f.phone||"").trim()) { alert("Client Phone is required"); return; }
+    if(!String(f.project||"").trim()) { alert("Project / Compound is required"); return; }
+    if(!String(f.unitType||"").trim()) { alert("Please select a Unit Type"); return; }
+    var code = String(f.unitCode||"").trim();
     if(!code) { alert("Please enter the Unit Code (e.g. B1-204)"); return; }
+    var priceNum = num(f.budget);
+    if(!(priceNum>0)) { alert("Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal."); return; }
+    if(f.saleType!=="Primary"&&f.saleType!=="Resale") { alert("Please select a Sale Type"); return; }
+    if(!(num(f.downPayment)>0)) { alert("Please enter the Down Payment (EGP)"); return; }
+    if(!String(f.downPaymentDate||"").trim()) { alert("Please enter the Down Payment Date"); return; }
+    if(!String(f.reservationDate||"").trim()) { alert("Please enter the Reservation Date"); return; }
+    if(!String(f.contractionDate||"").trim()) { alert("Please enter the Contraction Date"); return; }
+    if(!String(f.installmentYears||"").trim()) { alert("Please enter the Installments (years)"); return; }
     // Phase R-1: warn when the deal's dealDate falls outside the current year.
     // Commission attribution uses dealDate's quarter, so a cross-year close can
     // retroactively change last year's commission shares.
@@ -11835,7 +11896,14 @@ var EOIPage = function(p) {
     var leadId = gid(lead);
     console.log("[convertToDeal] POST /api/leads/"+leadId+"/eoi-to-deal", { role: p.cu.role, eoiStatus: lead.eoiStatus, source: lead.source });
     try{
-      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",{unitCode:code},p.token);
+      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",{
+        name: String(f.name||"").trim(), phone: String(f.phone||"").trim(),
+        project: String(f.project||"").trim(), unitType: f.unitType||"", unitCode: code,
+        budget: f.budget||"", saleType: f.saleType||"",
+        downPayment: f.downPayment||"", downPaymentDate: f.downPaymentDate||"",
+        reservationDate: f.reservationDate||"", contractionDate: f.contractionDate||"",
+        installmentYears: f.installmentYears||""
+      },p.token);
       if (!updated || !updated._id) {
         console.error("[convertToDeal] empty response", updated);
         alert("Convert failed — empty response from server. Please refresh and try again.");
@@ -11843,11 +11911,24 @@ var EOIPage = function(p) {
         return;
       }
       console.log("[convertToDeal] ok", { status: updated.status, globalStatus: updated.globalStatus, eoiStatus: updated.eoiStatus });
+      // Upload any deal documents attached in the modal (optional) — after the
+      // conversion so they land on the now-DoneDeal lead. Same endpoint + shape
+      // the Add-Deal form uses (server.js /eoi-documents). Failures are non-fatal.
+      if (Array.isArray(convertDocs) && convertDocs.length>0) {
+        for (var ci=0; ci<convertDocs.length; ci++) {
+          var cf=convertDocs[ci];
+          if (!cf || !cf.fileData) continue;
+          try {
+            var withDocs = await apiFetch("/api/leads/"+leadId+"/eoi-documents","POST",{fileData:cf.fileData, fileName:cf.fileName||""},p.token);
+            if (withDocs && withDocs._id) updated = withDocs;
+          } catch(docErr) { console.error("[convertToDeal] deal document upload failed:", docErr && docErr.message); }
+        }
+      }
       // Close the convert modal + the EOI side panel BEFORE touching p.leads. If
       // bubbling from the row click had already opened the detail panel, this
       // ensures the next render doesn't keep it open on a row that's about to
       // disappear from eoiScope.
-      setConvertModal(null); setConvertUnitCode("");
+      setConvertModal(null); setConvertDocs([]);
       setSelectedEOI(null);
       p.setLeads(function(prev){return prev.map(function(l){return gid(l)===leadId?updated:l;});});
       // Belt-and-suspenders refresh — make absolutely sure the Deals page sees
@@ -11864,8 +11945,16 @@ var EOIPage = function(p) {
     }
     setConvertingDeal(false);
   };
-  // Open the Convert-to-Deal modal for an EOI lead (pre-fills any existing Unit Code).
-  var openConvert=function(lead){ if(!lead) return; setConvertUnitCode(lead.unitCode||""); setConvertModal(lead); };
+  // Open the Convert-to-Deal modal for an EOI lead — prefill the full sale form
+  // from the lead (Client + Property + Sales info); every field stays editable.
+  var openConvert=function(lead){ if(!lead) return; setConvertForm({
+    name: lead.name||"", phone: lead.phone||"",
+    project: lead.project||"", unitType: lead.unitType||"", unitCode: lead.unitCode||"",
+    budget: lead.budget||"", saleType: lead.saleType||"Primary",
+    downPayment: lead.downPayment||"", downPaymentDate: lead.downPaymentDate||"",
+    reservationDate: lead.reservationDate||"", contractionDate: lead.contractionDate||"",
+    installmentYears: lead.installmentYears||""
+  }); setConvertDocs([]); setConvertModal(lead); };
 
   var handleDocUpload=async function(e,lead){
     var file=e.target.files[0]; if(!file) return;
@@ -12117,31 +12206,59 @@ var EOIPage = function(p) {
         onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditLead(null);if(selectedEOI&&gid(selectedEOI)===gid(updated))setSelectedEOI(updated);}}/>
     </Modal>}
 
-    {/* PATH B — Convert-to-Deal modal: collects the REQUIRED Unit Code and re-confirms
-        the Unit Price before hitting /eoi-to-deal (which creates the commission). */}
-    {convertModal&&<Modal show={true} onClose={function(){ if(!convertingDeal){ setConvertModal(null); setConvertUnitCode(""); } }} title="🎉 Convert to Done Deal">
+    {/* PATH 1 — Convert-to-Deal modal is a FULL sale form (all fields required,
+        prefilled from the EOI + editable) posted to /eoi-to-deal (which creates
+        the commission). The Modal wrapper scrolls internally (maxHeight 90vh), so
+        the tall form stays usable on ~380px phones. */}
+    {convertModal&&<Modal show={true} onClose={function(){ if(!convertingDeal){ setConvertModal(null); setConvertDocs([]); } }} title="🎉 Convert to Done Deal">
       {(function(){
-        var priceNum = (function(){ var s=String(convertModal.budget||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; })();
-        var priceOk = priceNum>0;
-        var codeOk = !!String(convertUnitCode||"").trim();
-        var blocked = convertingDeal||!priceOk||!codeOk;
+        var cStyle={ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" };
+        var sectionHdr=function(txt){ return <div style={{ fontSize:12, fontWeight:800, color:C.textLight, textTransform:"uppercase", letterSpacing:".4px", margin:"14px 0 8px" }}>{txt}</div>; };
+        var cField=function(label, key, o){ o=o||{};
+          var onCh=function(e){ var v=e.target.value; if(o.money){ var raw=v.replace(/,/g,"").replace(/[^0-9]/g,""); v=raw?Number(raw).toLocaleString():""; } else if(o.digits){ v=v.replace(/[^0-9]/g,""); } setConvF(key,v); };
+          return <div style={{ marginBottom:12 }}>
+            <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{label}{o.req!==false&&<span style={{color:C.danger}}> *</span>}</label>
+            {o.type==="select"
+              ? <select value={convertForm[key]} onChange={onCh} style={Object.assign({background:"#fff"},cStyle)}>{o.options.map(function(op){return <option key={op.value} value={op.value}>{op.label}</option>;})}</select>
+              : <input type={o.type||"text"} value={convertForm[key]} placeholder={o.placeholder||""} onChange={onCh} style={cStyle}/>}
+          </div>;
+        };
+        var num=function(v){ var s=String(v||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
+        var priceNum=num(convertForm.budget), dpNum=num(convertForm.downPayment);
+        var pct=(priceNum>0&&dpNum>0)?(Math.round((dpNum/priceNum)*10000)/100):null;
         return <div>
-          <div style={{ fontSize:13, color:C.text, marginBottom:14 }}>Convert <b>{convertModal.name||"this EOI"}</b> to a Done Deal. It will move to the Deals page.</div>
-          <div style={{ marginBottom:12, padding:"10px 12px", background:priceOk?"#F0FDF4":"#FEF2F2", border:"1px solid "+(priceOk?"#BBF7D0":"#FECACA"), borderRadius:10 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:".3px", marginBottom:2 }}>Unit Price (EGP)</div>
-            <div style={{ fontSize:15, fontWeight:800, color:priceOk?"#15803D":C.danger }}>{priceOk?priceNum.toLocaleString()+" EGP":"Missing — set a Unit Price on the EOI first"}</div>
+          <div style={{ fontSize:13, color:C.text, marginBottom:6 }}>Complete the sale form to convert <b>{convertModal.name||"this EOI"}</b> to a Done Deal. It will move to the Deals page.</div>
+
+          {sectionHdr("👤 Client Information")}
+          <div style={{ fontSize:11, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>Prefilled from the EOI. Edit if the final buyer differs (spouse / child / relative) — the original EOI contact is kept and shown on the deal card.</div>
+          {cField("Client Name","name")}
+          {cField("Client Phone","phone")}
+
+          {sectionHdr("🏢 Property Information")}
+          {cField("🏢 Project / Compound","project")}
+          {cField("🏷️ Unit Type","unitType",{type:"select",options:UNIT_TYPES.map(function(x){return {value:x,label:x||"- Select -"};})})}
+          {cField("🔖 Unit Code","unitCode",{placeholder:"e.g. B1-204"})}
+          {cField("💰 Unit Price (EGP)","budget",{money:true,placeholder:"e.g. 1,500,000"})}
+
+          {sectionHdr("🧾 Sales Information")}
+          {cField("🏷️ Sale Type","saleType",{type:"select",options:[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]})}
+          {cField("💵 Down Payment (EGP)","downPayment",{money:true,placeholder:"e.g. 500,000"})}
+          <div style={{ marginTop:-6, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+          <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 10px" }}>
+            {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
+            {cField("📅 Reservation Date","reservationDate",{type:"date"})}
+            {cField("📅 Contraction Date","contractionDate",{type:"date"})}
+            {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 7"})}
           </div>
-          <div style={{ marginBottom:16 }}>
-            <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🔖 Unit Code <span style={{color:C.danger}}>*</span></label>
-            <input type="text" value={convertUnitCode} placeholder="e.g. B1-204" autoFocus
-              onChange={function(e){setConvertUnitCode(e.target.value);}}
-              style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
-          </div>
-          <div style={{ display:"flex", gap:10 }}>
-            <button onClick={function(){ setConvertModal(null); setConvertUnitCode(""); }} disabled={convertingDeal}
+
+          {sectionHdr("📎 Documents (optional)")}
+          <DocumentsUpload files={convertDocs} onChange={setConvertDocs} label="📎 Upload Deal Documents (optional)"/>
+
+          <div style={{ display:"flex", gap:10, marginTop:8 }}>
+            <button onClick={function(){ setConvertModal(null); setConvertDocs([]); }} disabled={convertingDeal}
               style={{ flex:1, padding:"10px 0", borderRadius:10, border:"1px solid "+C.border, background:"#fff", color:C.text, fontSize:13, fontWeight:700, cursor:convertingDeal?"not-allowed":"pointer" }}>Cancel</button>
-            <button onClick={function(){ convertToDeal(convertModal, convertUnitCode); }} disabled={blocked}
-              style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", background:blocked?"#9CA3AF":MINT_BG, color:blocked?"#fff":MINT_FG, fontSize:13, fontWeight:700, cursor:blocked?"not-allowed":"pointer" }}>{convertingDeal?"Converting…":"Convert to Deal"}</button>
+            <button onClick={function(){ convertToDeal(convertModal, convertForm); }} disabled={convertingDeal}
+              style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", background:convertingDeal?"#9CA3AF":MINT_BG, color:convertingDeal?"#fff":MINT_FG, fontSize:13, fontWeight:700, cursor:convertingDeal?"not-allowed":"pointer" }}>{convertingDeal?"Converting…":"Convert to Deal"}</button>
           </div>
         </div>;
       })()}
@@ -12376,8 +12493,11 @@ var splitMultiplier = function(d, visibleUserIds){
   return (visibleUserIds && visibleUserIds.has(pri) && visibleUserIds.has(sec)) ? 1 : 0.5;
 };
 var saveDealSplit = function(lid,split){ try{localStorage.setItem("crm_deal_split_"+lid,JSON.stringify(split));}catch(e){}};
+// getDealExtra survives as a READ-ONLY fallback for deals created before the
+// sale fields were persisted server-side. The writer (saveDealExtra) was removed
+// once downPayment/downPaymentPct/installmentYears/dealDate began persisting on
+// the Lead — see LeadForm.submit / renderDealPanel.
 var getDealExtra = function(lid){ try{return JSON.parse(localStorage.getItem("crm_deal_extra_"+lid)||"null");}catch(e){return null;}};
-var saveDealExtra = function(lid,extra){ try{localStorage.setItem("crm_deal_extra_"+lid,JSON.stringify(extra));}catch(e){}};
 // Get the effective date for a deal — checks custom dealDate first
 var getDealDate = function(d){
   try{
@@ -12825,9 +12945,21 @@ var DealsPage = function(p) {
   // upload/delete, getDealExtra) is unchanged from the prior beside-the-table
   // panel — only WHERE it mounts on desktop changed.
   var renderDealPanel=function(styleObj){
+    // Sale fields now persist on the Lead (server); the legacy localStorage
+    // "extra" is only a fallback for deals created before server persistence.
     var extra=getDealExtra(String(selectedDeal._id||gid(selectedDeal)))||{};
-    var downPct=extra.downPaymentPct||selectedDeal.downPaymentPct||"";
-    var instYears=extra.installmentYears||selectedDeal.installmentYears||"";
+    var downPct=selectedDeal.downPaymentPct||extra.downPaymentPct||"";
+    var instYears=selectedDeal.installmentYears||extra.installmentYears||"";
+    var saleType=selectedDeal.saleType||"";
+    var downPayAmt=selectedDeal.downPayment||"";
+    var fmtSaleDate=function(v){ if(!v) return ""; try{ return new Date(v).toLocaleDateString("en-GB"); }catch(e){ return String(v); } };
+    var dpDateStr=fmtSaleDate(selectedDeal.downPaymentDate);
+    var resDateStr=fmtSaleDate(selectedDeal.reservationDate);
+    var contrDateStr=fmtSaleDate(selectedDeal.contractionDate);
+    // Client preservation — EOI-time original contact, shown as a secondary row
+    // when the buyer typed at convert time differed from the EOI contact.
+    var eoiOrigName=selectedDeal.eoiOriginalName||"";
+    var eoiOrigPhone=selectedDeal.eoiOriginalPhone||"";
     return <div ref={dealPanelRef} style={styleObj}>
       <div style={{ background:"#F0FDF4", border:"1px solid #BBF7D0", borderRadius:10, margin:"4px 8px", overflow:"hidden", contain:"content" }}>
       <div style={{ background:"#F0FDF4", borderBottom:"1px solid #BBF7D0", padding:"calc(14px + env(safe-area-inset-top, 0px)) 16px" }}>
@@ -12839,6 +12971,13 @@ var DealsPage = function(p) {
               <div style={{ color:"#15803D", fontSize:14, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{selectedDeal.name}</div>
               {canSeeLeadIds(p.cu) && <div style={{ color:C.textLight, fontSize:11, marginTop:2 }}>{formatLeadId(selectedDeal.leadId)}</div>}
               <div style={{ color:"#16A34A", fontSize:11, marginTop:2 }}><PhoneCell phone={selectedDeal.phone}/></div>
+              {/* Client preservation — EOI-time original contact shown as a
+                  secondary row when the final buyer differed at convert time. */}
+              {(eoiOrigName||eoiOrigPhone)&&<div style={{ marginTop:4, paddingTop:4, borderTop:"1px dashed #BBF7D0" }}>
+                <div style={{ fontSize:9, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:".3px" }}>EOI contact</div>
+                {eoiOrigName&&<div style={{ fontSize:11, color:C.textLight, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{eoiOrigName}</div>}
+                {eoiOrigPhone&&<div style={{ fontSize:11, color:C.textLight, direction:"ltr" }}><PhoneCell phone={eoiOrigPhone}/></div>}
+              </div>}
             </div>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
@@ -12900,8 +13039,13 @@ var DealsPage = function(p) {
             if(!isSalesRole&&eff!==raw&&raw>0) return selectedDeal.budget+" EGP → "+eff.toLocaleString()+" EGP effective";
             return selectedDeal.budget?selectedDeal.budget+" EGP":"-";
           })(), icon:"💰"},
-          {l:"Down Payment %", v:downPct?downPct+"%":"-", icon:"📊"},
-          {l:"Installment Years", v:instYears?instYears+" yrs":"-", icon:"📅"},
+          {l:"Sale Type", v:saleType||"—", icon:"🏷️"},
+          {l:"Down Payment", v:(function(){ var a=parseBudget(downPayAmt); return a>0?a.toLocaleString()+" EGP":"—"; })(), icon:"💵"},
+          {l:"Down Payment %", v:downPct?downPct+"%":"—", icon:"📊"},
+          {l:"Down Payment Date", v:dpDateStr||"—", icon:"📅"},
+          {l:"Reservation Date", v:resDateStr||"—", icon:"📅"},
+          {l:"Contraction Date", v:contrDateStr||"—", icon:"📅"},
+          {l:"Installments", v:instYears?instYears+" yrs":"—", icon:"📆"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},

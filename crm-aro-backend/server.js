@@ -319,6 +319,29 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // at approval (link/add/reject) -> sets developerId + clears this. At least one
   // of developerId / developerPending is REQUIRED when converting to EOI/Deal.
   developerPending:{type:String,default:"",trim:true},
+  // ===== Full sale form (2026-07-05) — sale metadata collected on the two
+  // deal-CREATION paths: the EOI "Convert to Deal" modal and the "Add Deal"
+  // form. Purely informational — NO impact on commission/tax/payout math (like
+  // closingCompanyId/developerId above). REQUIRED on those two creation paths
+  // (validated at the write sites, not at schema level, so pre-existing deals
+  // with empty values stay editable and render "—" — no backfill).
+  // downPaymentPct is AUTO-derived from downPayment ÷ budget by
+  // computeDownPaymentPctStr() on every write; it is never typed by hand.
+  saleType:{type:String,default:""},          // "" | "Primary" | "Resale"
+  downPayment:{type:String,default:""},        // EGP amount (typed input)
+  downPaymentPct:{type:String,default:""},     // % of unit price (derived, server-computed)
+  downPaymentDate:{type:String,default:""},    // YYYY-MM-DD
+  reservationDate:{type:String,default:""},    // YYYY-MM-DD
+  contractionDate:{type:String,default:""},    // YYYY-MM-DD (contract signing)
+  installmentYears:{type:String,default:""},   // installment plan length in years (typed)
+  // Client preservation (Convert-to-Deal): the final buyer typed at convert time
+  // may differ from the EOI-time contact (spouse/child/relative). When they
+  // differ, the EOI-time originals are stashed here and shown as a secondary
+  // "EOI contact" on the Deal card; the Lead's own name/phone become the FINAL
+  // buyer's — which is what buildSnapshotForLead freezes onto the Commission.
+  // Empty when unchanged / not converted from an EOI.
+  eoiOriginalName:{type:String,default:""},
+  eoiOriginalPhone:{type:String,default:""},
   // Permanent sequential Lead ID (Feature A) — minted on creation via
   // nextLeadId() (atomic Counter). Displayed as "ID #" + 5-digit zero-pad to
   // admin/sales_admin only. Never changes; gaps are fine; ids are never reused.
@@ -2159,6 +2182,19 @@ function parseDealTotalFromBudget(budget) {
   if (!s) return 0;
   var n = parseFloat(s);
   return isFinite(n) ? n : 0;
+}
+
+// Full sale form (2026-07-05) — derive the down-payment PERCENT from the typed
+// EGP amount and the unit price. The percent is NEVER typed by hand: the client
+// shows it live and every write path recomputes it server-side so it can't
+// drift from downPayment/budget. Returns a 2-dp numeric string ("10", "12.5")
+// or "" when either input is missing/zero. Mirrors the "commissionAmount is
+// always computed server-side, never trusted from the client" convention.
+function computeDownPaymentPctStr(amountRaw, budgetRaw) {
+  var amt = parseDealTotalFromBudget(amountRaw);
+  var bud = parseDealTotalFromBudget(budgetRaw);
+  if (!(bud > 0) || !(amt > 0)) return "";
+  return String(Math.round((amt / bud) * 10000) / 100);
 }
 
 // computeAgentDealStats — SINGLE SOURCE OF TRUTH for per-agent (or per-team)
@@ -10807,6 +10843,20 @@ app.post("/api/leads", auth, async function(req, res) {
       if (!String((req.body && req.body.unitCode) || "").trim()) {
         return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required for a Done Deal." });
       }
+      // Full sale form (PATH 2) — ALL FIELDS REQUIRED (Yosra). Mirror the FE
+      // guards so the Add-Deal create can never persist a half-filled sale.
+      // Applies to the direct DoneDeal create only (this whole block is gated on
+      // initialStatus === "DoneDeal"); pre-existing deals + other statuses are
+      // untouched. downPaymentPct is derived below in the create object.
+      if (!String((req.body && req.body.project)  || "").trim()) return res.status(400).json({ error: "project_required",  message: "Project / Compound is required." });
+      if (!String((req.body && req.body.unitType) || "").trim()) return res.status(400).json({ error: "unit_type_required", message: "Unit Type is required." });
+      var sfSaleType = String((req.body && req.body.saleType) || "").trim();
+      if (sfSaleType !== "Primary" && sfSaleType !== "Resale") return res.status(400).json({ error: "sale_type_required", message: "Sale Type (Primary or Resale) is required." });
+      if (!(parseDealTotalFromBudget(req.body && req.body.downPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
+      if (!String((req.body && req.body.downPaymentDate) || "").trim()) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
+      if (!String((req.body && req.body.reservationDate) || "").trim()) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
+      if (!String((req.body && req.body.contractionDate) || "").trim()) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
+      if (!String((req.body && req.body.installmentYears) || "").trim()) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
       req.body.commissionRate   = crNumCreate;
       req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
 
@@ -10881,7 +10931,15 @@ app.post("/api/leads", auth, async function(req, res) {
       notes:            req.body.notes || "",
       callbackTime:     req.body.callbackTime || "",
       dealDate:         req.body.dealDate || "",
-      downPaymentPct:   req.body.downPaymentPct || "",
+      // Full sale form (2026-07-05). downPayment is the typed EGP amount;
+      // downPaymentPct is ALWAYS derived server-side (never trusted from the
+      // client). All persist only when sent — non-deal creates leave them "".
+      saleType:         req.body.saleType || "",
+      downPayment:      req.body.downPayment || "",
+      downPaymentPct:   computeDownPaymentPctStr(req.body.downPayment, req.body.budget),
+      downPaymentDate:  req.body.downPaymentDate || "",
+      reservationDate:  req.body.reservationDate || "",
+      contractionDate:  req.body.contractionDate || "",
       installmentYears: req.body.installmentYears || "",
       lastActivityTime: new Date(),
       archived:         false,
@@ -11859,29 +11917,77 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       }
     }
     if (existing.eoiStatus !== "Approved") return res.status(400).json({ error: "EOI must be Approved before it can be converted to a Done Deal" });
-    // PATH B requirements — Unit Price (budget) must be present + positive, and Unit
-    // Code is required. Validation only; the rest of this (commission-sensitive) flow
-    // is left untouched.
-    if (!(parseDealTotalFromBudget(existing.budget) > 0)) {
-      return res.status(400).json({ error: "budget_required_for_deal", message: "Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal." });
-    }
-    var e2dUnitCode = String((req.body && req.body.unitCode) || "").trim();
-    if (!e2dUnitCode) {
-      return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required to convert to a Done Deal." });
-    }
+    // ===== Full sale form (PATH 1) — the Convert-to-Deal modal now posts a full,
+    // all-required sale form. Every field is prefilled from the EOI lead and is
+    // editable (the final buyer's name/phone may differ from the EOI contact —
+    // see the client-preservation block below). Sale metadata is informational
+    // only; the (commission-sensitive) flow further down is untouched except that
+    // the FINAL edited name/phone/budget it reads are the ones frozen onto the
+    // Commission snapshot (built AFTER this $set + re-fetch).
+    var b = req.body || {};
+    var e2dName      = String(b.name      != null ? b.name      : (existing.name     || "")).trim();
+    var e2dPhone     = String(b.phone     != null ? b.phone     : (existing.phone    || "")).trim();
+    var e2dProject   = String(b.project   != null ? b.project   : (existing.project  || "")).trim();
+    var e2dUnitType  = String(b.unitType  != null ? b.unitType  : (existing.unitType || "")).trim();
+    var e2dUnitCode  = String(b.unitCode  != null ? b.unitCode  : (existing.unitCode || "")).trim();
+    // Unit Price (budget) — editable in the modal; fall back to the EOI's value.
+    var e2dBudgetRaw = (b.budget != null && String(b.budget).trim() !== "") ? String(b.budget) : String(existing.budget || "");
+    var e2dBudgetNum = parseDealTotalFromBudget(e2dBudgetRaw);
+    var e2dSaleType          = String(b.saleType || "").trim();
+    var e2dDownPayment       = String(b.downPayment != null ? b.downPayment : "").trim();
+    var e2dDownPaymentDate   = String(b.downPaymentDate  || "").slice(0,10);
+    var e2dReservationDate   = String(b.reservationDate  || "").slice(0,10);
+    var e2dContractionDate   = String(b.contractionDate  || "").slice(0,10);
+    var e2dInstallmentYears  = String(b.installmentYears != null ? b.installmentYears : "").trim();
+    // ALL FIELDS REQUIRED (Yosra) — mirror the FE guards so a direct API call
+    // (or a stale client) can never create a half-filled deal. Legacy deals are
+    // never affected: this validation lives on the convert path only.
+    if (!e2dName)     return res.status(400).json({ error: "name_required",    message: "Client name is required." });
+    if (!e2dPhone)    return res.status(400).json({ error: "phone_required",   message: "Client phone is required." });
+    if (!e2dProject)  return res.status(400).json({ error: "project_required", message: "Project / Compound is required." });
+    if (!e2dUnitType) return res.status(400).json({ error: "unit_type_required", message: "Unit Type is required." });
+    if (!e2dUnitCode) return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required to convert to a Done Deal." });
+    if (!(e2dBudgetNum > 0)) return res.status(400).json({ error: "budget_required_for_deal", message: "Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal." });
+    if (e2dSaleType !== "Primary" && e2dSaleType !== "Resale") return res.status(400).json({ error: "sale_type_required", message: "Sale Type (Primary or Resale) is required." });
+    if (!(parseDealTotalFromBudget(e2dDownPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
+    if (!e2dDownPaymentDate) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
+    if (!e2dReservationDate) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
+    if (!e2dContractionDate) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
+    if (!e2dInstallmentYears) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
+    // Client preservation — when the final buyer's name/phone differ from the EOI
+    // originals, stash the EOI-time values (only if not already preserved) so the
+    // Deal card can show them as a secondary "EOI contact"; the Lead's own
+    // name/phone below become the FINAL buyer's.
+    var preserveName  = (e2dName  !== String(existing.name  || "").trim() && !existing.eoiOriginalName)  ? String(existing.name  || "") : undefined;
+    var preservePhone = (e2dPhone !== String(existing.phone || "").trim() && !existing.eoiOriginalPhone) ? String(existing.phone || "") : undefined;
     // Date-only Cairo-local (YYYY-MM-DD), unified with every dealDate write path.
     var todayIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0,10);
     var update = {
       status: "DoneDeal",
+      name: e2dName,
+      phone: e2dPhone,
+      project: e2dProject,
+      unitType: e2dUnitType,
+      unitCode: e2dUnitCode,
+      budget: e2dBudgetRaw,
+      saleType: e2dSaleType,
+      downPayment: e2dDownPayment,
+      // downPaymentPct is ALWAYS server-derived from amount ÷ price — never trusted from the client.
+      downPaymentPct: computeDownPaymentPctStr(e2dDownPayment, e2dBudgetRaw),
+      downPaymentDate: e2dDownPaymentDate,
+      reservationDate: e2dReservationDate,
+      contractionDate: e2dContractionDate,
+      installmentYears: e2dInstallmentYears,
       dealDate: existing.dealDate || todayIso,
       dealStatus: "",
       preDealStatus: existing.status || "EOI",
       // Clear eoiStatus so the record no longer shows in any EOI tab — it belongs to Deals now.
       eoiStatus: "",
       globalStatus: "donedeal",
-      unitCode: e2dUnitCode,
       lastActivityTime: new Date()
     };
+    if (preserveName  !== undefined) update.eoiOriginalName  = preserveName;
+    if (preservePhone !== undefined) update.eoiOriginalPhone = preservePhone;
     // Feature A — safety mint: a converted EOI normally already has an id (minted
     // at the EOI transition); heal any pre-backfill EOI being converted here.
     var midE2D = await mintLeadIdIfEntering("DoneDeal", existing.leadId);
@@ -12272,6 +12378,16 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       delete req.body.commissionAmount;
     }
     var update = Object.assign({}, req.body, { lastActivityTime: new Date() });
+    // Full sale form — downPaymentPct is DERIVED, never client-set. The Edit-Deal
+    // form always sends both the amount and the price together, so recompute the
+    // percent from them; in every other case drop any client-supplied percent so
+    // it can't be spoofed (a lone budget/downPayment edit via API leaves the
+    // stored percent as-is — informational only, harmless).
+    if (req.body.downPayment !== undefined && req.body.budget !== undefined) {
+      update.downPaymentPct = computeDownPaymentPctStr(req.body.downPayment, req.body.budget);
+    } else if (req.body.downPaymentPct !== undefined) {
+      delete update.downPaymentPct;
+    }
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
     // Split deal: preserve the existing split on partial PUTs. normId at ~11195
