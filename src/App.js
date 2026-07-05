@@ -275,6 +275,13 @@ var UNIT_TYPES = ["", "Apartment", "Duplex", "Townhouse", "Twinhouse", "Standalo
 // Slice A3 will move this list to an admin-editable AppSetting.
 var SOURCES = ["Facebook", "TikTok", "Snapchat", "WhatsApp", "Google Ads", "Referral", "Website", "Direct Call", "Other"];
 
+// Paid-ad platforms — the only sources that carry an "Ad Campaign Name". The
+// Add-Deal form shows the campaign field only for these; Referral / Website /
+// Direct Call / Other / Daily Request / WhatsApp (a messaging channel, not an
+// ad platform) are non-ad, so the field is hidden and its value cleared.
+var AD_SOURCES = ["Facebook", "TikTok", "Snapchat", "Google Ads"];
+var isAdSource = function(s){ return AD_SOURCES.indexOf(String(s || "")) !== -1; };
+
 // A4 cleanup (2026-05-05): some non-canonical source values are correct
 // data (not typos / case-mismatch) but shouldn't surface as selectable
 // dropdown options anywhere in the UI. "Daily Request" is hardcoded by
@@ -2871,6 +2878,15 @@ var LeadForm = function(p) {
 
   var upd = function(k, v) { setForm(function(f){return Object.assign({},f,{[k]:v});}); };
 
+  // Ad Campaign Name is source-aware on the Done-Deal form: it shows only for
+  // paid-ad sources (isAdSource). When the source is switched to a non-ad one
+  // the field hides — clear any stale value so it isn't submitted. Scoped to
+  // the deal form; the regular Add-Lead form keeps campaign always-on.
+  useEffect(function(){
+    if (isDoneDealForm && form.campaign && !isAdSource(form.source)) upd("campaign", "");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.source, isDoneDealForm]);
+
   // Draft autosave (add mode only) — debounced persist of text/scalar fields.
   // Attachments (documentFiles) are excluded; we only record whether any exist so
   // the restore banner can prompt a re-pick. An emptied form clears its draft.
@@ -2932,12 +2948,10 @@ var LeadForm = function(p) {
         }
       }
     }
-    // [F1] Deal Date is required for any DoneDeal save — mirrors the backend
-    // guarantee that a DoneDeal never carries an empty dealDate.
-    if (isDoneDealForm && !String(form.dealDate || "").trim()) {
-      alert("Deal Date is required");
-      return;
-    }
+    // [F1] Deal Date ≡ Contraction Date (unified — Yosra). There is no separate
+    // Deal Date input anymore; the Contraction Date is the single source and is
+    // validated with the other sale fields on create (below). On submit we
+    // mirror it into dealDate (the backbone), so no standalone check is needed.
     // Unit Price (budget) + Unit Code — required for the Add-Deal (Done Deal) CREATE
     // path (PATH A). Not enforced on edit: existing deals aren't force-backfilled
     // (the admin commission block below still re-checks budget > 0 on any admin save).
@@ -2980,6 +2994,15 @@ var LeadForm = function(p) {
     setSaving(true);
     try {
       var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      // Field unification (Yosra): Deal Date ≡ Contraction Date. The Contraction
+      // Date input is the single source — mirror it into dealDate (the backbone
+      // read by quarter filters / TargetPeriods / leaderboard / commission
+      // snapshot). Only overwrite when present so a legacy deal edited without a
+      // contraction date keeps its existing dealDate. The backend future-check on
+      // dealDate still fires (dealDate is populated = the contraction value).
+      if (isDoneDealForm && String(form.contractionDate||"").trim()) {
+        payload.dealDate = String(form.contractionDate).trim();
+      }
       // New leads created here use the corrected field model (project = development,
       // unitType = unit, campaign = ad campaign) → mark v2. Edits leave the existing
       // flag untouched (not sent) so legacy leads stay v1 until the bulk migration.
@@ -3105,6 +3128,39 @@ var LeadForm = function(p) {
     setSaving(false);
   };
 
+  // Field blocks shared between the Done-Deal sale form (sectioned Client /
+  // Property / Sales layout) and the regular Add-Lead / EOI form. Extracted so
+  // both can place them without duplicating the JSX.
+  var sourceField = !isReq ? <Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/> : null;
+  var agentField = isAdmin ? <Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
+    var agentList = salesUsers;
+    if (isEOIForm || isDoneDealForm) {
+      var amgadUsers = (p.users || []).filter(function(u){ return u.username === "amgad" && u.active; });
+      amgadUsers.forEach(function(a){
+        if (!agentList.some(function(u){ return gid(u) === gid(a); })) agentList = agentList.concat([a]);
+      });
+    }
+    return agentList;
+  })().map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/> : null;
+  var developerBlock = ((isEOIForm||isDoneDealForm)&&!p.editId) ? <div style={{ marginBottom:13 }}>
+    <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏗️ Developer <span style={{color:C.danger}}>*</span></label>
+    {!devPendOpen && <SearchableSelect
+      value={devSelId}
+      emptyLabel="— Select developer —"
+      placeholder="Search developers…"
+      width="100%" maxWidth={9999} fontSize={13}
+      options={(devList||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
+      onChange={function(val){ setDevSelId(val); if(val) setDevPendName(""); }}/>}
+    {devPendOpen && <input type="text" value={devPendName} placeholder="New developer name"
+      onChange={function(e){ setDevPendName(e.target.value); setDevSelId(""); }}
+      style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>}
+    <button type="button" onClick={function(){ if(devPendOpen){ setDevPendOpen(false); setDevPendName(""); } else { setDevPendOpen(true); setDevSelId(""); } }}
+      style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline", maxWidth:"100%", textAlign:"left", whiteSpace:"normal" }}>
+      {devPendOpen ? "← Pick from the list instead" : "Can't find the developer? Enter a new name"}
+    </button>
+  </div> : null;
+  var campaignField = <Inp label="📣 Ad Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Cali Coast – June – Lookalike"/>;
+
   return <div>
     {draftRestored&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#EFF6FF", borderRadius:10, fontSize:13, fontWeight:500, color:"#1E40AF", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
       <span>↩︎ Unsaved draft restored{draftHadAttach?" — re-attach any documents/images":""}</span>
@@ -3113,91 +3169,76 @@ var LeadForm = function(p) {
     {dupWarning&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#FEF3C7", borderRadius:10, fontSize:13, fontWeight:500, color:"#B45309", display:"flex", alignItems:"center", gap:8 }}>
       <AlertCircle size={16}/> {t.duplicateFound} — <b>{dupWarning.name}</b>
     </div>}
-    <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
-      <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/></div>
-      <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
-      <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
-      {/* Email hidden on the Add/Edit Deal (Done Deal) form — real-estate clients
-          don't have emails collected. Schema field + email:"" state kept so every
-          other read (leads table/exports/EOI) still works; new deals just POST "". */}
-      {!isDoneDealForm && <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>}
-      <Inp label={isEOIForm?"💰 Amount (EGP)":isDoneDealForm?"💰 Unit Price (EGP)":t.budget} req={isEOIForm||isDoneDealForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
-    </div>
-    <Inp label="📣 Ad Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Cali Coast – June – Lookalike"/>
-    {showStatusPicker&&<Inp label="Status" type="select" value={form.status||"NewLead"} onChange={function(e){upd("status",e.target.value);}} options={[
-      {value:"NewLead",label:"New Lead"},
-      {value:"Potential",label:"Potential"},
-      {value:"HotCase",label:"Hot Case"},
-      {value:"EOI",label:"EOI"},
-      {value:"DoneDeal",label:"Done Deal"}
-    ]}/>}
-    <Inp label={"🏢 " + t.project + " / Development"} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
-    <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
-    {/* Unit Code — required on the Add-Deal (Done Deal) CREATE path. On edit it's
-        shown + editable but optional (existing deals aren't force-backfilled). */}
-    {isDoneDealForm&&<Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>}
-    {/* Developer (N3) — REQUIRED for create-mode EOI/DoneDeal. Pick from the 505
-        OR type a new name (mutually exclusive). */}
-    {(isEOIForm||isDoneDealForm)&&!p.editId&&<div style={{ marginBottom:13 }}>
-      <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏗️ Developer <span style={{color:C.danger}}>*</span></label>
-      {!devPendOpen && <SearchableSelect
-        value={devSelId}
-        emptyLabel="— Select developer —"
-        placeholder="Search developers…"
-        width="100%" maxWidth={9999} fontSize={13}
-        options={(devList||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
-        onChange={function(val){ setDevSelId(val); if(val) setDevPendName(""); }}/>}
-      {devPendOpen && <input type="text" value={devPendName} placeholder="New developer name"
-        onChange={function(e){ setDevPendName(e.target.value); setDevSelId(""); }}
-        style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>}
-      <button type="button" onClick={function(){ if(devPendOpen){ setDevPendOpen(false); setDevPendName(""); } else { setDevPendOpen(true); setDevSelId(""); } }}
-        style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline", maxWidth:"100%", textAlign:"left", whiteSpace:"normal" }}>
-        {devPendOpen ? "← Pick from the list instead" : "Can't find the developer? Enter a new name"}
-      </button>
-    </div>}
-    {!isReq&&<Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/>}
-    {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
-      // Agent-selector list. EOI / Deal forms ONLY also expose the admin "amgad"
-      // (so he can be set as the recipient when he personally closes a deal).
-      // Scoped here on purpose: does NOT touch the shared salesUsers (also used
-      // by the External "Second Sales Agent" dropdown) nor the Add/Edit-Lead
-      // context. Deduped by _id; only added when present + active.
-      var agentList = salesUsers;
-      if (isEOIForm || isDoneDealForm) {
-        var amgadUsers = (p.users || []).filter(function(u){ return u.username === "amgad" && u.active; });
-        amgadUsers.forEach(function(a){
-          if (!agentList.some(function(u){ return gid(u) === gid(a); })) agentList = agentList.concat([a]);
-        });
-      }
-      return agentList;
-    })().map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
-    {isEOIForm&&<Inp label="📅 EOI Date" type="date" req value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
-    {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
-    {!isEOIForm&&!isDoneDealForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
-    <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
-    {isDoneDealForm&&<Inp label="Deal Date" type="date" req value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
-    {/* Sales Information (full sale form) — REQUIRED on the Add-Deal CREATE path
-        (req={!p.editId}); optional on edit so legacy deals with empty values stay
-        editable. Down Payment is a typed EGP amount; its % of unit price is
-        derived live below and recomputed server-side into downPaymentPct on save
-        (never hand-typed). */}
-    {isDoneDealForm&&(function(){
+    {isDoneDealForm ? (function(){
+      // ===== DONE-DEAL SALE FORM — Client / Property / Sales (Yosra's layout) =====
       var num=function(v){ var s=String(v||"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
       var priceN=num(form.budget), dpN=num(form.downPayment);
       var pct=(priceN>0&&dpN>0)?(Math.round((dpN/priceN)*10000)/100):null;
-      return <div style={{ marginTop:2, marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
-        <div style={{ fontSize:12, fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:".3px", marginBottom:10 }}>🧾 Sales Information</div>
+      // Deal Date ≡ Contraction Date — a Done Deal's close date can't be in the
+      // future (backbone dealDate feeds quarter attribution). Cap the picker at
+      // today (Cairo) on create; edit is unconstrained so admins can correct.
+      var maxDay=p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10);
+      var g2={ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" };
+      var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 12px" };
+      var hdr=function(txt){ return <div style={{ fontSize:12, fontWeight:800, color:C.textLight, textTransform:"uppercase", letterSpacing:".4px", margin:"4px 0 8px" }}>{txt}</div>; };
+      return <div>
+        {hdr("👤 Client")}
+        <Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/>
+        <div style={g2}>
+          <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}}/>
+          <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}}/>
+        </div>
+
+        {hdr("🏠 Property")}
+        <Inp label={"🏢 " + t.project + " / Development"} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+        <div style={g2}>
+          <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
+          <Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>
+        </div>
+        <div style={g2}>
+          <Inp label="💰 Unit Price (EGP)" req value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+          <Inp label="💵 Down Payment (EGP)" req={!p.editId} value={form.downPayment||""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("downPayment",raw?Number(raw).toLocaleString():"");}} placeholder="e.g. 500,000"/>
+        </div>
+        <div style={{ marginTop:-6, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
+        {developerBlock ? <div style={g2}>{developerBlock}{sourceField}</div> : sourceField}
+        {isAdSource(form.source) && campaignField}
+
+        {hdr("💰 Sales")}
         <Inp label="🏷️ Sale Type" req={!p.editId} type="select" value={form.saleType||"Primary"} onChange={function(e){upd("saleType",e.target.value);}} options={[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]}/>
-        <Inp label="💵 Down Payment (EGP)" req={!p.editId} value={form.downPayment||""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("downPayment",raw?Number(raw).toLocaleString():"");}} placeholder="e.g. 500,000"/>
-        <div style={{ marginTop:-8, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
-        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
+        <div style={g4}>
           <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
           <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
-          <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}}/>
+          <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
           <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
         </div>
+        <div style={g2}>{agentField}<Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/></div>
       </div>;
-    })()}
+    })() : <div>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
+        <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/></div>
+        <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
+        <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
+        <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
+        <Inp label={isEOIForm?"💰 Amount (EGP)":t.budget} req={isEOIForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+      </div>
+      {campaignField}
+      {showStatusPicker&&<Inp label="Status" type="select" value={form.status||"NewLead"} onChange={function(e){upd("status",e.target.value);}} options={[
+        {value:"NewLead",label:"New Lead"},
+        {value:"Potential",label:"Potential"},
+        {value:"HotCase",label:"Hot Case"},
+        {value:"EOI",label:"EOI"},
+        {value:"DoneDeal",label:"Done Deal"}
+      ]}/>}
+      <Inp label={"🏢 " + t.project + " / Development"} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+      <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
+      {developerBlock}
+      {sourceField}
+      {agentField}
+      {isEOIForm&&<Inp label="📅 EOI Date" type="date" req value={form.eoiDate||""} onChange={function(e){upd("eoiDate",e.target.value);}} max={p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10)}/>}
+      {isEOIForm&&<Inp label="💵 Deposit (EGP)" req value={form.eoiDeposit||""} onChange={function(e){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("eoiDeposit",r?Number(r).toLocaleString():"");}} placeholder=""/>}
+      {!isEOIForm&&<Inp label={t.callbackTime} type="datetime-local" value={form.callbackTime} onChange={function(e){upd("callbackTime",e.target.value);}}/>}
+      <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
+    </div>}
     {/* Phase R-12 Part 3 — Deal Type toggle (Internal / External). Surfaces
         only on Done-Deal forms for admin/sales_admin (matches backend gate).
         Edit-Deal can flip mid-stream; the backend write-site validator clears
@@ -11922,9 +11963,10 @@ var EOIPage = function(p) {
     if(!String(f.installmentYears||"").trim()) { alert("Please enter the Installments (years)"); return; }
     // Phase R-1: warn when the deal's dealDate falls outside the current year.
     // Commission attribution uses dealDate's quarter, so a cross-year close can
-    // retroactively change last year's commission shares.
+    // retroactively change last year's commission shares. dealDate ≡ Contraction
+    // Date (unified) — check the contraction year the convert is about to write.
     var dealYr = null;
-    try { if (lead.dealDate) dealYr = new Date(lead.dealDate).getUTCFullYear(); } catch(e){}
+    try { if (f.contractionDate) dealYr = new Date(f.contractionDate).getUTCFullYear(); } catch(e){}
     var curYr = new Date().getUTCFullYear();
     if (dealYr && isFinite(dealYr) && dealYr !== curYr) {
       if (!window.confirm("⚠ This deal's date is in " + dealYr + " (not the current year " + curYr + "). Commission shares will be attributed to " + dealYr + " — confirm continue?")) return;
@@ -12257,34 +12299,44 @@ var EOIPage = function(p) {
             <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{label}{o.req!==false&&<span style={{color:C.danger}}> *</span>}</label>
             {o.type==="select"
               ? <select value={convertForm[key]} onChange={onCh} style={Object.assign({background:"#fff"},cStyle)}>{o.options.map(function(op){return <option key={op.value} value={op.value}>{op.label}</option>;})}</select>
-              : <input type={o.type||"text"} value={convertForm[key]} placeholder={o.placeholder||""} onChange={onCh} style={cStyle}/>}
+              : <input type={o.type||"text"} value={convertForm[key]} placeholder={o.placeholder||""} max={o.max} onChange={onCh} style={cStyle}/>}
           </div>;
         };
         var num=function(v){ var s=String(v||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
         var priceNum=num(convertForm.budget), dpNum=num(convertForm.downPayment);
         var pct=(priceNum>0&&dpNum>0)?(Math.round((dpNum/priceNum)*10000)/100):null;
+        var g2={ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 10px" };
+        var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 10px" };
+        // Deal Date ≡ Contraction Date — the deal's close date can't be in the
+        // future (backbone dealDate feeds quarter attribution), so cap the
+        // Contraction Date picker at today (Cairo).
+        var todayIso=new Date(Date.now()+3*3600*1000).toISOString().slice(0,10);
         return <div>
           <div style={{ fontSize:13, color:C.text, marginBottom:6 }}>Complete the sale form to convert <b>{convertModal.name||"this EOI"}</b> to a Done Deal. It will move to the Deals page.</div>
 
-          {sectionHdr("👤 Client Information")}
+          {sectionHdr("👤 Client")}
           <div style={{ fontSize:11, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>Prefilled from the EOI. Edit if the final buyer differs (spouse / child / relative) — the original EOI contact is kept and shown on the deal card.</div>
           {cField("Client Name","name")}
           {cField("Client Phone","phone")}
 
-          {sectionHdr("🏢 Property Information")}
+          {sectionHdr("🏠 Property")}
           {cField("🏢 Project / Compound","project")}
-          {cField("🏷️ Unit Type","unitType",{type:"select",options:UNIT_TYPES.map(function(x){return {value:x,label:x||"- Select -"};})})}
-          {cField("🔖 Unit Code","unitCode",{placeholder:"e.g. B1-204"})}
-          {cField("💰 Unit Price (EGP)","budget",{money:true,placeholder:"e.g. 1,500,000"})}
+          <div style={g2}>
+            {cField("🏷️ Unit Type","unitType",{type:"select",options:UNIT_TYPES.map(function(x){return {value:x,label:x||"- Select -"};})})}
+            {cField("🔖 Unit Code","unitCode",{placeholder:"e.g. B1-204"})}
+          </div>
+          <div style={g2}>
+            {cField("💰 Unit Price (EGP)","budget",{money:true,placeholder:"e.g. 1,500,000"})}
+            {cField("💵 Down Payment (EGP)","downPayment",{money:true,placeholder:"e.g. 500,000"})}
+          </div>
+          <div style={{ marginTop:-4, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
 
-          {sectionHdr("🧾 Sales Information")}
+          {sectionHdr("💰 Sales")}
           {cField("🏷️ Sale Type","saleType",{type:"select",options:[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]})}
-          {cField("💵 Down Payment (EGP)","downPayment",{money:true,placeholder:"e.g. 500,000"})}
-          <div style={{ marginTop:-6, marginBottom:12, fontSize:12, fontWeight:600, color:pct!=null?C.success:C.textLight }}>{pct!=null?("= "+pct+"% of unit price"):"= —% (enter Unit Price + Down Payment)"}</div>
-          <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 10px" }}>
+          <div style={g4}>
             {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
             {cField("📅 Reservation Date","reservationDate",{type:"date"})}
-            {cField("📅 Contraction Date","contractionDate",{type:"date"})}
+            {cField("📅 Contraction Date","contractionDate",{type:"date",max:todayIso})}
             {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 7"})}
           </div>
 
@@ -13002,7 +13054,10 @@ var DealsPage = function(p) {
     var fmtSaleDate=function(v){ if(!v) return ""; try{ return new Date(v).toLocaleDateString("en-GB"); }catch(e){ return String(v); } };
     var dpDateStr=fmtSaleDate(selectedDeal.downPaymentDate);
     var resDateStr=fmtSaleDate(selectedDeal.reservationDate);
-    var contrDateStr=fmtSaleDate(selectedDeal.contractionDate);
+    // Deal Date ≡ Contraction Date (unified). Show ONE tile; fall back to the
+    // backbone dealDate for legacy deals whose contractionDate was never set.
+    var dealDateStr=(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"";})();
+    var contrDateStr=fmtSaleDate(selectedDeal.contractionDate)||dealDateStr;
     // Client preservation — EOI-time original contact, shown as a secondary row
     // when the buyer typed at convert time differed from the EOI contact.
     var eoiOrigName=selectedDeal.eoiOriginalName||"";
@@ -13095,7 +13150,6 @@ var DealsPage = function(p) {
           {l:"Installments", v:instYears?instYears+" yrs":"—", icon:"📆"},
           {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
-          {l:"Deal Date", v:(function(){var dd=getDealDate(selectedDeal);return dd?new Date(dd).toLocaleDateString("en-GB"):"-";})(), icon:"🗓"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
         ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
           <div style={{ fontSize:11, color:C.textLight, marginBottom:2 }}>{f.icon} {f.l}</div>
@@ -13339,14 +13393,14 @@ var DealsPage = function(p) {
       {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
-      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal"
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal" isMobile={p.isMobile}
         initial={{name:"",phone:"",phone2:"",email:"",budget:"",project:"",source:"",agentId:"",callbackTime:"",notes:"",status:"DoneDeal"}}
         onClose={function(){setShowAdd(false);}}
         onSave={function(lead){p.setLeads(function(prev){var nid=String(lead&&lead._id||"");if(!nid)return[lead].concat(prev);if(prev.some(function(l){return gid(l)===nid;}))return prev.map(function(l){return gid(l)===nid?lead:l;});return [lead].concat(prev);});setShowAdd(false);}}/>
     </Modal>
 
     {editDeal&&<Modal show={true} onClose={function(){setEditDeal(null);}} title={t.edit}>
-      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
+      <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} isMobile={p.isMobile}
         editId={gid(editDeal)} initial={editDeal}
         onClose={function(){setEditDeal(null);}}
         onSave={function(updated){p.setLeads(function(prev){return prev.map(function(l){return gid(l)===gid(updated)?updated:l;});});setEditDeal(null);}}/>

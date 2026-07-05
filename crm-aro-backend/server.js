@@ -11985,7 +11985,12 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       reservationDate: e2dReservationDate,
       contractionDate: e2dContractionDate,
       installmentYears: e2dInstallmentYears,
-      dealDate: existing.dealDate || todayIso,
+      // Field unification (Yosra): Deal Date ≡ Contraction Date. The Contraction
+      // Date is the single source — mirror it into dealDate (the backbone field
+      // read by quarter filters / TargetPeriods / leaderboard / commission
+      // snapshot's effective-date chain). e2dContractionDate is required above,
+      // so it is always present; the fallbacks only guard a hypothetical bypass.
+      dealDate: e2dContractionDate || existing.dealDate || todayIso,
       dealStatus: "",
       preDealStatus: existing.status || "EOI",
       // Clear eoiStatus so the record no longer shows in any EOI tab — it belongs to Deals now.
