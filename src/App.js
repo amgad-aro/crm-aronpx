@@ -408,6 +408,35 @@ var Avatar = function(p){
 };
 var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); };
 
+// Historical agent for a CANCELLED deal/EOI record. While a lead is a live EOI
+// or Done Deal, rotation is hard-blocked server-side; so the FIRST agentHistory
+// entry dated AFTER the record was created (dealDate for a cancelled deal, else
+// eoiDate) is the post-cancellation auto-rotate that reassigned the lead — and
+// its `fromAgent` is exactly who HELD the record when it was cancelled. Reading
+// the live agentId is wrong for these rows: rotation overwrote it with the new
+// owner once the lead re-entered the pool. Falls back to `liveName` when the
+// lead was never rotated away after cancellation (live agent is still the
+// holder) or the history/date is too thin to resolve. Derives entirely from
+// data already on the lead (agentHistory + eoiDate/dealDate) — no snapshot
+// field, no migration.
+var agentAtTime = function(lead, liveName){
+  if(!lead) return liveName || "-";
+  // Anchor on the record's own creation date. EOI-cancelled → eoiDate (even if
+  // a stale deal flag lingers from an earlier lifecycle); pure deal-cancelled →
+  // dealDate. Fallback to the other date if the primary is blank.
+  var isEoiCx = lead.eoiStatus==="EOI Cancelled";
+  var isDealCx = !isEoiCx && (lead.dealStatus==="Deal Cancelled" || lead.status==="Deal Cancelled");
+  var anchorStr = isDealCx ? (lead.dealDate||lead.eoiDate) : (lead.eoiDate||lead.dealDate);
+  var anchor = anchorStr ? new Date(anchorStr).getTime() : NaN;
+  if(isNaN(anchor)) return liveName || "-";
+  var post = (lead.agentHistory||[])
+    .filter(function(h){ return h && h.fromAgent && h.fromAgent!=="-" && h.date; })
+    .map(function(h){ return { from:h.fromAgent, t:new Date(h.date).getTime() }; })
+    .filter(function(h){ return !isNaN(h.t) && h.t > anchor; })
+    .sort(function(a,b){ return a.t - b.t; });
+  return post.length ? post[0].from : (liveName || "-");
+};
+
 // Resolve the sales agents on `lead` that the caller (managerial role) is
 // allowed to address via "Send to specific sales". Mirrors the backend
 // canSendFeedbackToTarget rule:
@@ -3088,7 +3117,10 @@ var LeadForm = function(p) {
       <div style={{ gridColumn:"1/-1" }}><Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/></div>
       <Inp label={t.phone} req value={form.phone} onChange={function(e){upd("phone",e.target.value);checkDup(e.target.value);}} placeholder=""/>
       <Inp label={t.phone2} value={form.phone2||""} onChange={function(e){upd("phone2",e.target.value);}} placeholder=""/>
-      <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>
+      {/* Email hidden on the Add/Edit Deal (Done Deal) form — real-estate clients
+          don't have emails collected. Schema field + email:"" state kept so every
+          other read (leads table/exports/EOI) still works; new deals just POST "". */}
+      {!isDoneDealForm && <Inp label={t.email} value={form.email} onChange={function(e){upd("email",e.target.value);}}/>}
       <Inp label={isEOIForm?"💰 Amount (EGP)":isDoneDealForm?"💰 Unit Price (EGP)":t.budget} req={isEOIForm||isDoneDealForm} value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
     </div>
     <Inp label="📣 Ad Campaign Name" value={form.campaign||""} onChange={function(e){upd("campaign",e.target.value);}} placeholder="e.g. Cali Coast – June – Lookalike"/>
@@ -11685,7 +11717,12 @@ var EOIPage = function(p) {
   // tab. Array.sort is stable (ES2019+), so each group keeps its eoiScope order.
   var eoiActive = eoiPending.concat(eoiApprovedList).sort(function(a,b){ return (a.eoiApproved?1:0)-(b.eoiApproved?1:0); });
   var eoiLeads = eoiTab==="cancelled" ? eoiCancelled : eoiActive;
-  var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
+  // Live-agent resolver (used directly for active rows, and as the fallback).
+  var liveAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
+  // Cancelled tab shows WHO HELD the EOI at cancellation (historical truth) via
+  // agentAtTime — the live agentId was overwritten by the rotation that fired
+  // when the lead re-entered the pool. Active rows keep the live agent.
+  var getAg=function(l){var live=liveAg(l);return eoiTab==="cancelled"?agentAtTime(l,live):live;};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var [editLead,setEditLead]=useState(null);
@@ -12674,7 +12711,17 @@ var DealsPage = function(p) {
   var activeDeals=dealsSource.filter(function(l){return (l.status==="DoneDeal"||l.globalStatus==="donedeal")&&!l.archived&&!(l.dealStatus==="Deal Cancelled"||l.status==="Deal Cancelled");}).slice().sort(function(a,b){return getDealDate(b)-getDealDate(a);});
   var cancelledDeals=dealsSource.filter(function(l){return (l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled") && !l.archived && !(l.eoiStatus==="EOI Cancelled");}).slice().sort(function(a,b){return getDealDate(b)-getDealDate(a);});
   var deals = dealTab==="cancelled" ? cancelledDeals : activeDeals;
-  var getAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
+  // Single source of truth for "this deal row is cancelled" — mirrors the EOI
+  // page's isEoiCancelledRow. The Approved-column badge reads this FIRST so a
+  // cancelled deal shows a red ❌ Cancelled instead of leaking its pre-cancel
+  // approval state through as the amber ⏳ pending badge.
+  var isDealCancelledRow = function(l){ return l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; };
+  // Live-agent resolver (used directly for active rows, and as the fallback).
+  var liveAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
+  // Cancelled tab shows WHO CLOSED the deal at cancellation (historical truth)
+  // via agentAtTime — the live agentId was overwritten by the rotation that
+  // fired when the lead re-entered the pool. Active rows keep the live agent.
+  var getAg=function(l){var live=liveAg(l);return dealTab==="cancelled"?agentAtTime(l,live):live;};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   // Closing Company (Feature B) — closingCompanyId may arrive populated ({_id,name})
   // from the list/deals endpoints or as a raw id from a PUT response; resolve the
@@ -13511,7 +13558,9 @@ var DealsPage = function(p) {
               {isOnlyAdmin && d.dealType==="ambassador" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEF3C7", color:"#B45309", fontWeight:700, verticalAlign:"middle" }}>🎯 Ambassador</span>}
               {canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight, marginTop:1 }}>{formatLeadId(d.leadId)}</div>}
             </div>
-            {d.dealApproved
+            {isDealCancelledRow(d)
+              ?<span style={{ background:"#FEE2E2", color:"#B91C1C", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>❌</span>
+              :d.dealApproved
               ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
               :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
           </div>
@@ -13697,7 +13746,9 @@ var DealsPage = function(p) {
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
             <td style={{ padding:"11px 12px", textAlign:"left" }}>
-              {d.dealApproved
+              {isDealCancelledRow(d)
+                ?<span style={{ background:"#FEE2E2", color:"#B91C1C", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>❌ Cancelled</span>
+                :d.dealApproved
                 ?<span style={{ background:"#DCFCE7", color:"#15803D", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>✅</span>
                 :<span style={{ background:"#FEF9C3", color:"#B45309", padding:"3px 10px", borderRadius:20, fontSize:11, fontWeight:700 }}>⏳</span>}
               {isOnlyAdmin&&d.commissionClaimDate&&<div style={{ fontSize:9, color:C.textLight, marginTop:2 }}>📋 {new Date(d.commissionClaimDate).toLocaleDateString("en-GB")}</div>}

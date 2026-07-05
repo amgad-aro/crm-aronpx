@@ -10337,6 +10337,13 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
 // eoiDocuments, dealImages); the side-panel hydrates the full doc via
 // /api/leads/:id (existing endpoint) when a row opens.
 var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId developerId leadId";
+// agentHistory carries the rotation chain the cancelled-record resolver
+// (agentAtTime on the FE) reads to show WHO held a cancelled deal/EOI at
+// cancellation time (the live agentId was overwritten by post-cancel rotation).
+// Appended only for roles that render the agent column — NOT sales (scoped to
+// their own leads and never shown the agent attribution), so their payload
+// keeps the rotation history hidden.
+function listFieldsFor(role, base){ return role === "sales" ? base : (base + " agentHistory"); }
 
 app.get("/api/eois", auth, async function(req, res) {
   try {
@@ -10416,7 +10423,7 @@ app.get("/api/eois", auth, async function(req, res) {
 
     var total = await Lead.countDocuments(q);
     var rows = await Lead.find(q)
-      .select(EOI_LIST_FIELDS)
+      .select(listFieldsFor(req.user.role, EOI_LIST_FIELDS))
       .populate("agentId", "name title")
       // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
       // (server.js index block). EOI docs embed base64 — must never block-sort.
@@ -10501,7 +10508,7 @@ app.get("/api/deals", auth, async function(req, res) {
 
     var total = await Lead.countDocuments(q);
     var rows = await Lead.find(q)
-      .select(DEAL_LIST_FIELDS)            // already excludes base64 image/doc fields
+      .select(listFieldsFor(req.user.role, DEAL_LIST_FIELDS))            // + agentHistory for non-sales (cancelled-agent resolver); excludes base64 image/doc fields
       .populate("agentId", "name title")
       .populate("closingCompanyId", "name")   // Feature B — for the "Closed via" display
       .populate("developerId", "name")        // Developer (D4) — for the developer tag/column
