@@ -426,6 +426,17 @@ var gid = function(o) { if(!o) return null; return String(o._id || o.id || ""); 
 // holder) or the history/date is too thin to resolve. Derives entirely from
 // data already on the lead (agentHistory + eoiDate/dealDate) — no snapshot
 // field, no migration.
+// Two-party Resale display — the with-us party names joined ("Seller ↔ Buyer"),
+// falling back to a single name. Returns null for non-resale leads.
+var resalePartyLabel = function(lead){
+  if(!lead || lead.saleType!=="Resale" || !lead.resaleParties) return null;
+  var rp=lead.resaleParties, s=rp.seller||{}, b=rp.buyer||{};
+  var names=[];
+  if(s.name) names.push(s.name + (s.withUs?"":" (not ours)"));
+  if(b.name) names.push(b.name + (b.withUs?"":" (not ours)"));
+  return names.length ? names.join(" ↔ ") : null;
+};
+
 var agentAtTime = function(lead, liveName){
   if(!lead) return liveName || "-";
   // Anchor on the record's own creation date. EOI-cancelled → eoiDate (even if
@@ -2681,6 +2692,13 @@ var LeadForm = function(p) {
     // so the inputs stay controlled even when p.initial (Add Deal / Add EOI) omits
     // them. Server values (p.initial) win; these only fill gaps.
     base=Object.assign({ saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"" }, base);
+    // Two-party Resale — seller + buyer, each optionally "with us" (own agent +
+    // commission → own Commission doc). Default seller with-us; only used when
+    // saleType==="Resale". Normalize an existing lead's resaleParties (agentId
+    // ObjectId → string, numbers → strings) so the inputs bind cleanly on edit.
+    var mkParty=function(p){ p=p||{}; return { withUs:!!p.withUs, name:p.name||"", phone:p.phone||"", agentId:p.agentId?String(p.agentId._id||p.agentId):"", commissionAmount:(p.commissionAmount!=null&&p.commissionAmount!=="")?String(p.commissionAmount):"", commissionRate:(p.commissionRate!=null&&p.commissionRate!=="")?String(p.commissionRate):"" }; };
+    if(base.resaleParties){ base=Object.assign({},base,{ resaleParties:{ seller:mkParty(base.resaleParties.seller), buyer:mkParty(base.resaleParties.buyer) } }); }
+    else { base=Object.assign({},base,{ resaleParties:{ seller:{ withUs:true, name:"", phone:"", agentId:"", commissionAmount:"", commissionRate:"" }, buyer:{ withUs:false, name:"", phone:"", agentId:"", commissionAmount:"", commissionRate:"" } } }); }
     // Load saved extra fields from localStorage if editing a deal. Now that the
     // sale fields persist server-side (downPayment/downPaymentPct/installmentYears/
     // dealDate on the Lead), the SERVER value wins — the old localStorage "extra"
@@ -2877,6 +2895,8 @@ var LeadForm = function(p) {
   };
 
   var upd = function(k, v) { setForm(function(f){return Object.assign({},f,{[k]:v});}); };
+  // Nested updater for the two-party Resale seller/buyer sub-objects.
+  var updRP = function(side, field, v) { setForm(function(f){ var rp=Object.assign({ seller:{}, buyer:{} }, f.resaleParties); rp[side]=Object.assign({}, rp[side], {[field]:v}); return Object.assign({},f,{ resaleParties:rp }); }); };
 
   // Ad Campaign Name is source-aware on the Done-Deal form: it shows only for
   // paid-ad sources (isAdSource). When the source is switched to a non-ad one
@@ -2978,6 +2998,24 @@ var LeadForm = function(p) {
       if (form.saleType === "Resale") {
         // Resale — direct full-payment: no down payment / installments; a single Deal Date.
         if (!String(form.dealDate || "").trim()) { alert("Please enter the Deal Date"); return; }
+        // Two-party — at least one with us; each with-us party needs name/phone/agent/commission ≤ price.
+        var rpForm = form.resaleParties || {};
+        var withCount = 0;
+        var chkParty = function(side, lbl){
+          var pty = rpForm[side] || {};
+          if (!pty.withUs) return true;
+          withCount++;
+          if (!String(pty.name||"").trim())    { alert(lbl+" name is required (it's with us)"); return false; }
+          if (!String(pty.phone||"").trim())   { alert(lbl+" phone is required (it's with us)"); return false; }
+          if (!String(pty.agentId||"").trim()) { alert(lbl+" sales agent is required (it's with us)"); return false; }
+          var ca=(function(){var s=String(pty.commissionAmount||"").replace(/,/g,"").replace(/[^0-9.]/g,"");var n=parseFloat(s);return isFinite(n)?n:0;})();
+          if (!(ca>0))              { alert(lbl+" commission amount is required (it's with us)"); return false; }
+          if (ca>unitPriceNum)      { alert(lbl+" commission cannot exceed the Unit Price"); return false; }
+          return true;
+        };
+        if (!chkParty("seller","Seller")) return;
+        if (!chkParty("buyer","Buyer")) return;
+        if (withCount < 1) { alert("At least one party (seller or buyer) must be with us"); return; }
       } else {
         var dpNum = (function(){ var s = String(form.downPayment || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
         if (!(dpNum > 0)) { alert("Please enter the Down Payment (EGP)"); return; }
@@ -3001,10 +3039,8 @@ var LeadForm = function(p) {
         return;
       }
       if (form.saleType === "Resale") {
-        // Resale — commission is a typed EGP amount (no tax), required and ≤ price.
-        var caInput = (function(){ var s = String(form.commissionAmount || "").replace(/,/g, "").replace(/[^0-9.]/g, ""); var n = parseFloat(s); return isFinite(n) ? n : 0; })();
-        if (!(caInput > 0)) { alert("Please enter the Commission Amount (EGP)"); return; }
-        if (caInput > budgetCheck) { alert("Commission Amount cannot exceed the Unit Price"); return; }
+        // Two-party resale — commission is PER-PARTY (validated with the seller/
+        // buyer sections above); no single lead-level commission here.
       } else {
         var crInputStr = String(form.commissionRate || "").trim();
         var crInputNum = Number(crInputStr);
@@ -3043,12 +3079,20 @@ var LeadForm = function(p) {
       // The resale branch is the ONLY place a client commissionAmount is sent.
       (function(){
         if (isDoneDealForm && form.saleType === "Resale") {
-          var sa = String(payload.commissionAmount || "").replace(/,/g, "").trim();
-          var na = Number(sa);
-          payload.commissionAmount = (sa && isFinite(na) && na > 0) ? na : null;
-          var sr = String(payload.commissionRate || "").replace(/,/g, "").trim();
-          var nr = Number(sr);
-          payload.commissionRate = (sr && isFinite(nr) && nr > 0) ? nr : null;
+          // Two-party resale — normalize resaleParties (agentId string, numeric
+          // commission) and derive the required Lead name/phone from the first
+          // with-us party. Deal Type is locked to Internal; the single lead-level
+          // commission fields are cleared (commissions are per-party).
+          var rpF = form.resaleParties || {};
+          var mnum = function(v){ var s=String(v||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
+          var normP = function(pty){ pty=pty||{}; var withUs=!!pty.withUs; return { withUs:withUs, name:String(pty.name||"").trim(), phone:String(pty.phone||"").trim(), agentId:withUs?(pty.agentId||""):"", commissionAmount:withUs?mnum(pty.commissionAmount):0, commissionRate:withUs?mnum(pty.commissionRate):0 }; };
+          var seller = normP(rpF.seller), buyer = normP(rpF.buyer);
+          payload.resaleParties = { seller: seller, buyer: buyer };
+          var lead1 = seller.withUs ? seller : (buyer.withUs ? buyer : seller);
+          payload.name = lead1.name || form.name || "Resale";
+          payload.phone = lead1.phone || form.phone || "-";
+          payload.dealType = "internal";
+          payload.commissionRate = null; payload.commissionAmount = null;
           return;
         }
         var s = String(payload.commissionRate || "").replace(/,/g, "").trim();
@@ -3220,6 +3264,69 @@ var LeadForm = function(p) {
       var g2={ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" };
       var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 12px" };
       var hdr=function(txt){ return <div style={{ fontSize:12, fontWeight:800, color:C.textLight, textTransform:"uppercase", letterSpacing:".4px", margin:"4px 0 8px" }}>{txt}</div>; };
+      // ===== TWO-PARTY RESALE — shared Property + Sale Type + Deal Date, then a
+      // Seller and Buyer section (each: With-us toggle → name/phone/agent + linked
+      // commission amount⇄%). At least one party must be with us. Deal Type is
+      // locked to Internal (the Deal Type + single-commission block is hidden for
+      // resale). Each with-us party mints its own tax-free, direct-collected commission.
+      if (isResale) {
+        var resaleAgentOpts = [{value:"",label:"- Select -"}].concat((salesUsers||[]).map(function(u){return {value:gid(u),label:u.name+" - "+u.title};}));
+        var renderParty=function(side, title, color){
+          var party=(form.resaleParties&&form.resaleParties[side])||{};
+          var withUs=!!party.withUs;
+          var amtDisp=party.commissionAmount?Number(String(party.commissionAmount).replace(/,/g,"")).toLocaleString():"";
+          return <div style={{ border:"1px solid "+color+"33", borderRadius:12, padding:"12px 14px", marginBottom:12, background:color+"08" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <div style={{ fontSize:13, fontWeight:800, color:color }}>{title}</div>
+              <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, fontWeight:600, cursor:"pointer" }}>
+                <input type="checkbox" checked={withUs} onChange={function(e){updRP(side,"withUs",e.target.checked);}}/> With us?
+              </label>
+            </div>
+            <div style={g2}>
+              <Inp label="Name" req={withUs} value={party.name||""} onChange={function(e){updRP(side,"name",e.target.value);}}/>
+              <Inp label="Phone" req={withUs} value={party.phone||""} onChange={function(e){updRP(side,"phone",e.target.value);}}/>
+            </div>
+            {withUs && <>
+              {isAdmin && <Inp label="👤 Agent" req type="select" value={party.agentId||""} onChange={function(e){updRP(side,"agentId",e.target.value);}} options={resaleAgentOpts}/>}
+              <div style={g2}>
+                <Inp label="💰 Commission (EGP)" req value={amtDisp} onChange={function(e){
+                  var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");
+                  updRP(side,"commissionAmount",raw?Number(raw).toLocaleString():"");
+                  var a=num(raw), b=num(form.budget);
+                  updRP(side,"commissionRate",(a>0&&b>0)?String(Math.round(a/b*10000)/100):"");
+                }} placeholder="e.g. 60,000"/>
+                <Inp label="Commission %" value={party.commissionRate||""} onChange={function(e){
+                  var raw=e.target.value.replace(/[^0-9.]/g,"");
+                  var fd=raw.indexOf("."); if(fd>=0) raw=raw.slice(0,fd+1)+raw.slice(fd+1).replace(/\./g,"");
+                  updRP(side,"commissionRate",raw);
+                  var r=num(raw), b=num(form.budget);
+                  updRP(side,"commissionAmount",(r>0&&b>0)?Number(Math.round(b*r)/100).toLocaleString():"");
+                }} placeholder="e.g. 2"/>
+              </div>
+              <div style={{ marginTop:-4, fontSize:11, color:"#059669" }}>Tax-free · own agent's tier chain · collected in full (direct).</div>
+            </>}
+          </div>;
+        };
+        return <div>
+          {hdr("🏠 Property")}
+          <Inp label={"🏢 " + t.project + " / Development"} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+          <div style={g2}>
+            <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
+            <Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>
+          </div>
+          <Inp label="💰 Unit Price (EGP)" req value={form.budget} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");upd("budget",raw?Number(raw).toLocaleString():"");}}/>
+          {developerBlock ? <div style={g2}>{developerBlock}{sourceField}</div> : sourceField}
+          {isAdSource(form.source) && campaignField}
+
+          {hdr("💰 Sales")}
+          <Inp label="🏷️ Sale Type" req={!p.editId} type="select" value={form.saleType||"Primary"} onChange={function(e){upd("saleType",e.target.value);}} options={[{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]}/>
+          <Inp label="📅 Deal Date" req={!p.editId} type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={maxDay}/>
+          <div style={{ fontSize:11, color:C.textLight, margin:"2px 0 10px" }}>A resale has two parties — set who's with us; each with-us party gets its own agent + commission. At least one must be with us.</div>
+          {renderParty("seller","🔴 Seller","#B91C1C")}
+          {renderParty("buyer","🔵 Buyer","#1D4ED8")}
+          <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
+        </div>;
+      }
       return <div>
         {hdr("👤 Client")}
         <Inp label={t.name} req value={form.name} onChange={function(e){upd("name",e.target.value);}}/>
@@ -3289,7 +3396,7 @@ var LeadForm = function(p) {
         Edit-Deal can flip mid-stream; the backend write-site validator clears
         external fields when flipping back to internal so no stale config
         lingers on the lead. */}
-    {isDoneDealForm&&isOnlyAdmin&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
+    {isDoneDealForm&&isOnlyAdmin&&form.saleType!=="Resale"&&<div style={{ marginBottom:13, padding:"12px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E8ECF1" }}>
       {/* Commission input — saleType-aware. Primary: Rate (%) canonical, amount =
           budget × rate/100 (state-tax model applies downstream). Resale: linked
           amount ⇄ percent pair (BOTH stored; amount canonical) and the commission
@@ -11852,8 +11959,11 @@ var EOIPage = function(p) {
   // EOI lead + editable) before hitting /eoi-to-deal. convertModal holds the EOI
   // lead being converted; convertForm holds the editable sale-form values.
   var [convertModal,setConvertModal]=useState(null);
-  var [convertForm,setConvertForm]=useState({ name:"", phone:"", project:"", unitType:"", unitCode:"", budget:"", saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"", installmentYears:"", dealDate:"" });
+  var mkConvParty=function(){ return { withUs:false, name:"", phone:"", agentId:"", commissionAmount:"", commissionRate:"" }; };
+  var [convertForm,setConvertForm]=useState({ name:"", phone:"", project:"", unitType:"", unitCode:"", budget:"", saleType:"Primary", downPayment:"", downPaymentDate:"", reservationDate:"", contractionDate:"", installmentYears:"", dealDate:"", resaleParties:{ seller:{ withUs:true, name:"", phone:"", agentId:"", commissionAmount:"", commissionRate:"" }, buyer:mkConvParty() } });
   var setConvF=function(k,v){ setConvertForm(function(f){ var n=Object.assign({},f); n[k]=v; return n; }); };
+  // Two-party Resale nested updater for the convert form.
+  var setConvRP=function(side,field,v){ setConvertForm(function(f){ var rp=Object.assign({ seller:{}, buyer:{} }, f.resaleParties); rp[side]=Object.assign({}, rp[side], {[field]:v}); return Object.assign({},f,{ resaleParties:rp }); }); };
   // Optional deal documents attached in the convert modal ([{fileData,fileName}]);
   // uploaded to /eoi-documents AFTER the conversion succeeds (same endpoint the
   // Add-Deal form uses for deal docs). Not required — the sale form is complete
@@ -12021,6 +12131,24 @@ var EOIPage = function(p) {
       // a developer down payment, incompatible with a resale (direct full-payment).
       if(num(lead.eoiDeposit)>0) { alert("This EOI has a deposit — it can't be converted to a Resale deal (resales have no down payment). Convert as Primary instead."); return; }
       if(!String(f.dealDate||"").trim()) { alert("Please enter the Deal Date"); return; }
+      // Two-party — >=1 with us; each with-us party needs name/phone/agent/commission ≤ price.
+      var rpC = f.resaleParties || {};
+      var wcC = 0;
+      var chkC = function(side, lbl){
+        var pty=rpC[side]||{};
+        if(!pty.withUs) return true;
+        wcC++;
+        if(!String(pty.name||"").trim()){alert(lbl+" name is required (it's with us)");return false;}
+        if(!String(pty.phone||"").trim()){alert(lbl+" phone is required (it's with us)");return false;}
+        if(!String(pty.agentId||"").trim()){alert(lbl+" sales agent is required (it's with us)");return false;}
+        var ca=num(pty.commissionAmount);
+        if(!(ca>0)){alert(lbl+" commission amount is required (it's with us)");return false;}
+        if(ca>priceNum){alert(lbl+" commission cannot exceed the Unit Price");return false;}
+        return true;
+      };
+      if(!chkC("seller","Seller")) return;
+      if(!chkC("buyer","Buyer")) return;
+      if(wcC<1){alert("At least one party (seller or buyer) must be with us");return;}
     } else {
       if(!(num(f.downPayment)>0)) { alert("Please enter the Down Payment (EGP)"); return; }
       if(!String(f.downPaymentDate||"").trim()) { alert("Please enter the Down Payment Date"); return; }
@@ -12043,7 +12171,7 @@ var EOIPage = function(p) {
     var leadId = gid(lead);
     console.log("[convertToDeal] POST /api/leads/"+leadId+"/eoi-to-deal", { role: p.cu.role, eoiStatus: lead.eoiStatus, source: lead.source });
     try{
-      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",{
+      var convBody = {
         name: String(f.name||"").trim(), phone: String(f.phone||"").trim(),
         project: String(f.project||"").trim(), unitType: f.unitType||"", unitCode: code,
         budget: f.budget||"", saleType: f.saleType||"",
@@ -12053,7 +12181,18 @@ var EOIPage = function(p) {
         // Resale-only: the single Deal Date (backend writes it into dealDate). The
         // backend clears the down-payment/installment fields for a resale anyway.
         dealDate: f.dealDate||""
-      },p.token);
+      };
+      if (f.saleType==="Resale") {
+        var rpCv = f.resaleParties || {};
+        var normPc = function(pty){ pty=pty||{}; var w=!!pty.withUs; return { withUs:w, name:String(pty.name||"").trim(), phone:String(pty.phone||"").trim(), agentId:w?(pty.agentId||""):"", commissionAmount:w?num(pty.commissionAmount):0, commissionRate:w?num(pty.commissionRate):0 }; };
+        var selCv=normPc(rpCv.seller), buyCv=normPc(rpCv.buyer);
+        convBody.resaleParties = { seller:selCv, buyer:buyCv };
+        // Lead name/phone = first with-us party (backend requires them).
+        var l1c = selCv.withUs?selCv:(buyCv.withUs?buyCv:selCv);
+        convBody.name = l1c.name || convBody.name || "Resale";
+        convBody.phone = l1c.phone || convBody.phone || "-";
+      }
+      var updated = await apiFetch("/api/leads/"+leadId+"/eoi-to-deal","POST",convBody,p.token);
       if (!updated || !updated._id) {
         console.error("[convertToDeal] empty response", updated);
         alert("Convert failed — empty response from server. Please refresh and try again.");
@@ -12103,7 +12242,10 @@ var EOIPage = function(p) {
     budget: lead.budget||"", saleType: lead.saleType||"Primary",
     downPayment: lead.downPayment||"", downPaymentDate: lead.downPaymentDate||"",
     reservationDate: lead.reservationDate||"", contractionDate: lead.contractionDate||"",
-    installmentYears: lead.installmentYears||"", dealDate: lead.dealDate||""
+    installmentYears: lead.installmentYears||"", dealDate: lead.dealDate||"",
+    // Two-party Resale — default seller with-us, prefill its name/phone from the
+    // EOI contact (the admin re-assigns/edits). Only used if Sale Type = Resale.
+    resaleParties:{ seller:{ withUs:true, name:lead.name||"", phone:lead.phone||"", agentId:"", commissionAmount:"", commissionRate:"" }, buyer:{ withUs:false, name:"", phone:"", agentId:"", commissionAmount:"", commissionRate:"" } }
   }); setConvertDocs([]); setConvertModal(lead); };
 
   var handleDocUpload=async function(e,lead){
@@ -12363,6 +12505,8 @@ var EOIPage = function(p) {
     {convertModal&&<Modal show={true} onClose={function(){ if(!convertingDeal){ setConvertModal(null); setConvertDocs([]); } }} title="🎉 Convert to Done Deal">
       {(function(){
         var cStyle={ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" };
+        var cLbl={ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 };
+        var convAgentOpts=(p.users||[]).filter(function(u){ return u.active!==false && (u.role==="sales"||u.username==="amgad"); }).map(function(u){ return { value:gid(u), label:u.name+" - "+(u.title||u.role||"") }; });
         var sectionHdr=function(txt){ return <div style={{ fontSize:12, fontWeight:800, color:C.textLight, textTransform:"uppercase", letterSpacing:".4px", margin:"14px 0 8px" }}>{txt}</div>; };
         var cField=function(label, key, o){ o=o||{};
           var onCh=function(e){ var v=e.target.value; if(o.money){ var raw=v.replace(/,/g,"").replace(/[^0-9]/g,""); v=raw?Number(raw).toLocaleString():""; } else if(o.digits){ v=v.replace(/[^0-9]/g,""); } setConvF(key,v); };
@@ -12389,10 +12533,12 @@ var EOIPage = function(p) {
         return <div>
           <div style={{ fontSize:13, color:C.text, marginBottom:6 }}>Complete the sale form to convert <b>{convertModal.name||"this EOI"}</b> to a Done Deal. It will move to the Deals page.</div>
 
-          {sectionHdr("👤 Client")}
-          <div style={{ fontSize:11, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>Prefilled from the EOI. Edit if the final buyer differs (spouse / child / relative) — the original EOI contact is kept and shown on the deal card.</div>
-          {cField("Client Name","name")}
-          {cField("Client Phone","phone")}
+          {!isResaleConv && <>
+            {sectionHdr("👤 Client")}
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:8, lineHeight:1.5 }}>Prefilled from the EOI. Edit if the final buyer differs (spouse / child / relative) — the original EOI contact is kept and shown on the deal card.</div>
+            {cField("Client Name","name")}
+            {cField("Client Phone","phone")}
+          </>}
 
           {sectionHdr("🏠 Property")}
           {cField("🏢 Project / Compound","project")}
@@ -12421,6 +12567,33 @@ var EOIPage = function(p) {
                 {cField("📅 Contraction Date","contractionDate",{type:"date",max:todayIso})}
                 {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 7"})}
               </div>}
+
+          {isResaleConv && <>
+            {sectionHdr("🔁 Resale Parties")}
+            <div style={{ fontSize:11, color:C.textLight, marginBottom:8 }}>Set who's with us; each with-us party gets its own agent + commission (tax-free, collected in full). At least one must be with us.</div>
+            {[["seller","🔴 Seller","#B91C1C"],["buyer","🔵 Buyer","#1D4ED8"]].map(function(pr){
+              var side=pr[0], party=(convertForm.resaleParties&&convertForm.resaleParties[side])||{};
+              var withUs=!!party.withUs; var bC=num(convertForm.budget);
+              var reqStar=withUs?<span style={{color:C.danger}}> *</span>:null;
+              return <div key={side} style={{ border:"1px solid "+pr[2]+"33", borderRadius:12, padding:"12px 14px", marginBottom:12, background:pr[2]+"08" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                  <span style={{ fontSize:13, fontWeight:800, color:pr[2] }}>{pr[1]}</span>
+                  <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, fontWeight:600, cursor:"pointer" }}><input type="checkbox" checked={withUs} onChange={function(e){setConvRP(side,"withUs",e.target.checked);}}/> With us?</label>
+                </div>
+                <div style={g2}>
+                  <div style={{ marginBottom:12 }}><label style={cLbl}>Name{reqStar}</label><input value={party.name||""} onChange={function(e){setConvRP(side,"name",e.target.value);}} style={cStyle}/></div>
+                  <div style={{ marginBottom:12 }}><label style={cLbl}>Phone{reqStar}</label><input value={party.phone||""} onChange={function(e){setConvRP(side,"phone",e.target.value);}} style={cStyle}/></div>
+                </div>
+                {withUs && <>
+                  <div style={{ marginBottom:12 }}><label style={cLbl}>👤 Agent <span style={{color:C.danger}}>*</span></label><select value={party.agentId||""} onChange={function(e){setConvRP(side,"agentId",e.target.value);}} style={Object.assign({background:"#fff"},cStyle)}><option value="">- Select -</option>{convAgentOpts.map(function(u){return <option key={u.value} value={u.value}>{u.label}</option>;})}</select></div>
+                  <div style={g2}>
+                    <div style={{ marginBottom:12 }}><label style={cLbl}>💰 Commission (EGP) <span style={{color:C.danger}}>*</span></label><input value={party.commissionAmount?Number(String(party.commissionAmount).replace(/,/g,"")).toLocaleString():""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setConvRP(side,"commissionAmount",raw?Number(raw).toLocaleString():"");var a=num(raw);setConvRP(side,"commissionRate",(a>0&&bC>0)?String(Math.round(a/bC*10000)/100):"");}} placeholder="e.g. 60,000" style={cStyle}/></div>
+                    <div style={{ marginBottom:12 }}><label style={cLbl}>Commission %</label><input value={party.commissionRate||""} onChange={function(e){var raw=e.target.value.replace(/[^0-9.]/g,"");setConvRP(side,"commissionRate",raw);var r=num(raw);setConvRP(side,"commissionAmount",(r>0&&bC>0)?Number(Math.round(bC*r)/100).toLocaleString():"");}} placeholder="e.g. 2" style={cStyle}/></div>
+                  </div>
+                </>}
+              </div>;
+            })}
+          </>}
 
           {sectionHdr("📎 Documents (optional)")}
           <DocumentsUpload files={convertDocs} onChange={setConvertDocs} label="📎 Upload Deal Documents (optional)"/>
@@ -13233,7 +13406,7 @@ var DealsPage = function(p) {
           {l:"Reservation Date", v:saleType==="Resale" ? "" : (resDateStr||"—"), icon:"📅"},
           {l:(saleType==="Resale" ? "Deal Date" : "Contraction Date"), v:(saleType==="Resale" ? (dealDateStr||"—") : (contrDateStr||"—")), icon:"📅"},
           {l:"Installments", v:saleType==="Resale" ? "" : (instYears?instYears+" yrs":"—"), icon:"📆"},
-          {l:"Agent", v:getAg(selectedDeal), icon:"👤"},
+          {l:"Agent", v:saleType==="Resale" ? "" : getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
         ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
@@ -13241,6 +13414,29 @@ var DealsPage = function(p) {
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>:null;})}
         </div>
+
+        {/* Two-party Resale — seller + buyer blocks (name, phone, agent, commission,
+            with-us badge). Each with-us party is its own tax-free, direct-collected
+            commission (see the Commissions page for the two cards). */}
+        {selectedDeal.saleType==="Resale" && selectedDeal.resaleParties && <div style={{ marginTop:12 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>🔁 Resale parties — commission collected in full (direct), tax-free</div>
+          <div style={{ display:"grid", gridTemplateColumns:p.isMobile?"1fr":"1fr 1fr", gap:12 }}>
+            {[["seller","🔴 Seller","#B91C1C"],["buyer","🔵 Buyer","#1D4ED8"]].map(function(pr){
+              var side=pr[0], party=(selectedDeal.resaleParties&&selectedDeal.resaleParties[side])||{};
+              var agName=(function(){ if(!party.agentId) return "—"; if(party.agentId.name) return party.agentId.name; var u=(p.users||[]).find(function(x){return gid(x)===String(party.agentId._id||party.agentId);}); return u?u.name:(party.agentName||"—"); })();
+              var ca=Number(party.commissionAmount)||0;
+              return <div key={side} style={{ border:"1px solid "+pr[2]+"33", borderRadius:10, padding:"10px 12px", background:pr[2]+"08" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                  <span style={{ fontSize:12, fontWeight:800, color:pr[2] }}>{pr[1]}</span>
+                  <span style={{ fontSize:9, fontWeight:700, padding:"1px 7px", borderRadius:9, background:party.withUs?"#DCFCE7":"#F1F5F9", color:party.withUs?"#15803D":C.textLight }}>{party.withUs?"With us":"Not ours"}</span>
+                </div>
+                <div style={{ fontSize:13, fontWeight:600 }}>{party.name||"—"}</div>
+                {party.phone && <div style={{ fontSize:11, color:C.textLight }}>{party.phone}</div>}
+                {party.withUs && <div style={{ marginTop:6, fontSize:11, color:C.text }}>👤 {agName}{isAdmin && ca>0 && <span style={{ marginLeft:8, color:"#059669", fontWeight:700 }}>💰 {ca.toLocaleString()} EGP</span>}</div>}
+              </div>;
+            })}
+          </div>
+        </div>}
 
         {/* Closed via + Developer — side by side on wide screens, stacking on
             narrow (same responsive auto-fit grid as the info-cards row above). */}
@@ -13693,7 +13889,7 @@ var DealsPage = function(p) {
         return <div key={gid(d)} data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ background:isSel?"#EFF6FF":"#fff", border:"2px solid "+(isSel?"#3B82F6":"#E8ECF1"), borderRadius:14, padding:14, cursor:"pointer" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, gap:8 }}>
             <div style={{ fontSize:15, fontWeight:700 }}>
-              {d.name}
+              {resalePartyLabel(d) || d.name}{d.saleType==="Resale" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEE2E2", color:"#B91C1C", fontWeight:700, verticalAlign:"middle" }}>🔁 Resale</span>}
               {isOnlyAdmin && d.dealType==="ambassador" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEF3C7", color:"#B45309", fontWeight:700, verticalAlign:"middle" }}>🎯 Ambassador</span>}
               {canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight, marginTop:1 }}>{formatLeadId(d.leadId)}</div>}
             </div>
@@ -13777,7 +13973,7 @@ var DealsPage = function(p) {
           var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
           return <Fragment key={gid(d)}><tr data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>
-              {d.name}
+              {resalePartyLabel(d) || d.name}{d.saleType==="Resale" && <span style={{ marginLeft:6, fontSize:9, padding:"1px 6px", borderRadius:9, background:"#FEE2E2", color:"#B91C1C", fontWeight:700, verticalAlign:"middle" }}>🔁 Resale</span>}
               {/* Phase R-14 — Ambassador badge. The classification is internal to
                   admin/sales_admin: gated by isOnlyAdmin so sales/TL/manager/
                   director see a plain deal row with no Ambassador indicator. */}
@@ -27520,6 +27716,9 @@ var CommissionsPage = function(p) {
                 internal to admin/sales_admin; the explicit role check is
                 defense-in-depth on top of the page-level admin gate. */}
             {c.ambassadorSplit && c.ambassadorSplit.isAmbassador && (p.cu.role==="admin"||p.cu.role==="sales_admin") && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEF3C7", color:"#B45309", fontWeight:700 }}>🎯 Ambassador</span>}
+            {/* Two-party Resale — tax-free, direct-collected; partySide distinguishes
+                the seller-side vs buyer-side commission on the same lead. */}
+            {c.snapshot && c.snapshot.saleType==="Resale" && <span style={{ fontSize:10, padding:"2px 8px", borderRadius:10, background:"#FEE2E2", color:"#B91C1C", fontWeight:700 }}>🔁 Resale{c.partySide||c.snapshot.partySide?(" · "+(c.partySide||c.snapshot.partySide)):""}</span>}
             {/* Phase R-7 — commission status badges. Active = amber (in-progress
                 book), Fully paid = green (closed), Cancelled = gray (dead).
                 The Revert button only shows for status=fully_paid AND admin role. */}

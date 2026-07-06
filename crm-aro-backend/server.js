@@ -337,6 +337,33 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   reservationDate:{type:String,default:""},    // YYYY-MM-DD
   contractionDate:{type:String,default:""},    // YYYY-MM-DD (contract signing)
   installmentYears:{type:String,default:""},   // installment plan length in years (typed)
+  // ===== Two-party Resale (2026-07-06) — a resale deal has a SELLER and a BUYER,
+  // each optionally "with us" (our client → we collect commission from them).
+  // At least one party must be with us (validated at the write sites). Each
+  // with-us party mints its OWN Commission doc (partySide) with its own agent +
+  // commission amount; the two agents also drive achievement (commission-value,
+  // NOT unit-value). commissionRate is derived = amount/budget×100 for display.
+  // Only populated when saleType==="Resale"; Primary deals leave this empty.
+  resaleParties: {
+    seller: {
+      withUs:{type:Boolean,default:false},
+      name:{type:String,default:""},
+      phone:{type:String,default:""},
+      agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+      agentName:{type:String,default:""},
+      commissionAmount:{type:Number,default:0},
+      commissionRate:{type:Number,default:0}
+    },
+    buyer: {
+      withUs:{type:Boolean,default:false},
+      name:{type:String,default:""},
+      phone:{type:String,default:""},
+      agentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+      agentName:{type:String,default:""},
+      commissionAmount:{type:Number,default:0},
+      commissionRate:{type:Number,default:0}
+    }
+  },
   // Client preservation (Convert-to-Deal): the final buyer typed at convert time
   // may differ from the EOI-time contact (spouse/child/relative). When they
   // differ, the EOI-time originals are stashed here and shown as a secondary
@@ -762,6 +789,10 @@ var commissionIncentiveSchema = new mongoose.Schema({
 
 var commissionSchema = new mongoose.Schema({
   leadId:              { type: mongoose.Schema.Types.ObjectId, ref: "Lead", required: true, index: true },
+  // Two-party Resale (2026-07-06): a resale lead mints ONE commission per with-us
+  // party. partySide tags which one. "" = the single-commission (Primary /
+  // external / ambassador / legacy) case. Existing commissions have no value here.
+  partySide:           { type: String, default: "" },   // "" | "seller" | "buyer"
 
   // Snapshot — never overwritten on Lead changes; only via explicit admin edit.
   snapshot: {
@@ -777,6 +808,7 @@ var commissionSchema = new mongoose.Schema({
     // isResaleSnapshot() in the 3 analytics aggregators. Existing commissions
     // have no value here → taxed path unchanged (new resale deals only).
     saleType:        { type: String, default: "" },     // "" | "Primary" | "Resale"
+    partySide:       { type: String, default: "" },     // "" | "seller" | "buyer" (two-party resale)
     // Phase R-12 — broker-only external deals have NO internal sales agent
     // (externalSalesAgentEnabled=false AND Lead.agentId=null). buildSnapshotForLead
     // returns salesAgent:null for that shape, so this MUST default to null rather
@@ -2259,7 +2291,7 @@ async function computeAgentDealStats(agentOids, fromDate, toDate, pwMap, sourceF
         ]}]}
       }}}},
       { $match: { _effDate: { $gte: fromDate, $lt: toDate } }},
-      { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+      { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1, saleType: 1, resaleParties: 1 } }
     ])
   ]);
   var leads = results[0];
@@ -2269,6 +2301,14 @@ async function computeAgentDealStats(agentOids, fromDate, toDate, pwMap, sourceF
   var revenue = 0;
   for (var k = 0; k < dealRows.length; k++) {
     var d = dealRows[k];
+    // Two-party Resale (Option C) — a resale contributes each in-scope party's
+    // COMMISSION amount (not unit value). The deal still counts in `deals`.
+    if (d.saleType === "Resale") {
+      var rpD = d.resaleParties || {};
+      if (rpD.seller && rpD.seller.withUs && agentOidSet.has(String(rpD.seller.agentId))) revenue += Number(rpD.seller.commissionAmount) || 0;
+      if (rpD.buyer  && rpD.buyer.withUs  && agentOidSet.has(String(rpD.buyer.agentId)))  revenue += Number(rpD.buyer.commissionAmount)  || 0;
+      continue;
+    }
     var w;
     if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
     else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
@@ -2368,7 +2408,7 @@ async function computeAgentDealStatsBatch(poolOids, fromDate, toDate, pwMap, sou
       ]}]}
     }}}},
     { $match: { _effDate: { $gte: fromDate, $lt: toDate } } },
-    { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1 } }
+    { $project: { budget: 1, projectWeight: 1, project: 1, agentId: 1, splitAgent2Id: 1, saleType: 1, resaleParties: 1 } }
   ]);
 
   var res = await Promise.all([leadAggP, dealAggP]);
@@ -2383,6 +2423,20 @@ async function computeAgentDealStatsBatch(poolOids, fromDate, toDate, pwMap, sou
   leadRows.forEach(function(r){ var id = String(r._id); if (poolSet.has(id)) ensure(id).leads = Number(r.c) || 0; });
 
   dealRows.forEach(function(d){
+    // Two-party Resale (Option C) — each in-scope party agent gets +1 deal and
+    // its COMMISSION amount (not unit value) toward the flat leaderboard.
+    if (d.saleType === "Resale") {
+      var rpB = d.resaleParties || {};
+      [rpB.seller, rpB.buyer].forEach(function(party){
+        if (!party || !party.withUs || !party.agentId) return;
+        var pid = String(party.agentId);
+        if (!poolSet.has(pid)) return;
+        var ar = ensure(pid);
+        ar.deals += 1;
+        ar.revenue += Number(party.commissionAmount) || 0;
+      });
+      return;
+    }
     var w;
     if (typeof d.projectWeight === "number" && d.projectWeight !== 1) w = d.projectWeight;
     else if (d.project && pwMap[d.project] != null) w = Number(pwMap[d.project]) || 1;
@@ -2407,6 +2461,40 @@ async function computeAgentDealStatsBatch(poolOids, fromDate, toDate, pwMap, sou
   });
 
   return poolOids.map(function(o){ var id = String(o); return { id: id, stats: stats[id] }; });
+}
+
+// Two-party Resale (2026-07-06) — validate + normalize resaleParties from a write
+// body. Each party (seller/buyer) is either "with us" (requires name, phone,
+// agentId, commission amount ≤ price; commissionRate derived) or not (name/phone
+// optional for record; no agent/commission). At least ONE party must be with us.
+// Returns { value: normalized } or { error, message }.
+function validateResaleParties(rp, budgetNum) {
+  rp = rp || {};
+  var r2 = function(n){ return Math.round(Number(n||0) * 100) / 100; };
+  var norm = function(side, p) {
+    p = p || {};
+    var withUs = !!p.withUs;
+    var out = { withUs: withUs, name: String(p.name || "").trim(), phone: String(p.phone || "").trim(),
+                agentId: null, agentName: "", commissionAmount: 0, commissionRate: 0 };
+    if (!withUs) return { value: out };
+    var lbl = side === "seller" ? "Seller" : "Buyer";
+    if (!out.name)  return { error: "resale_party_name_required",  message: lbl + " name is required (it's with us)." };
+    if (!out.phone) return { error: "resale_party_phone_required", message: lbl + " phone is required (it's with us)." };
+    var aid = p.agentId ? String(p.agentId) : "";
+    if (!aid || !mongoose.Types.ObjectId.isValid(aid)) return { error: "resale_party_agent_required", message: lbl + " sales agent is required (it's with us)." };
+    out.agentId = new mongoose.Types.ObjectId(aid);
+    out.agentName = String(p.agentName || "").trim();
+    var ca = parseDealTotalFromBudget(p.commissionAmount);
+    if (!(ca > 0)) return { error: "resale_party_commission_required", message: lbl + " commission amount is required (it's with us)." };
+    if (budgetNum > 0 && ca > budgetNum) return { error: "resale_party_commission_exceeds", message: lbl + " commission cannot exceed the Unit Price." };
+    out.commissionAmount = r2(ca);
+    out.commissionRate = budgetNum > 0 ? r2(ca / budgetNum * 100) : 0;
+    return { value: out };
+  };
+  var s = norm("seller", rp.seller); if (s.error) return s;
+  var b = norm("buyer",  rp.buyer);  if (b.error) return b;
+  if (!s.value.withUs && !b.value.withUs) return { error: "resale_no_party", message: "At least one party (seller or buyer) must be with us." };
+  return { value: { seller: s.value, buyer: b.value } };
 }
 
 // Phase R-12 Part 3 — Write-site validation for the external-deal fields on
@@ -2662,14 +2750,43 @@ function qBoundsFromDate(date) {
 // across a calendar quarter, with split deals counted at 0.5. Filters by
 // status=DoneDeal (cancelled deals naturally drop out — cancel flips Lead.status
 // back to HotCase). Excludes archived leads. Returns EGP number.
+// Two-party Resale (Option C, 2026-07-06) — sum an agent's resale party COMMISSION
+// amounts in a quarter. A resale party agent's achievement counts their party's
+// commission (NOT unit value), so resales read smaller than primaries. Shared by
+// computeAgentQAchievement AND every leaderboard/KPI surface (added in JS after
+// each unit-value aggregation, which excludes saleType:"Resale") so the two-party
+// resale is credited by commission-value everywhere in lockstep.
+async function computeAgentResaleAchievement(aOid, qStartIso, qEndIso) {
+  if (!aOid) return 0;
+  var resaleRows = await Lead.find({
+    status: "DoneDeal",
+    archived: { $ne: true },
+    saleType: "Resale",
+    dealDate: { $gte: qStartIso, $lte: qEndIso },
+    $or: [ { "resaleParties.seller.agentId": aOid }, { "resaleParties.buyer.agentId": aOid } ]
+  }).select("resaleParties").lean();
+  var sum = 0;
+  for (var i = 0; i < resaleRows.length; i++) {
+    var rp = resaleRows[i].resaleParties || {};
+    if (rp.seller && rp.seller.withUs && String(rp.seller.agentId) === String(aOid)) sum += Number(rp.seller.commissionAmount) || 0;
+    if (rp.buyer  && rp.buyer.withUs  && String(rp.buyer.agentId)  === String(aOid)) sum += Number(rp.buyer.commissionAmount)  || 0;
+  }
+  return sum;
+}
+
 async function computeAgentQAchievement(agentId, qStartIso, qEndIso) {
   if (!agentId) return 0;
   var aOid;
   try { aOid = (typeof agentId === "string") ? new mongoose.Types.ObjectId(agentId) : agentId; }
   catch(e){ return 0; }
+  // Non-resale DoneDeals — deal value (unit price × weight × split) toward the
+  // agent's quarter. Resale is EXCLUDED here; it's counted by commission-value
+  // (computeAgentResaleAchievement) so resale parties read at their commission,
+  // not the unit price.
   var rows = await Lead.find({
     status: "DoneDeal",
     archived: { $ne: true },
+    saleType: { $ne: "Resale" },
     dealDate: { $gte: qStartIso, $lte: qEndIso },
     $or: [ { agentId: aOid }, { splitAgent2Id: aOid } ]
   }).select("budget projectWeight agentId splitAgent2Id").lean();
@@ -2683,6 +2800,7 @@ async function computeAgentQAchievement(agentId, qStartIso, qEndIso) {
     var mult = (isPrimary && hasSplit) ? 0.5 : (isPrimary ? 1 : 0.5);
     total += bg * w * mult;
   }
+  total += await computeAgentResaleAchievement(aOid, qStartIso, qEndIso);
   return total;
 }
 
@@ -3278,8 +3396,40 @@ function effectiveDealDateIso(lead) {
 // Walks reportsTo upward for the primary sales agent and (if split) for the
 // second sales agent. Both chains stand independent — same manager appearing
 // in both is fine; payouts SUM at paid_to_team time.
-async function buildSnapshotForLead(leadDoc) {
+async function buildSnapshotForLead(leadDoc, party) {
   if (!leadDoc) throw new Error("buildSnapshotForLead: leadDoc required");
+  // ===== Two-party Resale (2026-07-06) — build a PER-PARTY snapshot: one
+  // commission per with-us party (seller/buyer). Always internal-style (no
+  // split, no external/ambassador), chain walked from the PARTY's agent, the
+  // customer is the party's own client, dealTotal = unit price (the per-1000
+  // base), saleType=Resale (tax-free). Deal Type is locked to Internal for
+  // resale so the branches below never apply.
+  if (party && party.agentId) {
+    var partyAgent = null;
+    try { partyAgent = await User.findById(party.agentId).lean(); } catch(e){}
+    var partyRecipient = partyAgent
+      ? recipientFromUser(partyAgent, "sales")
+      : { userName: party.agentName || "(removed user)", userId: party.agentId || null, userActiveAtClose: false, role: "sales" };
+    var partyChain = partyAgent
+      ? await walkReportsToChain(partyAgent._id)
+      : { teamLeader: null, manager: null, director: null };
+    return {
+      customerName: party.name || leadDoc.name || "(unknown)",
+      customerPhone: party.phone || "",
+      developer: "", unitDetails: "",
+      projectName: leadDoc.project || "",
+      dealTotal: parseDealTotalFromBudget(leadDoc.budget),
+      dealDate: effectiveDealDateIso(leadDoc),
+      saleType: "Resale",
+      partySide: party.side || "",
+      salesAgent: partyRecipient,
+      teamLeader: partyChain.teamLeader,
+      manager: partyChain.manager,
+      director: partyChain.director,
+      isSplitDeal: false,
+      splitChain: { salesAgent2: null, teamLeader2: null, manager2: null, director2: null }
+    };
+  }
   var isExternalDeal = leadDoc.dealType === "external";
   // Phase R-14 — Ambassador deals, like external broker-only deals, do NOT use
   // the per-1000 chain or the split mechanic. Recipients live entirely in
@@ -3376,6 +3526,7 @@ async function buildSnapshotForLead(leadDoc) {
     // change the tax treatment of an already-closed commission (drives the no-VAT/
     // no-withholding resale path in the analytics aggregators).
     saleType: leadDoc.saleType || "",
+    partySide: "",
     salesAgent: primaryRecipient,
     teamLeader: primaryChain.teamLeader,
     manager: primaryChain.manager,
@@ -3494,12 +3645,77 @@ var failedCommissionLeadIds = new Set();
 // ensureCommissionForLead — invoked from the four lifecycle hooks. Same-agent
 // revival flips a cancelled doc back to active. Different-agent close inserts
 // a NEW commission and leaves any prior cancelled one in place.
+// Two-party Resale (2026-07-06) — a resale lead mints ONE Commission per with-us
+// party (seller/buyer), each with its OWN per-party snapshot (its agent + client
+// + commission amount) and a DIRECT-COLLECTED cycle: resale money is collected in
+// full up-front from the client, so cycle 1 is seeded straight into the "received"
+// state (no claim/invoice stages — no developer invoicing exists). The per-1000
+// tier chain still runs (off the unit price) and the remainder is company net.
+// Idempotent per partySide (re-running keeps existing non-cancelled docs).
+async function ensureResaleCommissions(leadDoc, actingUser) {
+  var r2 = function(n){ return Math.round(Number(n||0) * 100) / 100; };
+  var rp = leadDoc.resaleParties || {};
+  var parties = [];
+  if (rp.seller && rp.seller.withUs && rp.seller.agentId) parties.push(Object.assign({ side: "seller" }, rp.seller));
+  if (rp.buyer  && rp.buyer.withUs  && rp.buyer.agentId)  parties.push(Object.assign({ side: "buyer"  }, rp.buyer));
+  if (!parties.length) return null;
+  var budgetN = parseDealTotalFromBudget(leadDoc.budget) || 0;
+  var dealDateIso = effectiveDealDateIso(leadDoc) || new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
+  var byName = actingUser && actingUser.name ? actingUser.name : "";
+  var out = [];
+  for (var i = 0; i < parties.length; i++) {
+    var party = parties[i];
+    // Idempotent: keep any non-cancelled commission already minted for this
+    // lead + partySide (mirrors the single-commission alreadyExists gate).
+    var existingParty = await Commission.find({ leadId: leadDoc._id, partySide: party.side }).sort({ createdAt: -1 });
+    var activeParty = existingParty.find(function(c){ return c.status === "active" || c.status === "fully_paid"; });
+    if (activeParty) { out.push(activeParty); continue; }
+    var snapshot = await buildSnapshotForLead(leadDoc, party);
+    var amt = r2(Number(party.commissionAmount) || 0);
+    var rateDec = budgetN > 0 ? (amt / budgetN) : 0;
+    var cycle1 = {
+      cycleNumber: 1,
+      state: "received",                    // DIRECT-COLLECTED — no claim/invoice stages
+      expectedAmount: amt,
+      claimUnitValue: budgetN,
+      commissionRate: rateDec,
+      claimAmount: amt,
+      receivedAmount: amt,
+      received: { date: dealDateIso, notes: "Resale — collected in full (direct)", byUser: byName }
+    };
+    var created = await Commission.create({
+      leadId: leadDoc._id,
+      partySide: party.side,
+      snapshot: snapshot,
+      status: "active",
+      cycles: [cycle1],
+      payouts: [],
+      incentive: { recipients: [] },
+      externalSplit: { isExternal: false },
+      ambassadorSplit: { isAmbassador: false }
+    });
+    await computeAllRecipientShares(created);
+    created.markModified("snapshot");
+    await created.save();
+    try { if (party.agentId) await recomputeQuarterSiblings(party.agentId, snapshot.dealDate, { skipId: created._id }); } catch(e){}
+    out.push(created);
+  }
+  return out[0] || null;
+}
+
 async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
   try {
     var leadDoc = leadIdOrDoc && leadIdOrDoc._id
       ? leadIdOrDoc
       : await Lead.findById(leadIdOrDoc).lean();
     if (!leadDoc) return null;
+    // Two-party Resale — one commission per with-us party (its own agent + amount
+    // + direct-collected cycle). Bypasses the single-commission lifecycle below.
+    if (leadDoc.saleType === "Resale" && leadDoc.resaleParties &&
+        ((leadDoc.resaleParties.seller && leadDoc.resaleParties.seller.withUs && leadDoc.resaleParties.seller.agentId) ||
+         (leadDoc.resaleParties.buyer && leadDoc.resaleParties.buyer.withUs && leadDoc.resaleParties.buyer.agentId))) {
+      return await ensureResaleCommissions(leadDoc, actingUser);
+    }
     // Phase R-12 — surface retries of a lead that previously failed commission
     // creation in this process, so a persistently-broken deal keeps showing up.
     if (failedCommissionLeadIds.has(String(leadDoc._id))) {
@@ -7858,7 +8074,7 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
         } }
     ];
     if (rangeMatch) myDealsPipeline.push({ $match: { dealAt: rangeMatch } });
-    myDealsPipeline.push({ $project: { budget: 1, projectWeight: 1, splitAgent2Id: 1 } });
+    myDealsPipeline.push({ $project: { budget: 1, projectWeight: 1, agentId: 1, splitAgent2Id: 1, saleType: 1, resaleParties: 1 } });
     var myDealsP = Lead.aggregate(myDealsPipeline);
 
     var parts = await Promise.all([
@@ -7885,6 +8101,15 @@ app.get("/api/dashboard/my-stats", auth, async function(req, res) {
     // own both halves of a single deal, so they degenerate to the legacy 0.5.
     var scopeIdsSet = new Set(scopeIds.map(function(id){ return String(id); }));
     var achieved = myDeals.reduce(function(s,d){
+      // Two-party Resale (Option C) — credit each in-scope party's COMMISSION
+      // amount (not unit value); the deal reads smaller than a primary.
+      if (d.saleType === "Resale") {
+        var rp = d.resaleParties || {};
+        var addR = 0;
+        if (rp.seller && rp.seller.withUs && scopeIdsSet.has(String(rp.seller.agentId))) addR += Number(rp.seller.commissionAmount) || 0;
+        if (rp.buyer  && rp.buyer.withUs  && scopeIdsSet.has(String(rp.buyer.agentId)))  addR += Number(rp.buyer.commissionAmount)  || 0;
+        return s + addR;
+      }
       var w = (typeof d.projectWeight === "number") ? d.projectWeight : 1;
       var hasSplit = !!d.splitAgent2Id;
       var bothInScope = hasSplit
@@ -10865,12 +11090,19 @@ app.post("/api/leads", auth, async function(req, res) {
       var sfSaleType = String((req.body && req.body.saleType) || "").trim();
       if (sfSaleType !== "Primary" && sfSaleType !== "Resale") return res.status(400).json({ error: "sale_type_required", message: "Sale Type (Primary or Resale) is required." });
       if (sfSaleType === "Resale") {
+        // Deal Type locked to Internal for Resale (two-party resales run the
+        // internal per-1000 chain per party; External / Ambassador don't apply).
+        if (req.body.dealType === "external" || req.body.dealType === "ambassador") {
+          return res.status(400).json({ error: "resale_internal_only", message: "Resale deals must be Internal (External / Ambassador are not allowed)." });
+        }
+        req.body.dealType = "internal";
         if (!String((req.body && req.body.dealDate) || "").trim()) return res.status(400).json({ error: "deal_date_required", message: "Deal Date is required." });
-        var caResale = parseDealTotalFromBudget(req.body && req.body.commissionAmount);
-        if (!(caResale > 0)) return res.status(400).json({ error: "commission_amount_required", message: "Commission Amount (EGP) is required and must be greater than 0." });
-        if (caResale > budgetNumCreate) return res.status(400).json({ error: "commission_exceeds_price", message: "Commission Amount cannot exceed the Unit Price." });
-        req.body.commissionAmount = __round2(caResale);
-        req.body.commissionRate   = __round2(caResale / budgetNumCreate * 100);
+        // Two-party validation (>=1 with-us; per-party name/phone/agent/commission).
+        var rpNormCreate = validateResaleParties(req.body.resaleParties, budgetNumCreate);
+        if (rpNormCreate.error) return res.status(400).json({ error: rpNormCreate.error, message: rpNormCreate.message });
+        req.body.resaleParties = rpNormCreate.value;
+        // Per-party commissions supersede the single lead-level commission fields.
+        req.body.commissionRate = null; req.body.commissionAmount = null;
         // Resale has no down-payment / installment fields — clear any strays.
         req.body.downPayment = ""; req.body.downPaymentDate = ""; req.body.reservationDate = ""; req.body.contractionDate = ""; req.body.installmentYears = "";
       } else {
@@ -10969,6 +11201,9 @@ app.post("/api/leads", auth, async function(req, res) {
       reservationDate:  req.body.reservationDate || "",
       contractionDate:  req.body.contractionDate || "",
       installmentYears: req.body.installmentYears || "",
+      // Two-party Resale — normalized above by validateResaleParties (only set for
+      // saleType==="Resale"; Primary create leaves it undefined → schema default).
+      resaleParties:    req.body.resaleParties || undefined,
       lastActivityTime: new Date(),
       archived:         false,
       isVIP:            false,
@@ -11978,12 +12213,17 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     if (!e2dUnitCode) return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required to convert to a Done Deal." });
     if (!(e2dBudgetNum > 0)) return res.status(400).json({ error: "budget_required_for_deal", message: "Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal." });
     if (e2dSaleType !== "Primary" && e2dSaleType !== "Resale") return res.status(400).json({ error: "sale_type_required", message: "Sale Type (Primary or Resale) is required." });
+    var e2dResaleParties = null;
     if (e2dSaleType === "Resale") {
       // Resale conversion is BLOCKED when the EOI carries a deposit — an EOI
       // deposit IS a developer down payment, which contradicts a resale (direct
       // full-payment, no down payment). Yosra's rule.
       if (parseDealTotalFromBudget(existing.eoiDeposit) > 0) return res.status(400).json({ error: "resale_blocked_deposit", message: "This EOI has a deposit — it can't be converted to a Resale deal (resales have no down payment). Convert as Primary instead." });
       if (!e2dDealDate) return res.status(400).json({ error: "deal_date_required", message: "Deal Date is required." });
+      // Two-party validation (>=1 with-us; per-party name/phone/agent/commission).
+      var rpNormConv = validateResaleParties(b.resaleParties, e2dBudgetNum);
+      if (rpNormConv.error) return res.status(400).json({ error: rpNormConv.error, message: rpNormConv.message });
+      e2dResaleParties = rpNormConv.value;
     } else {
       if (!(parseDealTotalFromBudget(e2dDownPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
       if (!e2dDownPaymentDate) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
@@ -12018,6 +12258,11 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       reservationDate: isResaleConvert ? "" : e2dReservationDate,
       contractionDate: isResaleConvert ? "" : e2dContractionDate,
       installmentYears: isResaleConvert ? "" : e2dInstallmentYears,
+      // Two-party Resale — the normalized seller/buyer parties (each with its own
+      // agent + commission → one Commission doc each via ensureResaleCommissions).
+      // Deal Type locked to Internal for resale.
+      resaleParties: isResaleConvert ? e2dResaleParties : undefined,
+      dealType: isResaleConvert ? "internal" : undefined,
       // dealDate (backbone: quarter filters / TargetPeriods / leaderboard /
       // commission snapshot). Primary: Deal Date ≡ Contraction Date. Resale: its
       // own single Deal Date. The fallbacks only guard a hypothetical bypass.
