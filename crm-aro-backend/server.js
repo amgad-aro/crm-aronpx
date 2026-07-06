@@ -11114,7 +11114,7 @@ app.post("/api/leads", auth, async function(req, res) {
         if (!(parseDealTotalFromBudget(req.body && req.body.downPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
         if (!String((req.body && req.body.downPaymentDate) || "").trim()) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
         if (!String((req.body && req.body.reservationDate) || "").trim()) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
-        if (!String((req.body && req.body.contractionDate) || "").trim()) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
+        if (!String((req.body && req.body.contractionDate) || "").trim()) return res.status(400).json({ error: "contraction_date_required", message: "Contract Date is required." });
         if (!String((req.body && req.body.installmentYears) || "").trim()) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
         req.body.commissionRate   = crNumCreate;
         req.body.commissionAmount = __round2(budgetNumCreate * crNumCreate / 100);
@@ -12228,7 +12228,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       if (!(parseDealTotalFromBudget(e2dDownPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
       if (!e2dDownPaymentDate) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
       if (!e2dReservationDate) return res.status(400).json({ error: "reservation_date_required", message: "Reservation Date is required." });
-      if (!e2dContractionDate) return res.status(400).json({ error: "contraction_date_required", message: "Contraction Date is required." });
+      if (!e2dContractionDate) return res.status(400).json({ error: "contraction_date_required", message: "Contract Date is required." });
       if (!e2dInstallmentYears) return res.status(400).json({ error: "installment_years_required", message: "Installments (years) is required." });
     }
     // Client preservation — when the final buyer's name/phone differ from the EOI

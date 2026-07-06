@@ -3021,7 +3021,7 @@ var LeadForm = function(p) {
         if (!(dpNum > 0)) { alert("Please enter the Down Payment (EGP)"); return; }
         if (!String(form.downPaymentDate || "").trim()) { alert("Please enter the Down Payment Date"); return; }
         if (!String(form.reservationDate || "").trim()) { alert("Please enter the Reservation Date"); return; }
-        if (!String(form.contractionDate || "").trim()) { alert("Please enter the Contraction Date"); return; }
+        if (!String(form.contractionDate || "").trim()) { alert("Please enter the Contract Date"); return; }
         if (!String(form.installmentYears || "").trim()) { alert("Please enter the Installments (years)"); return; }
       }
     }
@@ -3360,7 +3360,7 @@ var LeadForm = function(p) {
           : <div style={g4}>
               <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
               <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
-              <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
+              <Inp label="📅 Contract Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
               <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 8"/>
             </div>}
         {agentField}
@@ -12154,7 +12154,7 @@ var EOIPage = function(p) {
       if(!(num(f.downPayment)>0)) { alert("Please enter the Down Payment (EGP)"); return; }
       if(!String(f.downPaymentDate||"").trim()) { alert("Please enter the Down Payment Date"); return; }
       if(!String(f.reservationDate||"").trim()) { alert("Please enter the Reservation Date"); return; }
-      if(!String(f.contractionDate||"").trim()) { alert("Please enter the Contraction Date"); return; }
+      if(!String(f.contractionDate||"").trim()) { alert("Please enter the Contract Date"); return; }
       if(!String(f.installmentYears||"").trim()) { alert("Please enter the Installments (years)"); return; }
     }
     // Phase R-1: warn when the deal's dealDate falls outside the current year.
@@ -12565,7 +12565,7 @@ var EOIPage = function(p) {
             : <div style={g4}>
                 {cField("📅 Reservation Date","reservationDate",{type:"date"})}
                 {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
-                {cField("📅 Contraction Date","contractionDate",{type:"date",max:todayIso})}
+                {cField("📅 Contract Date","contractionDate",{type:"date",max:todayIso})}
                 {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 8"})}
               </div>}
 
@@ -13405,7 +13405,7 @@ var DealsPage = function(p) {
           {l:"Down Payment %", v:saleType==="Resale" ? "" : (downPct?downPct+"%":"—"), icon:"📊"},
           {l:"Reservation Date", v:saleType==="Resale" ? "" : (resDateStr||"—"), icon:"📅"},
           {l:"Down Payment Date", v:saleType==="Resale" ? "" : (dpDateStr||"—"), icon:"📅"},
-          {l:(saleType==="Resale" ? "Deal Date" : "Contraction Date"), v:(saleType==="Resale" ? (dealDateStr||"—") : (contrDateStr||"—")), icon:"📅"},
+          {l:(saleType==="Resale" ? "Deal Date" : "Contract Date"), v:(saleType==="Resale" ? (dealDateStr||"—") : (contrDateStr||"—")), icon:"📅"},
           {l:"Installments", v:saleType==="Resale" ? "" : (instYears?instYears+" yrs":"—"), icon:"📆"},
           {l:"Agent", v:saleType==="Resale" ? "" : getAg(selectedDeal), icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
