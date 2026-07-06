@@ -3262,7 +3262,7 @@ var LeadForm = function(p) {
       // today (Cairo) on create; edit is unconstrained so admins can correct.
       var maxDay=p.editId?undefined:new Date(Date.now()+3*3600*1000).toISOString().slice(0,10);
       var g2={ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" };
-      var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 12px" };
+      var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 12px", alignItems:"end" };
       var hdr=function(txt){ return <div style={{ fontSize:12, fontWeight:800, color:C.textLight, textTransform:"uppercase", letterSpacing:".4px", margin:"4px 0 8px" }}>{txt}</div>; };
       // ===== TWO-PARTY RESALE — shared Property + Sale Type + Deal Date, then a
       // Seller and Buyer section (each: With-us toggle → name/phone/agent + linked
@@ -3358,10 +3358,10 @@ var LeadForm = function(p) {
         {isResale
           ? <Inp label="📅 Deal Date" req={!p.editId} type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={maxDay}/>
           : <div style={g4}>
-              <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
-              <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
-              <Inp label="📅 Contract Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
-              <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 8"/>
+              <Inp label="📅 Reservation" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
+              <Inp label="📅 Down Payment" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
+              <Inp label="📅 Contract" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
+              <Inp label="📆 Installments (yrs)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 8"/>
             </div>}
         {agentField}
         <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
@@ -12522,7 +12522,7 @@ var EOIPage = function(p) {
         var priceNum=num(convertForm.budget), dpNum=num(convertForm.downPayment);
         var pct=(priceNum>0&&dpNum>0)?(Math.round((dpNum/priceNum)*10000)/100):null;
         var g2={ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 10px" };
-        var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 10px" };
+        var g4={ display:"grid", gridTemplateColumns:p.isMobile?"minmax(0,1fr) minmax(0,1fr)":"repeat(4, minmax(0,1fr))", gap:"0 10px", alignItems:"end" };
         // Deal Date ≡ Contraction Date — the deal's close date can't be in the
         // future (backbone dealDate feeds quarter attribution), so cap the
         // Deal / Contraction Date picker at today (Cairo).
@@ -12563,10 +12563,10 @@ var EOIPage = function(p) {
           {isResaleConv
             ? cField("📅 Deal Date","dealDate",{type:"date",max:todayIso})
             : <div style={g4}>
-                {cField("📅 Reservation Date","reservationDate",{type:"date"})}
-                {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
-                {cField("📅 Contract Date","contractionDate",{type:"date",max:todayIso})}
-                {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 8"})}
+                {cField("📅 Reservation","reservationDate",{type:"date"})}
+                {cField("📅 Down Payment","downPaymentDate",{type:"date"})}
+                {cField("📅 Contract","contractionDate",{type:"date",max:todayIso})}
+                {cField("📆 Installments (yrs)","installmentYears",{digits:true,placeholder:"e.g. 8"})}
               </div>}
 
           {isResaleConv && <>
