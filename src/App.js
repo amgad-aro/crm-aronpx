@@ -12596,8 +12596,7 @@ var EOIPage = function(p) {
             })}
           </>}
 
-          {sectionHdr("📎 Documents (optional)")}
-          <DocumentsUpload files={convertDocs} onChange={setConvertDocs} label="📎 Upload Deal Documents (optional)"/>
+          <DocumentsUpload files={convertDocs} onChange={setConvertDocs} label="📎 Upload Deal Documents"/>
 
           <div style={{ display:"flex", gap:10, marginTop:8 }}>
             <button onClick={function(){ setConvertModal(null); setConvertDocs([]); }} disabled={convertingDeal}
