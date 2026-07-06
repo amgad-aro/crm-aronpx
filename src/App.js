@@ -3358,12 +3358,13 @@ var LeadForm = function(p) {
         {isResale
           ? <Inp label="📅 Deal Date" req={!p.editId} type="date" value={form.dealDate||""} onChange={function(e){upd("dealDate",e.target.value);}} max={maxDay}/>
           : <div style={g4}>
-              <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
               <Inp label="📅 Reservation Date" req={!p.editId} type="date" value={form.reservationDate||""} onChange={function(e){upd("reservationDate",e.target.value);}}/>
+              <Inp label="📅 Down Payment Date" req={!p.editId} type="date" value={form.downPaymentDate||""} onChange={function(e){upd("downPaymentDate",e.target.value);}}/>
               <Inp label="📅 Contraction Date" req={!p.editId} type="date" value={form.contractionDate||""} onChange={function(e){upd("contractionDate",e.target.value);}} max={maxDay}/>
-              <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 7"/>
+              <Inp label="📆 Installments (years)" req={!p.editId} value={form.installmentYears||""} onChange={function(e){upd("installmentYears",e.target.value.replace(/[^0-9]/g,""));}} placeholder="e.g. 8"/>
             </div>}
-        <div style={g2}>{agentField}<Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/></div>
+        {agentField}
+        <Inp label={t.notes} type="textarea" value={form.notes} onChange={function(e){upd("notes",e.target.value);}}/>
       </div>;
     })() : <div>
       <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
@@ -12562,10 +12563,10 @@ var EOIPage = function(p) {
           {isResaleConv
             ? cField("📅 Deal Date","dealDate",{type:"date",max:todayIso})
             : <div style={g4}>
-                {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
                 {cField("📅 Reservation Date","reservationDate",{type:"date"})}
+                {cField("📅 Down Payment Date","downPaymentDate",{type:"date"})}
                 {cField("📅 Contraction Date","contractionDate",{type:"date",max:todayIso})}
-                {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 7"})}
+                {cField("📆 Installments (years)","installmentYears",{digits:true,placeholder:"e.g. 8"})}
               </div>}
 
           {isResaleConv && <>
@@ -13402,8 +13403,8 @@ var DealsPage = function(p) {
           // instead of Contraction Date.
           {l:"Down Payment", v:saleType==="Resale" ? "" : (function(){ var a=parseBudget(downPayAmt); return a>0?a.toLocaleString()+" EGP":"—"; })(), icon:"💵"},
           {l:"Down Payment %", v:saleType==="Resale" ? "" : (downPct?downPct+"%":"—"), icon:"📊"},
-          {l:"Down Payment Date", v:saleType==="Resale" ? "" : (dpDateStr||"—"), icon:"📅"},
           {l:"Reservation Date", v:saleType==="Resale" ? "" : (resDateStr||"—"), icon:"📅"},
+          {l:"Down Payment Date", v:saleType==="Resale" ? "" : (dpDateStr||"—"), icon:"📅"},
           {l:(saleType==="Resale" ? "Deal Date" : "Contraction Date"), v:(saleType==="Resale" ? (dealDateStr||"—") : (contrDateStr||"—")), icon:"📅"},
           {l:"Installments", v:saleType==="Resale" ? "" : (instYears?instYears+" yrs":"—"), icon:"📆"},
           {l:"Agent", v:saleType==="Resale" ? "" : getAg(selectedDeal), icon:"👤"},
