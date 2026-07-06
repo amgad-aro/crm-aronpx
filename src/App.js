@@ -12514,7 +12514,7 @@ var EOIPage = function(p) {
           return <div style={{ marginBottom:12 }}>
             <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{label}{o.req!==false&&<span style={{color:C.danger}}> *</span>}</label>
             {o.type==="select"
-              ? <select value={convertForm[key]} onChange={onCh} style={Object.assign({background:"#fff"},cStyle)}>{o.options.map(function(op){return <option key={op.value} value={op.value}>{op.label}</option>;})}</select>
+              ? <select value={convertForm[key]} onChange={onCh} style={Object.assign({background:"#fff"},cStyle)}>{o.options.map(function(op){return <option key={op.value} value={op.value} disabled={op.disabled}>{op.label}</option>;})}</select>
               : <input type={o.type||"text"} value={convertForm[key]} placeholder={o.placeholder||""} max={o.max} onChange={onCh} style={cStyle}/>}
           </div>;
         };
@@ -12558,8 +12558,7 @@ var EOIPage = function(p) {
               </>}
 
           {sectionHdr("💰 Sales")}
-          {cField("🏷️ Sale Type","saleType",{type:"select",options: hasDeposit ? [{value:"Primary",label:"Primary"}] : [{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]})}
-          {hasDeposit && <div style={{ marginTop:-4, marginBottom:10, fontSize:11, color:"#B45309", background:"#FEF3C7", border:"1px solid #FDE68A", borderRadius:6, padding:"6px 10px" }}>This EOI has a deposit ({convertModal.eoiDeposit}) — only Primary is available (resales have no down payment).</div>}
+          {cField("🏷️ Sale Type","saleType",{type:"select",options: hasDeposit ? [{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale — unavailable (EOI has a deposit)",disabled:true}] : [{value:"Primary",label:"Primary"},{value:"Resale",label:"Resale"}]})}
           {isResaleConv
             ? cField("📅 Deal Date","dealDate",{type:"date",max:todayIso})
             : <div style={g4}>
