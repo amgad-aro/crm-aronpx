@@ -14331,6 +14331,14 @@ var DailyRequestsPage = function(p) {
   var [filterStatus,setFilterStatus]=useState(p.drInitFilter||"all");
   var [sortBy,setSortBy]=useState("lastActivity");
   var [agentFilter,setAgentFilter]=useState("");
+  // "Date Added" filter — client-side over the already-loaded `requests` array
+  // (this page loads the full list; createdAt is on every DR). Presets compute
+  // browser-local day boundaries, matching the LeadsPage dateRangeWindow
+  // convention (App.js:5977) — browser-local == Africa/Cairo on the owner's
+  // machine. "custom" reads customFrom/customTo (YYYY-MM-DD, local calendar days).
+  var [addedRange,setAddedRange]=useState("all"); // all|today|yesterday|dayBefore|last7|last30|custom
+  var [customFrom,setCustomFrom]=useState("");
+  var [customTo,setCustomTo]=useState("");
   useEffect(function(){
     if(p.drInitFilter){ setFilterStatus(p.drInitFilter); if(p.setDrInitFilter) p.setDrInitFilter(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -14374,12 +14382,59 @@ var DailyRequestsPage = function(p) {
     if (full && !selected.createdAt) setSelected(full);
   }, [requests]);
 
+  // "Date Added" window → [startMs, endMs] in browser-local time, or null for
+  // "All Time" (no filter). Mirrors LeadsPage dateRangeWindow (App.js:5977).
+  var addedWindow = function(key){
+    if(key==="all") return null;
+    var now=new Date();
+    var startOfDay=function(d){return new Date(d.getFullYear(),d.getMonth(),d.getDate(),0,0,0,0);};
+    var endOfDay=function(d){return new Date(d.getFullYear(),d.getMonth(),d.getDate(),23,59,59,999);};
+    if(key==="today")     return [startOfDay(now).getTime(),  endOfDay(now).getTime()];
+    if(key==="yesterday"){ var y=new Date(now);   y.setDate(y.getDate()-1);   return [startOfDay(y).getTime(),   endOfDay(y).getTime()]; }
+    if(key==="dayBefore"){ var db=new Date(now);  db.setDate(db.getDate()-2);  return [startOfDay(db).getTime(),  endOfDay(db).getTime()]; }
+    if(key==="last7"){     var s7=new Date(now);  s7.setDate(s7.getDate()-6);  return [startOfDay(s7).getTime(),  endOfDay(now).getTime()]; }
+    if(key==="last30"){    var s30=new Date(now); s30.setDate(s30.getDate()-29); return [startOfDay(s30).getTime(), endOfDay(now).getTime()]; }
+    if(key==="custom"){
+      var parseYmd=function(s){ var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||"")); return m?new Date(+m[1],+m[2]-1,+m[3]):null; };
+      var f=parseYmd(customFrom), tt=parseYmd(customTo);
+      if(!f && !tt) return null; // nothing entered yet → treat as no filter
+      var lo=f?startOfDay(f).getTime():-Infinity;
+      var hi=tt?endOfDay(tt).getTime():endOfDay(now).getTime();
+      return [lo,hi];
+    }
+    return null;
+  };
+  // Date-only base set. Counters + status tabs derive from THIS (so they react
+  // to the Date Added filter) while staying independent of the agent/status/
+  // search filters, exactly as before. `filtered` (the visible list) layers
+  // status/agent/search/sort on top of this.
+  var dateFiltered = useMemo(function(){
+    var win = addedWindow(addedRange);
+    if(!win) return requests;
+    return requests.filter(function(r){
+      var ts = r.createdAt ? new Date(r.createdAt).getTime() : NaN;
+      return ts >= win[0] && ts <= win[1];
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requests, addedRange, customFrom, customTo]);
+  // Human-readable label for the active-filter chip.
+  var addedLabel = (function(){
+    var m={today:"Today",yesterday:"Yesterday",dayBefore:"Day Before Yesterday",last7:"Last 7 Days",last30:"Last 30 Days"};
+    if(addedRange==="custom"){
+      if(customFrom&&customTo) return customFrom+" → "+customTo;
+      if(customFrom) return "From "+customFrom;
+      if(customTo) return "Until "+customTo;
+      return "Custom Range";
+    }
+    return m[addedRange]||"";
+  })();
+
   // Memoized so unrelated state changes (side panel open/close, status
   // dropdown, modals) don't re-filter and re-sort the full list on every
   // render. Recomputes only when the underlying data or any filter input
   // actually changes.
   var filtered = useMemo(function(){
-    return requests.filter(function(r){
+    return dateFiltered.filter(function(r){
       // Defense in depth: the initial /api/daily-requests fetch already strips
       // archived rows (line ~9305), but any subsequent setRequests path that
       // upserts a server doc could re-introduce one. Re-check at render time.
@@ -14403,7 +14458,7 @@ var DailyRequestsPage = function(p) {
       if(sortBy==="newest")return new Date(b.createdAt||0)-new Date(a.createdAt||0);
       return 0;
     });
-  }, [requests, filterStatus, agentFilter, sortBy, p.search]);
+  }, [dateFiltered, filterStatus, agentFilter, sortBy, p.search]);
 
   var reqStatus=function(rid,st){
     setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
@@ -14700,9 +14755,9 @@ var DailyRequestsPage = function(p) {
 
     {/* Stats */}
     <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-      <StatCard icon={ClipboardList} label={"Total Numbers"} value={requests.length+""} c={C.info}/>
-      <StatCard icon={Target} label={"Potential"} value={requests.filter(function(r){return r.status==="Potential";}).length+""} c={"#1D4ED8"}/>
-      <StatCard icon={DollarSign} label={t.doneDeals} value={requests.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
+      <StatCard icon={ClipboardList} label={"Total Numbers"} value={dateFiltered.length+""} c={C.info}/>
+      <StatCard icon={Target} label={"Potential"} value={dateFiltered.filter(function(r){return r.status==="Potential";}).length+""} c={"#1D4ED8"}/>
+      <StatCard icon={DollarSign} label={t.doneDeals} value={dateFiltered.filter(function(r){return r.status==="DoneDeal";}).length+""} c={C.success}/>
     </div>
     {/* Toolbar */}
     <div style={{ display:"flex", gap:8, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
@@ -14728,15 +14783,15 @@ var DailyRequestsPage = function(p) {
     <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
       {[{v:"all",l:t.all}].concat(sc.map(function(s){return{v:s.value,l:s.label};})).map(function(s){
         var cnt=s.v==="all"
-          ? requests.length
+          ? dateFiltered.length
           : s.v==="MeetingDone"
-            ? requests.filter(function(r){return r.hadMeeting===true;}).length
-            : requests.filter(function(r){return r.status===s.v;}).length;
+            ? dateFiltered.filter(function(r){return r.hadMeeting===true;}).length
+            : dateFiltered.filter(function(r){return r.status===s.v;}).length;
         return <button key={s.v} onClick={function(){setFilterStatus(s.v);}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:filterStatus===s.v?C.accent:"#E8ECF1", background:filterStatus===s.v?C.accent+"12":"#fff", color:filterStatus===s.v?C.accent:C.textLight, fontSize:11, fontWeight:500, cursor:"pointer" }}>{s.l} ({cnt})</button>;
       })}
       {/* No Agent — pseudo-filter; toggles off when re-clicked or when any other filter is chosen. */}
       {(function(){
-        var noAgentCount = requests.filter(function(r){var a=r.agentId&&r.agentId._id?r.agentId._id:r.agentId; return !a;}).length;
+        var noAgentCount = dateFiltered.filter(function(r){var a=r.agentId&&r.agentId._id?r.agentId._id:r.agentId; return !a;}).length;
         var on = filterStatus==="__noAgent";
         return <button key="__noAgent" onClick={function(){setFilterStatus(on?"all":"__noAgent");}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:on?"#DC2626":"#E8ECF1", background:on?"#FEE2E2":"#fff", color:on?"#991B1B":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }} title="Show only requests with no agent assigned">👤 No Agent ({noAgentCount})</button>;
       })()}
@@ -14751,6 +14806,36 @@ var DailyRequestsPage = function(p) {
         <option value="newest">🆕 Newest</option>
       </select>
     </div>
+
+    {/* Date Added filter — presets + optional custom range. Admin-gated to
+        match the All Agents filter + LeadsPage date pills. Non-admins keep
+        addedRange="all" so dateFiltered === requests (no behaviour change). */}
+    {isAdmin&&<div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap", alignItems:"center" }}>
+      <span style={{ fontSize:11, fontWeight:600, color:C.textLight, marginRight:2 }}>📅 Date Added:</span>
+      {[
+        {v:"all",l:"All Time"},
+        {v:"today",l:"Today"},
+        {v:"yesterday",l:"Yesterday"},
+        {v:"dayBefore",l:"Day Before Yesterday"},
+        {v:"last7",l:"Last 7 Days"},
+        {v:"last30",l:"Last 30 Days"},
+        {v:"custom",l:"Custom Range"}
+      ].map(function(d){
+        var on = addedRange===d.v;
+        return <button key={d.v} onClick={function(){setAddedRange(d.v);}} style={{ padding:"4px 9px", borderRadius:14, border:"1px solid", borderColor:on?C.info:"#E8ECF1", background:on?"#EFF6FF":"#fff", color:on?"#1D4ED8":C.textLight, fontSize:11, fontWeight:on?600:500, cursor:"pointer" }}>{d.l}</button>;
+      })}
+      {addedRange==="custom"&&<span style={{ display:"inline-flex", gap:6, alignItems:"center" }}>
+        <input type="date" value={customFrom} max={customTo||undefined} onChange={function(e){setCustomFrom(e.target.value);}} style={{ padding:"3px 6px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11 }}/>
+        <span style={{ fontSize:11, color:C.textLight }}>→</span>
+        <input type="date" value={customTo} min={customFrom||undefined} onChange={function(e){setCustomTo(e.target.value);}} style={{ padding:"3px 6px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11 }}/>
+      </span>}
+    </div>}
+    {/* Active "Date Added" chip — shows the window + how many numbers entered
+        the system in it, with an X to clear back to All Time. */}
+    {isAdmin&&addedRange!=="all"&&<div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"10px 14px", background:"#EFF6FF", border:"1px solid #BFDBFE", borderRadius:10, marginBottom:12 }}>
+      <div style={{ fontSize:13, color:"#1D4ED8", fontWeight:600, minWidth:0, overflow:"hidden", textOverflow:"ellipsis" }}>Added: {addedLabel} <span style={{ color:"#64748B", fontWeight:500 }}>({dateFiltered.length})</span></div>
+      <button onClick={function(){setAddedRange("all");setCustomFrom("");setCustomTo("");}} style={{ background:"#fff", border:"1px solid #BFDBFE", color:"#1D4ED8", fontSize:12, fontWeight:600, padding:"4px 10px", borderRadius:8, cursor:"pointer", display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>Clear filter <X size={13}/></button>
+    </div>}
 
     <div style={{ display:"flex", gap:14, paddingRight:!p.isMobile&&hasRenderableSelected?330:0, transition:"padding-right 0.25s" }}>
       <Card style={{ flex:1, padding:0, overflow:"hidden", minWidth:0 }}>
