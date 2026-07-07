@@ -14429,6 +14429,22 @@ var DailyRequestsPage = function(p) {
     return m[addedRange]||"";
   })();
 
+  // Set of user ids whose account is deactivated (active === false). Built from
+  // p.users, which for the owner (admin) includes every user + their active
+  // flag. Drives the "Inactive Agent" tab, its live count, and the row badge —
+  // purely derived, so reactivating a user drops their numbers automatically.
+  var inactiveAgentIds = useMemo(function(){
+    var s = {};
+    (p.users||[]).forEach(function(u){ if(u && u.active===false) s[String(gid(u))]=true; });
+    return s;
+  }, [p.users]);
+  // A row is in the Inactive Agent bucket when its agent is present (i.e. NOT
+  // No Agent) AND that agent is deactivated. Mutually exclusive with No Agent.
+  var isInactiveAgentRow = function(r){
+    var a = r.agentId && r.agentId._id ? String(r.agentId._id) : (r.agentId ? String(r.agentId) : "");
+    return !!(a && inactiveAgentIds[a]);
+  };
+
   // Memoized so unrelated state changes (side panel open/close, status
   // dropdown, modals) don't re-filter and re-sort the full list on every
   // render. Recomputes only when the underlying data or any filter input
@@ -14449,6 +14465,9 @@ var DailyRequestsPage = function(p) {
           // "No Agent" pseudo-filter: only DRs with empty/null agentId.
           var naAid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
           if (naAid) return false;
+        } else if(filterStatus==="__inactiveAgent"){
+          // "Inactive Agent" pseudo-filter: agent still assigned but deactivated.
+          if (!isInactiveAgentRow(r)) return false;
         } else if(r.status!==filterStatus) return false;
       }
       if(agentFilter){var aid=r.agentId&&r.agentId._id?r.agentId._id:r.agentId;if(aid!==agentFilter)return false;}
@@ -14458,7 +14477,8 @@ var DailyRequestsPage = function(p) {
       if(sortBy==="newest")return new Date(b.createdAt||0)-new Date(a.createdAt||0);
       return 0;
     });
-  }, [dateFiltered, filterStatus, agentFilter, sortBy, p.search]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFiltered, filterStatus, agentFilter, sortBy, p.search, inactiveAgentIds]);
 
   var reqStatus=function(rid,st){
     setPendingStatus({leadId:rid,newStatus:st});setShowStatusComment(true);
@@ -14795,6 +14815,14 @@ var DailyRequestsPage = function(p) {
         var on = filterStatus==="__noAgent";
         return <button key="__noAgent" onClick={function(){setFilterStatus(on?"all":"__noAgent");}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:on?"#DC2626":"#E8ECF1", background:on?"#FEE2E2":"#fff", color:on?"#991B1B":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }} title="Show only requests with no agent assigned">👤 No Agent ({noAgentCount})</button>;
       })()}
+      {/* Inactive Agent — pseudo-filter; agent still assigned but their account is
+          deactivated. Admin/leadership only (a sales user's list is just themselves,
+          so it would always read 0). Composes with the Date Added filter. */}
+      {isAdmin&&(function(){
+        var inactiveCount = dateFiltered.filter(isInactiveAgentRow).length;
+        var on = filterStatus==="__inactiveAgent";
+        return <button key="__inactiveAgent" onClick={function(){setFilterStatus(on?"all":"__inactiveAgent");}} style={{ padding:"5px 10px", borderRadius:7, border:"1px solid", borderColor:on?"#D97706":"#E8ECF1", background:on?"#FEF3C7":"#fff", color:on?"#92400E":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer" }} title="Show only numbers whose assigned agent is deactivated">🚫 Inactive Agent ({inactiveCount})</button>;
+      })()}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
       {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
@@ -14898,7 +14926,7 @@ var DailyRequestsPage = function(p) {
                   <div style={{ fontSize:16, fontWeight:700, color:C.text, marginBottom:2 }}>{r.name}</div>
                   <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={r.phone}/></div>
                   {r.phone2&&<div style={{ fontSize:11, fontWeight:700, color:C.textLight, direction:"ltr" }}><PhoneCell phone={r.phone2}/></div>}
-                  {(function(){var agName=r.agentId&&r.agentId.name?r.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
+                  {(function(){var agName=r.agentId&&r.agentId.name?r.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}{isInactiveAgentRow(r)&&<span style={{ marginLeft:6, background:"#FEF3C7", color:"#92400E", border:"1px solid #FDE68A", borderRadius:10, padding:"1px 6px", fontSize:9, fontWeight:700 }}>Inactive</span>}</div>:null;})()}
                 </div>
                 <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
               </div>
@@ -15003,6 +15031,7 @@ var DailyRequestsPage = function(p) {
                   </td>
                   <td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{r.lastFeedback||r.notes||<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight }} onClick={function(e){e.stopPropagation();}}>
+                    {isInactiveAgentRow(r)&&<div style={{ marginBottom:3 }}><span style={{ background:"#FEF3C7", color:"#92400E", border:"1px solid #FDE68A", borderRadius:10, padding:"1px 6px", fontSize:9, fontWeight:700 }}>Inactive</span></div>}
                     <select value={r.agentId&&r.agentId._id?r.agentId._id:(r.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
                       try{var upd=await apiFetch("/api/daily-requests/"+rid,"PUT",{agentId:newAgent},p.token);setRequests(function(prev){return prev.map(function(x){return gid(x)===rid?upd:x;});});if(selected&&gid(selected)===rid)setSelected(upd);}catch(ex){}
