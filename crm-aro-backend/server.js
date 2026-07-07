@@ -9399,6 +9399,15 @@ app.get("/api/leads", auth, async function(req, res) {
       query.rotationCount = { $in: [0, null] };
       query.agentId = { $ne: null };
     }
+    // "Inactive Agent" filter (admin/sales_admin only) — leads whose CURRENT
+    // holder (top-level agentId) is a deactivated user. Prefetch the small set
+    // of inactive user ids and AND it in via $and so the role-scope $or is only
+    // ever NARROWED, never widened (same pattern as the status/agent filters
+    // below). Uses top-level agentId (current holder), matching /api/leads/counts.
+    if (req.query.inactiveAgent === "true" && (role === "admin" || role === "sales_admin")) {
+      var inactiveUserIds = await User.find({ active: false }).distinct("_id");
+      query.$and = (query.$and || []).concat([{ agentId: { $in: inactiveUserIds } }]);
+    }
     // Status filter — lets a Leads-page status chip (Meeting Done, Hot Case,
     // Call Back, Not Interested, …) fetch ONLY that status's leads directly
     // from the DB instead of in-memory-filtering the paginated bootstrap slice
@@ -10258,6 +10267,12 @@ app.get("/api/leads/counts", auth, async function(req, res) {
     if (excludeSource) baseInWindowAnd.push({ source: { $ne: excludeSource } });
     if (sourceOnly)    baseInWindowAnd.push({ source: sourceOnly });
 
+    // "Inactive Agent" tab count — leads whose CURRENT holder (top-level
+    // agentId) is a deactivated user. Same small-set prefetch + $in the list
+    // endpoint uses, folded into baseInWindowAnd so scope/archived/source all
+    // apply → byte-consistent with GET /api/leads?inactiveAgent=true.
+    var inactiveIds = await User.find({ active: false }).distinct("_id");
+
     var interestedSet = ["Interested", "HotCase", "Hot Case", "Potential", "MeetingDone", "Meeting Done", "DoneDeal"];
 
     var cbCondInWindow = { $type: "string", $gt: "" };
@@ -10311,7 +10326,9 @@ app.get("/api/leads/counts", auth, async function(req, res) {
           { status: { $ne: "Deal Cancelled" } },
           { eoiStatus: "EOI Cancelled" }
         ]}
-      ]) })
+      ]) }),
+      // Inactive Agent — current holder (top-level agentId) is a deactivated user.
+      Lead.countDocuments({ $and: baseInWindowAnd.concat([{ agentId: { $in: inactiveIds } }]) })
     ]);
 
     // STEP 4-5 X2 — extended breakdowns for adminMetrics migration:
@@ -10386,6 +10403,7 @@ app.get("/api/leads/counts", auth, async function(req, res) {
       overdueCallbacks:     counts[5],
       rotationStoppedCount: counts[6],
       notRotatedCount:      counts[7],
+      inactiveAgentCount:   counts[8],
       byStatus:   byStatus,
       bySource:   bySource,
       byCampaign: byCampaign

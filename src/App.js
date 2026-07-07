@@ -5599,6 +5599,13 @@ var LeadsPage = function(p) {
   // selected (with the same exclusions), so every downstream filter + the tab
   // counts operate on the agent's full set instead of the bootstrap slice.
   var [agentLeads, setAgentLeads] = useState(null);
+  // "Inactive Agent" filter — leads whose CURRENT holder is a deactivated user.
+  // The page is server-paginated, so a toggle drives a targeted fetch
+  // (inactiveLeads, ?inactiveAgent=true) that becomes the base for accuracy +
+  // Bulk Reassign select-all. Admin/sales_admin only (matches the No Agent
+  // toggle + the BE gate). null = not loaded; [] = loaded, no matches.
+  var [inactiveAgentFilter, setInactiveAgentFilter] = useState(false);
+  var [inactiveLeads, setInactiveLeads] = useState(null);
   // Status chip — targeted fetch when an ordinary status tab is active.
   // Mirrors the rotation_stopped / not_rotated effects above but for the
   // status tabs, and for ALL roles (those chips are visible to everyone, so
@@ -5660,6 +5667,37 @@ var LeadsPage = function(p) {
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[agentFilter, p.token, p.cbBust]);
+  // Inactive-agent filter — targeted fetch (admin/SA only via BE ?inactiveAgent=
+  // true). Mirrors the agentLeads effect: the full in-scope list of leads whose
+  // current holder is deactivated, bypassing the paginated p.leads bootstrap so
+  // the toggle count + Bulk Reassign select-all see every match (up to limit=2000).
+  useEffect(function(){
+    if (!inactiveAgentFilter) {
+      if (inactiveLeads !== null) setInactiveLeads(null);
+      return;
+    }
+    if (!p.token) return;
+    var cancelled = false;
+    apiFetch("/api/leads?inactiveAgent=true&fields=summary&limit=2000", "GET", null, p.token)
+      .then(function(r){
+        if (cancelled) return;
+        var rows = (r && Array.isArray(r.data)) ? r.data : (Array.isArray(r) ? r : []);
+        setInactiveLeads(rows);
+      })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[inactiveAgentFilter, p.token, p.cbBust]);
+  // Deactivated-agent id set (from p.users) + row predicate — mirrors DailyRequestsPage.
+  var inactiveAgentIds = useMemo(function(){
+    var s = {};
+    (p.users||[]).forEach(function(u){ if(u && u.active===false) s[String(gid(u))]=true; });
+    return s;
+  }, [p.users]);
+  var isInactiveAgentRow = function(l){
+    var a = l.agentId && l.agentId._id ? String(l.agentId._id) : (l.agentId ? String(l.agentId) : "");
+    return !!(a && inactiveAgentIds[a]);
+  };
   // Phase A4-prep (2026-05-05): Source + Campaign filters for cohort
   // identification before the bulk source editor (next slice). Admin /
   // sales_admin only — gated in the UI. Apply additively on top of the
@@ -6060,7 +6098,9 @@ var LeadsPage = function(p) {
     // p.leads when no agent is selected OR during the brief load window
     // (agentLeads === null), where the client-side intersect at 5270 still
     // narrows the bootstrap slice correctly.
-    var src = (agentFilter && agentLeads !== null) ? agentLeads : p.leads;
+    var src = (inactiveAgentFilter && inactiveLeads !== null) ? inactiveLeads
+            : (agentFilter && agentLeads !== null) ? agentLeads
+            : p.leads;
     return src.filter(function(l){
       if(l.archived) return false;
       var matchSource = isReq?l.source==="Daily Request":l.source!=="Daily Request";
@@ -6076,7 +6116,7 @@ var LeadsPage = function(p) {
       return true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p.leads, agentLeads, agentFilter, isReq, p.cu && p.cu.role]);
+  }, [p.leads, agentLeads, agentFilter, inactiveLeads, inactiveAgentFilter, isReq, p.cu && p.cu.role]);
   // Memoized for the same reason as `allVisible` above. Without this,
   // every parent re-render (every cbBust tick, every leadsPageCounts
   // setState) recomputed and re-sorted the array, handing Virtuoso a
@@ -6312,6 +6352,13 @@ var LeadsPage = function(p) {
       }
     }
   }
+  // Inactive Agent — narrow to leads whose CURRENT holder is deactivated.
+  // Applied after the branch selection (like the date-range chip below) so it
+  // composes with every tab. When active, the base set is the inactiveLeads
+  // targeted fetch (via allVisible) for accuracy; this predicate keeps it exact
+  // and lets it layer on top of a status/search/date filter. isInactiveAgentRow
+  // is off unless the toggle is on, so this is a no-op otherwise.
+  if (inactiveAgentFilter) filtered = filtered.filter(isInactiveAgentRow);
   // Date-range chips. For the Important tab the chip filters by the
   // qualifying-mark date; for every other tab it filters by the lead's most
   // recent activity time.
@@ -6348,7 +6395,7 @@ var LeadsPage = function(p) {
   });
   return filtered;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allVisible, p.leadFilter, p.specialFilter, p.activities, p.search, rsLeads, nrLeads, statusLeads, lockedOnly, vipFilter, noAgentFilter, agentFilter, sourceFilter, campaignMode, campaignText, dateRange, sortBy]);
+  }, [allVisible, p.leadFilter, p.specialFilter, p.activities, p.search, rsLeads, nrLeads, statusLeads, lockedOnly, vipFilter, noAgentFilter, agentFilter, inactiveAgentFilter, inactiveAgentIds, sourceFilter, campaignMode, campaignText, dateRange, sortBy]);
 
   // Fix A — clear p.initSelected after consuming it (matches EOI/Deals/DR
   // patterns at L9246 / L9903 / L10911). Without this, the deep-link state
@@ -6963,7 +7010,21 @@ var LeadsPage = function(p) {
           <option value="">👤 All Agents</option>
           {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
         </select>}
-        {isOnlyAdmin&&<button onClick={function(){setLockedOnly(false);setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
+        {isOnlyAdmin&&<button onClick={function(){setLockedOnly(false);setInactiveAgentFilter(false);setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
+        {isOnlyAdmin&&<button onClick={function(){
+          var turningOn = !inactiveAgentFilter;
+          setInactiveAgentFilter(turningOn);
+          if (turningOn) {
+            // Turning ON — clear the competing base/scope filters (mirror
+            // Locked Only / No Agent) so the view is a clean "leads owned by a
+            // deactivated agent" set. Status/search/date can be layered after.
+            setLockedOnly(false);
+            p.setFilter("all");
+            setAgentFilter("");
+            setNoAgentFilter(false);
+            setVipFilter(false);
+          }
+        }} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:inactiveAgentFilter?"#D97706":"#E8ECF1", background:inactiveAgentFilter?"#FEF3C7":"#fff", color:inactiveAgentFilter?"#92400E":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }} title="Show only leads whose assigned agent is deactivated">⛔ Inactive Agent {(function(){var c=(leadsPageCounts&&typeof leadsPageCounts.inactiveAgentCount==="number")?leadsPageCounts.inactiveAgentCount:(inactiveLeads!==null?inactiveLeads.length:allVisible.filter(isInactiveAgentRow).length);return "("+c+")";})()}{inactiveAgentFilter?" ✓":""}</button>}
         <button onClick={function(){setLockedOnly(false);setVipFilter(!vipFilter);}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:vipFilter?"#F59E0B":"#E8ECF1", background:vipFilter?"#FEF3C7":"#fff", color:vipFilter?"#B45309":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>⭐ VIP Only {vipFilter?"✓":""}</button>
         {isOnlyAdmin&&<button onClick={function(){
           if (!lockedOnly) {
@@ -6971,6 +7032,7 @@ var LeadsPage = function(p) {
             p.setFilter("all");
             setAgentFilter("");
             setNoAgentFilter(false);
+            setInactiveAgentFilter(false);
             setVipFilter(false);
             setSortBy("lastActivity");
             setSourceFilter("");
@@ -7100,7 +7162,7 @@ var LeadsPage = function(p) {
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:16, fontWeight:700, color:isVIP?C.accent:C.text, marginBottom:3 }}>{isVIP?"⭐ ":""}{lead.name}</div>
                 <div style={{ fontSize:12, fontWeight:700, color:C.text, direction:"ltr" }}><PhoneCell phone={lead.phone}/></div>
-                {(function(){var agName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}</div>:null;})()}
+                {(function(){var agName=lead.agentId&&lead.agentId.name?lead.agentId.name:"";return agName?<div style={{ fontSize:11, color:C.accent, fontWeight:600, marginTop:2 }}>👤 {agName}{isInactiveAgentRow(lead)&&<span style={{ marginLeft:6, background:"#FEF3C7", color:"#92400E", border:"1px solid #FDE68A", borderRadius:10, padding:"1px 6px", fontSize:9, fontWeight:700 }}>Inactive</span>}</div>:null;})()}
               </div>
               <span style={{ background:so.bg, color:so.color, padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:700, whiteSpace:"nowrap", marginLeft:8 }}>{so.label}</span>
             </div>
@@ -7249,6 +7311,7 @@ var LeadsPage = function(p) {
                   {!p.isMobile&&<td style={{ padding:"10px 12px", fontSize:13, fontWeight:700, color:C.text, textAlign:"left", maxWidth:220, wordBreak:"break-word", whiteSpace:"normal", lineHeight:1.4 }}>{lf&&lf.text?<Fragment>{lf.text}{lf.agentName&&p.cu.role!=="sales"&&<div style={{ fontSize:10, fontWeight:500, color:C.textLight, marginTop:3 }}>— by {lf.agentName}</div>}</Fragment>:<span style={{color:"#CBD5E1", fontWeight:400}}>-</span>}</td>}
                   {!p.isMobile&&isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, color:C.textLight, textAlign:"left", whiteSpace:"nowrap" }}>{lead.source}</td>}
                   {isAdmin&&<td style={{ padding:"10px 12px", fontSize:11, whiteSpace:"nowrap" }} onClick={function(e){e.stopPropagation();}}>
+                    {isInactiveAgentRow(lead)&&<div style={{ marginBottom:3 }}><span style={{ background:"#FEF3C7", color:"#92400E", border:"1px solid #FDE68A", borderRadius:10, padding:"1px 6px", fontSize:9, fontWeight:700 }}>Inactive</span></div>}
                     <select value={lead.agentId&&lead.agentId._id?lead.agentId._id:(lead.agentId||"")} onChange={async function(e){
                       var newAgent=e.target.value;
                       if(!newAgent)return;
