@@ -289,7 +289,7 @@ var isAdSource = function(s){ return AD_SOURCES.indexOf(String(s || "")) !== -1;
 // DailyRequest depends on that exact value, so leaving the data as-is
 // is correct; hiding from the dropdown just removes the confusing
 // "Daily Request (legacy)" entry from filters and edit modals.
-var HIDDEN_LEGACY_SOURCES = ["Daily Request"];
+var HIDDEN_LEGACY_SOURCES = ["Daily Request", "Daily Request → Lead"];
 
 // Source filter dropdown — top-level memoized component. Lifted out of
 // LeadsPage so frequent WS-driven parent re-renders (lead_updated etc.)
@@ -14410,6 +14410,11 @@ var DailyRequestsPage = function(p) {
   var [selected2,setSelected2]=useState([]);
   var [showBulk,setShowBulk]=useState(false);
   var [bulkAgent,setBulkAgent]=useState("");
+  // "Move to Leads as Fresh" (2026-07-08) — bulk-convert selected No-Agent /
+  // Inactive-Agent daily requests into fresh New Leads that enter rotation.
+  var [showMove,setShowMove]=useState(false);
+  var [moving,setMoving]=useState(false);
+  var [moveResult,setMoveResult]=useState(null);
   // Admin-only DR edit modal (mirrors LeadsPage side-panel edit). Owner role
   // only — gated on p.cu.role === "admin" at the side-panel button below.
   var [editReq,setEditReq]=useState(null);
@@ -14846,6 +14851,7 @@ var DailyRequestsPage = function(p) {
     <div style={{ display:"flex", gap:8, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:12 }}><Plus size={13}/> Add Number</Btn>
       {isOnlyAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> Bulk Reassign {selected2.length>0?"("+selected2.length+")":""}</Btn>}
+      {isOnlyAdmin&&(filterStatus==="__noAgent"||filterStatus==="__inactiveAgent")&&selected2.length>0&&<Btn outline onClick={function(){setShowMove(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}>➡️ Move to Leads as Fresh ({selected2.length})</Btn>}
       {p.cu.role==="admin"&&selected2.length>0&&<Btn outline onClick={async function(){
         if(!window.confirm("Archive "+selected2.length+" requests?")) return;
         var ids=[...selected2];
@@ -15042,7 +15048,7 @@ var DailyRequestsPage = function(p) {
           {filtered.length === 0 ? (
             <table style={{ width:"100%", borderCollapse:"collapse", minWidth:640 }}>
               <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-                {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" disabled/></th>}
+                {isOnlyAdmin&&<th style={{ padding:"10px 8px", width:32 }}><input type="checkbox" disabled/></th>}
                 {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
               </tr></thead>
               <tbody>
@@ -15057,7 +15063,7 @@ var DailyRequestsPage = function(p) {
               endReached={function(){ if (p.loadMoreDRs) p.loadMoreDRs(); }}
               fixedHeaderContent={function(){
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-                  {p.cu.role==="admin"&&<th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
+                  {isOnlyAdmin&&<th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
                   {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap", background:"#F8FAFC" }}>{h}</th>;})}
                 </tr>;
               }}
@@ -15065,7 +15071,7 @@ var DailyRequestsPage = function(p) {
                 var rid=gid(r); var so=sc.find(function(s){return s.value===r.status;})||sc[0];
                 var ci=callbackColor(r.callbackTime); var isChk=selected2.includes(rid);
                 return <Fragment>
-                  {p.cu.role==="admin"&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}><input type="checkbox" checked={isChk} onChange={function(e){setSelected2(function(prev){return e.target.checked?prev.concat(rid):prev.filter(function(x){return x!==rid;});});}}/></td>}
+                  {isOnlyAdmin&&<td style={{ padding:"10px 8px" }} onClick={function(e){e.stopPropagation();}}><input type="checkbox" checked={isChk} onChange={function(e){setSelected2(function(prev){return e.target.checked?prev.concat(rid):prev.filter(function(x){return x!==rid;});});}}/></td>}
                   <td style={{ padding:"10px 12px" }}><div style={{ fontSize:13, fontWeight:600 }}>{r.name}</div><div style={{ fontSize:10, color:C.textLight }}>{r.email}</div></td>
                   <td style={{ padding:"10px 12px", fontSize:12, direction:"ltr" }}>
                     <PhoneCell phone={r.phone}/>{r.phone2&&<div style={{ fontSize:10, color:C.textLight }}><PhoneCell phone={r.phone2}/></div>}
@@ -15272,6 +15278,66 @@ var DailyRequestsPage = function(p) {
           </div>
         </div>
       }
+    </Modal>
+
+    {/* Move to Leads as Fresh — confirmation */}
+    <Modal show={showMove} onClose={function(){ if(!moving) setShowMove(false); }} title={"Move to Leads as Fresh"}>
+      {selected2.length===0
+        ?<div style={{ padding:"16px", textAlign:"center", color:C.danger, fontSize:13 }}>⚠️ Please select requests first using the checkboxes</div>
+        :<div>
+          <div style={{ fontSize:13, color:C.text, lineHeight:1.6, marginBottom:12 }}>
+            <b>{selected2.length}</b> daily request{selected2.length>1?"s":""} will be converted into <b>fresh New Leads</b> with <b>no agent</b> and enter the rotation engine (auto-distributed to active agents).
+            <ul style={{ margin:"10px 0 0", paddingInlineStart:18, color:C.textLight, fontSize:12 }}>
+              <li>The original daily request is archived (removed from this page).</li>
+              <li>Numbers that already exist as a lead are skipped and reported.</li>
+              <li>Closed requests (deal / EOI) are skipped.</li>
+            </ul>
+          </div>
+          {selected2.length>200&&<div style={{ padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12, marginBottom:10 }}>⚠️ Max 200 per batch — please select 200 or fewer.</div>}
+          <div style={{ display:"flex", gap:10, marginTop:4 }}>
+            <Btn loading={moving} disabled={selected2.length>200} onClick={async function(){
+              setMoving(true);
+              try{
+                var resp=await apiFetch("/api/daily-requests/move-to-leads","POST",{ids:selected2},p.token,p.csrfToken);
+                // Drop moved (created) + already-archived DRs from the list immediately.
+                var movedIds={};
+                (resp.created||[]).forEach(function(x){ movedIds[String(x.drId)]=true; });
+                (resp.skippedClosed||[]).forEach(function(x){ if(x.reason==="archived"||x.reason==="already moved") movedIds[String(x.drId)]=true; });
+                setRequests(function(prev){return prev.filter(function(r){return !movedIds[String(gid(r))];});});
+                if(selected&&movedIds[String(gid(selected))])setSelected(null);
+                setSelected2([]);
+                setShowMove(false);
+                setMoveResult(resp);
+              }catch(e){ alert(e.message); }
+              setMoving(false);
+            }} style={{ flex:1 }}>➡️ Move {selected2.length} to Leads</Btn>
+            <Btn outline disabled={moving} onClick={function(){setShowMove(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
+          </div>
+        </div>
+      }
+    </Modal>
+
+    {/* Move to Leads as Fresh — result report */}
+    <Modal show={!!moveResult} onClose={function(){setMoveResult(null);}} title={"Move to Leads — Result"}>
+      {moveResult&&(function(){
+        var c=moveResult.counts||{};
+        var row=function(label,val,color){ return <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #F0F2F5", fontSize:13 }}><span style={{ color:C.textLight }}>{label}</span><b style={{ color:color||C.text }}>{val}</b></div>; };
+        return <div>
+          {row("✅ Created as fresh leads", c.created||0, C.success)}
+          {row("⏭️ Skipped — duplicate phone", c.skippedDuplicates||0, C.warning)}
+          {row("⏭️ Skipped — closed (deal / EOI)", c.skippedClosed||0, C.textLight)}
+          {row("❌ Failed", c.failed||0, (c.failed>0?C.danger:C.textLight))}
+          {moveResult.skippedDuplicates&&moveResult.skippedDuplicates.length>0&&<div style={{ marginTop:12 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.textLight, marginBottom:6 }}>Skipped duplicate numbers (already a lead)</div>
+            <div style={{ maxHeight:180, overflowY:"auto", background:"#F8FAFC", borderRadius:8, padding:"6px 10px" }}>
+              {moveResult.skippedDuplicates.map(function(x,i){ return <div key={i} style={{ fontSize:12, direction:"ltr", textAlign:"left", padding:"3px 0", color:C.text }}>{x.phone}</div>; })}
+            </div>
+          </div>}
+          <div style={{ marginTop:14 }}>
+            <Btn onClick={function(){setMoveResult(null);}} style={{ width:"100%" }}>Close</Btn>
+          </div>
+        </div>;
+      })()}
     </Modal>
   </div>;
 };
