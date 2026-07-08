@@ -12,6 +12,7 @@
 - **NEVER modify .env files** without explicit user approval
 - Backend root directory on Railway is `/crm-aro-backend`
 - Frontend root directory on Vercel is `/` (root of repo)
+- **NEVER add a TTL index on `Lead.expiresAt`** (no `expireAfterSeconds` on that field, in code or directly in Atlas). It is a dormant/vestigial field — nothing reads it. Historically it was written as `now + 30 days` on almost every lead, so a TTL index would mass-delete thousands of leads. As of 2026-07-08 the two write sites (`POST /api/leads`, `POST /api/leads/inbound`) no longer set it, and `unset-lead-expiresat.js` clears the legacy values. Leave it unset; do not "wire up" a lead-expiry TTL without an explicit, reviewed retention decision.
 
 ## Backend Structure (`/crm-aro-backend`)
 - `server.js` - main Express server, all API routes

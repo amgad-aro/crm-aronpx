@@ -11267,7 +11267,10 @@ app.post("/api/leads", auth, async function(req, res) {
         by:        (req.user && req.user.name) ? req.user.name : "System",
         date:      new Date()
       }] : [],
-      expiresAt:        new Date(Date.now() + 30*24*60*60*1000),
+      // expiresAt intentionally NOT set (2026-07-08): the field is dormant — no
+      // TTL index backs it and nothing reads it. Writing now+30d turned it into a
+      // mass-delete footgun the moment anyone added a TTL index on Lead.expiresAt.
+      // See the CLAUDE.md guard-rail. (unset-lead-expiresat.js clears the legacy values.)
       // Phase R-13.1 — globalStatus must mirror the initialStatus, otherwise a
       // POST creating a lead directly with status="DoneDeal" leaves
       // globalStatus="active", which makes the lead eligible for auto-rotation
@@ -11433,7 +11436,8 @@ app.post("/api/leads/inbound", async function(req, res) {
       lastActivityTime: new Date(),
       archived: false,
       isVIP: false,
-      expiresAt: new Date(Date.now() + 30*24*60*60*1000),
+      // expiresAt intentionally NOT set — dormant field, see POST /api/leads note
+      // above and the CLAUDE.md guard-rail (never add a TTL index on Lead.expiresAt).
       globalStatus: "active",
       manualWindowExpiresAt: windowMins > 0 ? new Date(Date.now() + windowMins*60000) : null
     });
