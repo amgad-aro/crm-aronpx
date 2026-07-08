@@ -17255,7 +17255,14 @@ app.post("/api/daily-requests/move-to-leads", auth, salesAdminOnly, async functi
     drDocs.forEach(function(d){ drById.set(String(d._id), d); });
 
     var created = [], skippedDuplicates = [], skippedClosed = [];
+    var now = new Date();
 
+    // ---- Pass 1 — DECIDE (pure in-memory, ZERO awaits) ----
+    // Partition every requested DR into create/skip buckets and build the lead
+    // doc for each survivor with a PRE-GENERATED _id, so Pass 2 can archive+link
+    // the DR without waiting on the insert. dupMap is fed as we go, so two selected
+    // DRs sharing a phone resolve deterministically (first creates, second skips).
+    var toCreate = []; // [{ drId, drObjId, phone, name, leadId, leadDoc }]
     for (var i = 0; i < validIds.length; i++) {
       var id = validIds[i];
       var r = drById.get(id);
@@ -17274,7 +17281,8 @@ app.post("/api/daily-requests/move-to-leads", auth, salesAdminOnly, async functi
           skippedClosed.push({ drId: id, phone: r.phone, reason: "closed (deal/EOI)" });
           continue;
         }
-        // Guard 3 — duplicate phone against existing non-DR leads (skip + report).
+        // Guard 3 — duplicate phone against existing non-DR leads OR an earlier
+        // create in THIS batch (skip + report).
         if (phoneKey && phoneKey.length >= 7 && dupMap.has(phoneKey)) {
           skippedDuplicates.push({ drId: id, phone: r.phone, existingLeadId: String(dupMap.get(phoneKey)) });
           continue;
@@ -17288,48 +17296,77 @@ app.post("/api/daily-requests/move-to-leads", auth, salesAdminOnly, async functi
         if (r.notes) noteParts.push(String(r.notes));
         if (r.area) noteParts.push("Area: " + String(r.area));
         if (r.lastFeedback) noteParts.push("Prior feedback: " + String(r.lastFeedback));
-        var now = new Date();
 
-        var newLead = await Lead.create({
-          name: r.name,
-          phone: r.phone,
-          phone2: r.phone2 || "",
-          email: r.email || "",
-          budget: r.budget || "",
-          unitType: r.unitType || r.propertyType || "",
-          notes: noteParts.join(" | "),
-          status: "NewLead",
-          source: CONVERTED_LEAD_SOURCE,
-          fieldsV2: true,
-          agentId: null,
-          assignments: [],
-          lastActivityTime: now,
-          archived: false,
-          isVIP: false,
-          globalStatus: "active",
-          // PAST timestamp → next 60s sweepExpiredQueue tick auto-assigns it to a
-          // Tier-1 active sales/team_leader (inactive agents excluded).
-          manualWindowExpiresAt: new Date(now.getTime() - 1000),
-          history: [{
-            event: "converted_from_dr",
-            description: "Converted to a fresh New Lead from Daily Request " + String(r._id),
-            byUser: req.user && req.user.name ? req.user.name : (req.user ? String(req.user.id) : ""),
-            toAgent: "",
-            timestamp: now
-          }]
+        var newLeadId = new mongoose.Types.ObjectId();
+        toCreate.push({
+          drId: id, drObjId: r._id, phone: r.phone, name: r.name, leadId: newLeadId,
+          leadDoc: {
+            _id: newLeadId,
+            name: r.name,
+            phone: r.phone,
+            phone2: r.phone2 || "",
+            email: r.email || "",
+            budget: r.budget || "",
+            unitType: r.unitType || r.propertyType || "",
+            notes: noteParts.join(" | "),
+            status: "NewLead",
+            source: CONVERTED_LEAD_SOURCE,
+            fieldsV2: true,
+            agentId: null,
+            assignments: [],
+            lastActivityTime: now,
+            archived: false,
+            isVIP: false,
+            globalStatus: "active",
+            // PAST timestamp → next 60s sweepExpiredQueue tick auto-assigns it to a
+            // Tier-1 active sales/team_leader (inactive agents excluded).
+            manualWindowExpiresAt: new Date(now.getTime() - 1000),
+            history: [{
+              event: "converted_from_dr",
+              description: "Converted to a fresh New Lead from Daily Request " + String(r._id),
+              byUser: req.user && req.user.name ? req.user.name : (req.user ? String(req.user.id) : ""),
+              toAgent: "",
+              timestamp: now
+            }]
+          }
         });
-
-        // Retire the DR: archive + stamp linkage. Preserves history; removes it from
-        // DR lists/counts and the source-roi / intake double-count.
-        await DailyRequest.updateOne({ _id: r._id }, { $set: { archived: true, movedToLeadId: newLead._id, movedAt: now } });
-
         // Feed the dedup index so a later selected DR sharing this phone skips.
-        if (phoneKey && phoneKey.length >= 7 && !dupMap.has(phoneKey)) dupMap.set(phoneKey, newLead._id);
-
-        created.push({ drId: id, leadId: String(newLead._id), phone: r.phone, name: r.name });
+        if (phoneKey && phoneKey.length >= 7) dupMap.set(phoneKey, newLeadId);
       } catch (itemErr) {
         failed.push({ drId: id, error: itemErr.message });
       }
+    }
+
+    // ---- Pass 2 — WRITE (batched: ~3 round-trips total, not ~2 per item) ----
+    // This is the fix for the 30s client timeout: 200 items used to cost ~400
+    // sequential awaits (Lead.create + DailyRequest.updateOne each). Now it is one
+    // insertMany + one id-existence check + one bulkWrite, finishing in ~1-2s.
+    if (toCreate.length > 0) {
+      var allLeadIds = toCreate.map(function(x){ return x.leadId; });
+      try {
+        // ordered:false → the driver inserts every valid doc and does NOT stop at
+        // the first failure. We do not trust its return/throw shape across driver
+        // versions; the id-existence query below is the source of truth.
+        await Lead.insertMany(toCreate.map(function(x){ return x.leadDoc; }), { ordered: false });
+      } catch (bulkErr) {
+        console.error("move-to-leads insertMany partial error (non-fatal, reconciled below):", bulkErr && bulkErr.message);
+      }
+      // Source of truth for which leads actually landed (partial-failure safe).
+      var insertedRows = await Lead.find({ _id: { $in: allLeadIds } }).select("_id").lean();
+      var insertedIdSet = new Set(insertedRows.map(function(l){ return String(l._id); }));
+
+      // Archive + stamp ONLY the DRs whose lead actually inserted; report the rest
+      // as failed and leave their DR untouched — never archive an orphan DR.
+      var drOps = [];
+      toCreate.forEach(function(x){
+        if (insertedIdSet.has(String(x.leadId))) {
+          drOps.push({ updateOne: { filter: { _id: x.drObjId }, update: { $set: { archived: true, movedToLeadId: x.leadId, movedAt: now } } } });
+          created.push({ drId: x.drId, leadId: String(x.leadId), phone: x.phone, name: x.name });
+        } else {
+          failed.push({ drId: x.drId, error: "lead insert failed" });
+        }
+      });
+      if (drOps.length > 0) await DailyRequest.bulkWrite(drOps, { ordered: false });
     }
 
     // Nudge other clients' Leads pages to refetch (the DR page refetch is emitted by

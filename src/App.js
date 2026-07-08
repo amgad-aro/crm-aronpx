@@ -14422,6 +14422,7 @@ var DailyRequestsPage = function(p) {
   var [showMove,setShowMove]=useState(false);
   var [moving,setMoving]=useState(false);
   var [moveResult,setMoveResult]=useState(null);
+  var [moveErr,setMoveErr]=useState("");
   // Admin-only DR edit modal (mirrors LeadsPage side-panel edit). Owner role
   // only — gated on p.cu.role === "admin" at the side-panel button below.
   var [editReq,setEditReq]=useState(null);
@@ -14858,7 +14859,7 @@ var DailyRequestsPage = function(p) {
     <div style={{ display:"flex", gap:8, marginBottom:12, flexWrap:"wrap", alignItems:"center" }}>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:12 }}><Plus size={13}/> Add Number</Btn>
       {isOnlyAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> Bulk Reassign {selected2.length>0?"("+selected2.length+")":""}</Btn>}
-      {isOnlyAdmin&&(filterStatus==="__noAgent"||filterStatus==="__inactiveAgent")&&selected2.length>0&&<Btn outline onClick={function(){setShowMove(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}>➡️ Move to Leads as Fresh ({selected2.length})</Btn>}
+      {isOnlyAdmin&&(filterStatus==="__noAgent"||filterStatus==="__inactiveAgent")&&selected2.length>0&&<Btn outline onClick={function(){setMoveErr("");setShowMove(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.success, borderColor:C.success }}>➡️ Move to Leads as Fresh ({selected2.length})</Btn>}
       {p.cu.role==="admin"&&selected2.length>0&&<Btn outline onClick={async function(){
         if(!window.confirm("Archive "+selected2.length+" requests?")) return;
         var ids=[...selected2];
@@ -15294,7 +15295,7 @@ var DailyRequestsPage = function(p) {
     </Modal>
 
     {/* Move to Leads as Fresh — confirmation */}
-    <Modal show={showMove} onClose={function(){ if(!moving) setShowMove(false); }} title={"Move to Leads as Fresh"}>
+    <Modal show={showMove} onClose={function(){ if(!moving){ setShowMove(false); setMoveErr(""); } }} title={"Move to Leads as Fresh"}>
       {selected2.length===0
         ?<div style={{ padding:"16px", textAlign:"center", color:C.danger, fontSize:13 }}>⚠️ Please select requests first using the checkboxes</div>
         :<div>
@@ -15308,8 +15309,8 @@ var DailyRequestsPage = function(p) {
           </div>
           {selected2.length>200&&<div style={{ padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12, marginBottom:10 }}>⚠️ Max 200 per batch — please select 200 or fewer.</div>}
           <div style={{ display:"flex", gap:10, marginTop:4 }}>
-            <Btn loading={moving} disabled={selected2.length>200} onClick={async function(){
-              setMoving(true);
+            <Btn loading={moving} disabled={selected2.length>200||moving} onClick={async function(){
+              setMoving(true); setMoveErr("");
               try{
                 var resp=await apiFetch("/api/daily-requests/move-to-leads","POST",{ids:selected2},p.token,p.csrfToken);
                 // Drop moved (created) + already-archived DRs from the list immediately.
@@ -15321,11 +15322,24 @@ var DailyRequestsPage = function(p) {
                 setSelected2([]);
                 setShowMove(false);
                 setMoveResult(resp);
-              }catch(e){ alert(e.message); }
+              }catch(e){
+                // Show the error IN the modal (no raw browser alert). The conversion
+                // is idempotent — already-moved DRs are skipped — so a timeout/drop is
+                // safe: the backend may have finished; refreshing + re-running never
+                // duplicates. Say that instead of a scary raw message.
+                var msg=(e&&e.message)||"Something went wrong";
+                if(/tim(e|ed)\s*out|timeout/i.test(msg)){
+                  setMoveErr("This is taking longer than expected. Some or all of the selected numbers may already have been moved — close this, refresh the page, and re-run on any rows that remain. Nothing gets duplicated.");
+                }else{
+                  setMoveErr(msg);
+                }
+              }
               setMoving(false);
             }} style={{ flex:1 }}>➡️ Move {selected2.length} to Leads</Btn>
-            <Btn outline disabled={moving} onClick={function(){setShowMove(false);}} style={{ flex:1 }}>{t.cancel}</Btn>
+            <Btn outline disabled={moving} onClick={function(){setShowMove(false);setMoveErr("");}} style={{ flex:1 }}>{t.cancel}</Btn>
           </div>
+          {moving&&<div style={{ marginTop:10, fontSize:12, color:C.textLight, display:"flex", alignItems:"center", gap:6 }}>⏳ Processing {selected2.length} request{selected2.length>1?"s":""}… this can take a few seconds for large batches. Please keep this window open.</div>}
+          {moveErr&&<div style={{ marginTop:10, padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12, lineHeight:1.5 }}>{moveErr}</div>}
         </div>
       }
     </Modal>
