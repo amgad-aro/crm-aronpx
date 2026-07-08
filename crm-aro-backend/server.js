@@ -1509,7 +1509,15 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   preEoiStatus:{type:String,default:""},
   eoiStatus:{type:String,default:""},
   preDealStatus:{type:String,default:""},
-  dealStatus:{type:String,default:""}
+  dealStatus:{type:String,default:""},
+  // "Move to Leads as Fresh" (2026-07-08) — stamped when this DR was bulk-
+  // converted into a fresh New Lead via POST /api/daily-requests/move-to-leads.
+  // archived is ALSO flipped true on conversion (drops it from DR lists/counts
+  // and out of the source-roi / campaigns-intake double-count). movedToLeadId is
+  // the resulting Lead; movedAt the conversion time. Both null/unset on every DR
+  // that was never moved.
+  movedToLeadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead",default:null},
+  movedAt:{type:Date,default:null}
 },{timestamps:true}));
 
 // ===== CLOSING COMPANY (Feature B) =====
@@ -17168,6 +17176,176 @@ app.put("/api/daily-requests/bulk-reassign", auth, adminOnly, async function(req
     // upserts in place.
     var updated = await DailyRequest.find({ _id: { $in: leadIds } }).populate("agentId", "name title").lean();
     res.json({ ok: true, count: leadIds.length, drs: updated });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===== "MOVE TO LEADS AS FRESH" — bulk convert Daily Requests → fresh New Leads =====
+// Owner feature (2026-07-08). From the DR page's "No Agent" / "Inactive Agent"
+// tabs, admin/sales_admin bulk-convert selected daily-request numbers into brand
+// new Leads (status NewLead, agentId null) so they enter the auto-rotation engine
+// and get redistributed to ACTIVE agents. Registered BEFORE /:id so Express does
+// not ObjectId-cast "move-to-leads".
+//
+// Locked design decisions (investigation 2026-07-08):
+//  - source = "Daily Request → Lead" (MUST be ≠ "Daily Request": that exact value
+//    is hidden across the app via excludeSource and is the DR↔EOI/DoneDeal mirror
+//    linkage key {phone, source:"Daily Request"} — reusing it would collide). The
+//    frontend adds this same literal to HIDDEN_LEGACY_SOURCES so it never appears
+//    as a dropdown option.
+//  - duplicates = skip + report, matched by LAST-10-DIGIT SUFFIX (same normalization
+//    as POST /api/leads/inbound ~L11373) against non-archived, non-DR leads. Exact
+//    matching badly under-counts (DR phones are stored raw, un-normalized).
+//  - original DR retired = archived:true + movedToLeadId/movedAt stamp (reversible;
+//    drops it from DR lists/counts AND from the source-roi/intake double-count).
+//  - rotation entry = manualWindowExpiresAt set to a PAST Date so the 60s
+//    sweepExpiredQueue → autoAssignQueuedLead assigns it on the next tick. (The
+//    5-min sweepAutoRotation only RE-rotates already-assigned leads — it never
+//    picks up an unassigned lead.)
+app.post("/api/daily-requests/move-to-leads", auth, salesAdminOnly, async function(req, res) {
+  try {
+    var CONVERTED_LEAD_SOURCE = "Daily Request → Lead"; // must match FE HIDDEN_LEGACY_SOURCES
+    var ids = req.body && Array.isArray(req.body.ids) ? req.body.ids : null;
+    if (!ids || ids.length === 0) return res.status(400).json({ error: "ids (non-empty array) required" });
+
+    // Dedupe the input + validate ObjectId shape up front.
+    var seenIds = {}, validIds = [], failed = [];
+    ids.forEach(function(raw){
+      var s = String(raw == null ? "" : raw);
+      if (seenIds[s]) return;
+      seenIds[s] = true;
+      if (mongoose.Types.ObjectId.isValid(s)) validIds.push(s);
+      else failed.push({ drId: s, error: "invalid id" });
+    });
+    if (validIds.length > 200) return res.status(400).json({ error: "Batch limited to 200 daily requests per request" });
+    if (validIds.length === 0) return res.status(400).json({ error: "No valid ids", failed: failed });
+
+    // Last-10-digit suffix key — mirrors the inbound-webhook normalization.
+    function last10(raw){
+      var d = String(raw == null ? "" : raw).replace(/^\+?20/, "").replace(/^00/, "").replace(/[\s\-]/g, "").replace(/\D/g, "");
+      return d.slice(-10);
+    }
+
+    // Dedup index built ONCE: last10 -> existing leadId, from non-archived, non-DR
+    // leads (the leads a converted number would collide with on the Leads page).
+    // First match wins; freshly-created leads are added below so within-batch
+    // duplicates skip against each other.
+    var dupMap = new Map();
+    var dupRows = await Lead.find({ archived: { $ne: true }, source: { $ne: "Daily Request" } }).select("_id phone phone2").lean();
+    dupRows.forEach(function(l){
+      [l.phone, l.phone2].forEach(function(f){
+        var k = last10(f);
+        if (k && k.length >= 7 && !dupMap.has(k)) dupMap.set(k, l._id);
+      });
+    });
+    // Existing EOI/DoneDeal mirror leads (source="Daily Request"): a DR that already
+    // produced a mirror is a closed deal/EOI and must NOT be reset to a fresh lead.
+    var mirrorSet = new Set();
+    var mirrorRows = await Lead.find({ source: "Daily Request" }).select("phone phone2").lean();
+    mirrorRows.forEach(function(l){
+      [l.phone, l.phone2].forEach(function(f){ var k = last10(f); if (k && k.length >= 7) mirrorSet.add(k); });
+    });
+
+    // Fetch the requested DRs in one round-trip; iterate in the caller's order.
+    var drDocs = await DailyRequest.find({ _id: { $in: validIds } });
+    var drById = new Map();
+    drDocs.forEach(function(d){ drById.set(String(d._id), d); });
+
+    var created = [], skippedDuplicates = [], skippedClosed = [];
+
+    for (var i = 0; i < validIds.length; i++) {
+      var id = validIds[i];
+      var r = drById.get(id);
+      if (!r) { failed.push({ drId: id, error: "not found" }); continue; }
+      try {
+        // Guard 1 — already moved / archived.
+        if (r.movedToLeadId || r.archived === true) {
+          skippedClosed.push({ drId: id, phone: r.phone, reason: r.movedToLeadId ? "already moved" : "archived" });
+          continue;
+        }
+        // Guard 2 — closed (deal/EOI). These already have a mirror lead.
+        var st = r.status || "", eoiSt = r.eoiStatus || "";
+        var phoneKey = last10(r.phone);
+        var hasMirror = phoneKey && phoneKey.length >= 7 && mirrorSet.has(phoneKey);
+        if (st === "DoneDeal" || st === "EOI" || eoiSt === "Pending" || eoiSt === "Approved" || hasMirror) {
+          skippedClosed.push({ drId: id, phone: r.phone, reason: "closed (deal/EOI)" });
+          continue;
+        }
+        // Guard 3 — duplicate phone against existing non-DR leads (skip + report).
+        if (phoneKey && phoneKey.length >= 7 && dupMap.has(phoneKey)) {
+          skippedDuplicates.push({ drId: id, phone: r.phone, existingLeadId: String(dupMap.get(phoneKey)) });
+          continue;
+        }
+
+        // Build the fresh lead. unitType carries the DR's property/unit type; the DR
+        // has no development field so project/campaign stay empty (fieldsV2 model).
+        // area (location) + prior feedback fold into notes for context — the fresh
+        // lead's own lastFeedback stays empty (it's a NEW lead with no agent yet).
+        var noteParts = [];
+        if (r.notes) noteParts.push(String(r.notes));
+        if (r.area) noteParts.push("Area: " + String(r.area));
+        if (r.lastFeedback) noteParts.push("Prior feedback: " + String(r.lastFeedback));
+        var now = new Date();
+
+        var newLead = await Lead.create({
+          name: r.name,
+          phone: r.phone,
+          phone2: r.phone2 || "",
+          email: r.email || "",
+          budget: r.budget || "",
+          unitType: r.unitType || r.propertyType || "",
+          notes: noteParts.join(" | "),
+          status: "NewLead",
+          source: CONVERTED_LEAD_SOURCE,
+          fieldsV2: true,
+          agentId: null,
+          assignments: [],
+          lastActivityTime: now,
+          archived: false,
+          isVIP: false,
+          globalStatus: "active",
+          // PAST timestamp → next 60s sweepExpiredQueue tick auto-assigns it to a
+          // Tier-1 active sales/team_leader (inactive agents excluded).
+          manualWindowExpiresAt: new Date(now.getTime() - 1000),
+          history: [{
+            event: "converted_from_dr",
+            description: "Converted to a fresh New Lead from Daily Request " + String(r._id),
+            byUser: req.user && req.user.name ? req.user.name : (req.user ? String(req.user.id) : ""),
+            toAgent: "",
+            timestamp: now
+          }]
+        });
+
+        // Retire the DR: archive + stamp linkage. Preserves history; removes it from
+        // DR lists/counts and the source-roi / intake double-count.
+        await DailyRequest.updateOne({ _id: r._id }, { $set: { archived: true, movedToLeadId: newLead._id, movedAt: now } });
+
+        // Feed the dedup index so a later selected DR sharing this phone skips.
+        if (phoneKey && phoneKey.length >= 7 && !dupMap.has(phoneKey)) dupMap.set(phoneKey, newLead._id);
+
+        created.push({ drId: id, leadId: String(newLead._id), phone: r.phone, name: r.name });
+      } catch (itemErr) {
+        failed.push({ drId: id, error: itemErr.message });
+      }
+    }
+
+    // Nudge other clients' Leads pages to refetch (the DR page refetch is emitted by
+    // the auto-broadcast middleware as an empty dr_updated on this response body).
+    if (created.length > 0) { try { broadcast("lead_updated", {}); } catch(_e) {} }
+
+    res.json({
+      ok: true,
+      counts: {
+        requested: ids.length,
+        created: created.length,
+        skippedDuplicates: skippedDuplicates.length,
+        skippedClosed: skippedClosed.length,
+        failed: failed.length
+      },
+      created: created,
+      skippedDuplicates: skippedDuplicates,
+      skippedClosed: skippedClosed,
+      failed: failed
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
