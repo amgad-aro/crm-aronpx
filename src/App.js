@@ -7241,8 +7241,15 @@ var LeadsPage = function(p) {
                 if (p.loadMoreLeads) p.loadMoreLeads();
               }}
               fixedHeaderContent={function(){
+                // Header "select all" must reflect the real selection and toggle OFF
+                // when everything is already selected. It was uncontrolled (no
+                // `checked`), so after the virtualized header re-rendered the DOM box
+                // desynced from selected2 and a 2nd click re-selected instead of
+                // clearing. Derive `allSel` from selected2 and toggle on it.
+                var selSet2 = new Set(selected2);
+                var allSel = filtered.length>0 && filtered.every(function(l){return selSet2.has(gid(l));});
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-                  <th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(l){return gid(l);}):[])}}/></th>
+                  <th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" checked={allSel} onChange={function(){setSelected2(allSel?[]:filtered.map(function(l){return gid(l);}));}}/></th>
                   <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:100, background:"#F8FAFC" }}>{t.name}</th>
                   <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:120, background:"#F8FAFC" }}>{t.phone}</th>
                   <th style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:600, color:C.textLight, minWidth:110, background:"#F8FAFC" }}>{t.phone2}</th>
@@ -15062,8 +15069,14 @@ var DailyRequestsPage = function(p) {
               components={drTableComponents}
               endReached={function(){ if (p.loadMoreDRs) p.loadMoreDRs(); }}
               fixedHeaderContent={function(){
+                // Header "select all" must reflect the real selection and toggle OFF
+                // when everything is already selected — see the matching fix on the
+                // Leads page header. Uncontrolled (no `checked`) desynced after the
+                // virtualized header re-rendered, so a 2nd click re-selected.
+                var selSet2 = new Set(selected2);
+                var allSel = filtered.length>0 && filtered.every(function(r){return selSet2.has(gid(r));});
                 return <tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
-                  {isOnlyAdmin&&<th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" onChange={function(e){setSelected2(e.target.checked?filtered.map(function(r){return gid(r);}):[]);}}/></th>}
+                  {isOnlyAdmin&&<th style={{ padding:"10px 8px", width:32, background:"#F8FAFC" }}><input type="checkbox" checked={allSel} onChange={function(){setSelected2(allSel?[]:filtered.map(function(r){return gid(r);}));}}/></th>}
                   {["Name","Phone","Property Type","Location","Budget","Status","Last Feedback",isAdmin&&"Agent","Last Activity","Callback"].filter(Boolean).map(function(h){return <th key={h} style={{ textAlign:"left", padding:"10px 12px", fontSize:11, fontWeight:700, color:C.textLight, whiteSpace:"nowrap", background:"#F8FAFC" }}>{h}</th>;})}
                 </tr>;
               }}
