@@ -143,6 +143,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   splitAgent2Name:{type:String,default:""},
   projectWeight:{type:Number,default:1},
   dealDate:{type:String,default:""},
+  // Identity link to the originating Daily Request for DR-sourced mirror leads
+  // (2026-07-08, B1). The mirror is resolved by THIS id, never by phone —
+  // returning customers legitimately share a phone (duplicate phones allowed,
+  // 2026-06-30), so phone-keying overwrote a prior deal/EOI (the #1031
+  // incident). Null/absent for non-mirror leads.
+  sourceRequestId:{type:mongoose.Schema.Types.ObjectId,ref:"DailyRequest",default:null,index:true},
   lastRotationAt:{type:Date,default:null}, rotationCount:{type:Number,default:0},
   // Written ONLY by sweepAutoRotation — timestamp of the last sweep tick that
   // EVALUATED this lead (rotated OR skipped). The sweep sorts by this ascending
@@ -1517,7 +1523,11 @@ var DailyRequest = mongoose.model("DailyRequest", new mongoose.Schema({
   // the resulting Lead; movedAt the conversion time. Both null/unset on every DR
   // that was never moved.
   movedToLeadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead",default:null},
-  movedAt:{type:Date,default:null}
+  movedAt:{type:Date,default:null},
+  // Identity link to this DR's mirror Lead (2026-07-08, B1). Set when the DR
+  // first creates/adopts its mirror; future edits resolve the mirror by this id
+  // so a returning customer's second deal/EOI never re-collapses onto the first.
+  mirrorLeadId:{type:mongoose.Schema.Types.ObjectId,ref:"Lead",default:null}
 },{timestamps:true}));
 
 // ===== CLOSING COMPANY (Feature B) =====
@@ -1587,6 +1597,47 @@ async function mintLeadIdIfEntering(newStatus, currentLeadId) {
     return await nextLeadId();
   }
   return null;
+}
+
+// ── DR ⇆ Lead-mirror identity resolvers (2026-07-08 — B1/B2/B4) ──────────────
+// Returning customers legitimately share a phone (duplicate phones allowed,
+// 2026-06-30), so a DR mirror MUST be resolved by IDENTITY (the DR's _id), never
+// by phone — a phone match can land on a DIFFERENT transaction and overwrite it
+// (the #1031 incident, where a 2nd EOI clobbered a completed 4.5M deal). Legacy
+// mirrors created before sourceRequestId existed are adopted the first time
+// their DR is touched, but ONLY when the phone maps to a single UNCLAIMED mirror
+// — never when it's ambiguous, so the caller creates a fresh, independent record
+// instead of guessing which prior transaction to overwrite.
+async function resolveMirrorForDR(drDoc) {
+  if (!drDoc) return null;
+  if (drDoc.mirrorLeadId) {
+    var byId = await Lead.findOne({ _id: drDoc.mirrorLeadId });
+    if (byId) return byId;
+  }
+  var byRef = await Lead.findOne({ sourceRequestId: drDoc._id });
+  if (byRef) return byRef;
+  if (!drDoc.phone) return null;
+  // Legacy fallback — adopt an unclaimed phone-mirror only when it is the SOLE
+  // one (limit 2 → if two come back it's ambiguous and we return null).
+  var unclaimed = await Lead.find({
+    phone: drDoc.phone, source: "Daily Request",
+    sourceRequestId: { $in: [null, undefined] }
+  }).limit(2);
+  return unclaimed.length === 1 ? unclaimed[0] : null;
+}
+
+// The Daily Request paired with a mirror Lead (for Lead→DR cascades). Prefers
+// the sourceRequestId back-reference; legacy fallback is the sole DR on the
+// phone, and null when ambiguous so cascades skip rather than hit the wrong DR.
+async function resolveDRForMirror(leadDoc) {
+  if (!leadDoc) return null;
+  if (leadDoc.sourceRequestId) {
+    var byId = await DailyRequest.findById(leadDoc.sourceRequestId);
+    if (byId) return byId;
+  }
+  if (!leadDoc.phone) return null;
+  var drs = await DailyRequest.find({ phone: leadDoc.phone }).limit(2);
+  return drs.length === 1 ? drs[0] : null;
 }
 
 // ===== ASSET TRACKER MODELS =====
@@ -12123,8 +12174,12 @@ app.post("/api/leads/:id/eoi-cancel", auth, async function(req, res) {
     );
     // Mirror back to the originating Daily Request (if any)
     if (existing.source === "Daily Request" && existing.phone) {
-      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() } }); }
-      catch(syncErr){ console.error("DR sync (eoi-cancel) error:", syncErr.message); }
+      try {
+        // B4 — sync THIS lead's paired DR by identity, not by phone (a returning
+        // customer's other DR shares the phone).
+        var pairedDr = await resolveDRForMirror(existing);
+        if (pairedDr) await DailyRequest.updateOne({ _id: pairedDr._id }, { $set: { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() } });
+      } catch(syncErr){ console.error("DR sync (eoi-cancel) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] EOI cancelled — returned to Hot Case" }); } catch(e){}
     // Native push to the ORIGINAL owning agent (captured pre-update in `existing`,
@@ -12154,7 +12209,7 @@ app.post("/api/daily-requests/:id/eoi-cancel", auth, async function(req, res) {
     // Mirror the paired Lead record too so the EOI page still sees it under EOI Cancelled
     if (existing.phone) {
       try {
-        var mirror = await Lead.findOne({ phone: existing.phone, source: "Daily Request" });
+        var mirror = await resolveMirrorForDR(existing);   // B4 — this DR's own mirror, by identity
         if (mirror) {
           await Lead.findByIdAndUpdate(mirror._id, { status: restored, eoiStatus: "EOI Cancelled", eoiApproved: false, preEoiStatus: "", lastActivityTime: new Date() });
         }
@@ -12295,8 +12350,11 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     }
     // Mirror to the paired Daily Request (if any)
     if (existing.source === "Daily Request" && existing.phone) {
-      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: "DoneDeal", lastActivityTime: new Date() } }); }
-      catch(syncErr){ console.error("DR sync (eoi-to-deal) error:", syncErr.message); }
+      try {
+        // B4 — sync the paired DR by identity, not by phone.
+        var pairedDr = await resolveDRForMirror(existing);
+        if (pairedDr) await DailyRequest.updateOne({ _id: pairedDr._id }, { $set: { status: "DoneDeal", lastActivityTime: new Date() } });
+      } catch(syncErr){ console.error("DR sync (eoi-to-deal) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[DoneDeal] EOI converted to Done Deal" }); } catch(e){}
     var lead = await Lead.findById(req.params.id).populate("agentId", "name title").populate("assignments.agentId", "name title");
@@ -12326,8 +12384,11 @@ app.post("/api/leads/:id/deal-cancel", auth, async function(req, res) {
     );
     // Mirror back to the originating Daily Request (if any)
     if (existing.source === "Daily Request" && existing.phone) {
-      try { await DailyRequest.updateOne({ phone: existing.phone }, { $set: { status: restored, dealStatus: "Deal Cancelled", preDealStatus: "", lastActivityTime: new Date() } }); }
-      catch(syncErr){ console.error("DR sync (deal-cancel) error:", syncErr.message); }
+      try {
+        // B4 — sync the paired DR by identity, not by phone.
+        var pairedDr = await resolveDRForMirror(existing);
+        if (pairedDr) await DailyRequest.updateOne({ _id: pairedDr._id }, { $set: { status: restored, dealStatus: "Deal Cancelled", preDealStatus: "", lastActivityTime: new Date() } });
+      } catch(syncErr){ console.error("DR sync (deal-cancel) error:", syncErr.message); }
     }
     try { await Activity.create({ userId: req.user.id, leadId: req.params.id, type: "status_change", note: "[HotCase] Deal cancelled — returned to Hot Case" }); } catch(e){}
     try { await cascadeCommissionCancel(req.params.id, "Deal cancelled by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook deal-cancel]", e && e.message); }
@@ -12360,7 +12421,7 @@ app.post("/api/daily-requests/:id/deal-cancel", auth, async function(req, res) {
     var r = await DailyRequest.findByIdAndUpdate(req.params.id, update, { new: true }).populate("agentId", "name title");
     if (existing.phone) {
       try {
-        var mirror = await Lead.findOne({ phone: existing.phone, source: "Daily Request" });
+        var mirror = await resolveMirrorForDR(existing);   // B4 — this DR's own mirror, by identity
         if (mirror) {
           await Lead.findByIdAndUpdate(mirror._id, { status: restored, dealStatus: "Deal Cancelled", dealApproved: false, preDealStatus: "", lastActivityTime: new Date() });
           try { await cascadeCommissionCancel(mirror._id, "Deal cancelled (DR side) by " + (req.user && req.user.name ? req.user.name : "admin"), req.user); } catch(e){ console.error("[commission hook dr-deal-cancel]", e && e.message); }
@@ -13235,7 +13296,9 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         if (req.body.eoiDeposit !== undefined) drSync.eoiDeposit = req.body.eoiDeposit;
         if (req.body.eoiDate !== undefined) drSync.eoiDate = req.body.eoiDate;
         if (Object.keys(drSync).length>0) {
-          await DailyRequest.updateOne({ phone: lead.phone }, { $set: Object.assign(drSync, { lastActivityTime: new Date() }) });
+          // B4 — sync the paired DR by identity, not by phone.
+          var pairedDr = await resolveDRForMirror(lead);
+          if (pairedDr) await DailyRequest.updateOne({ _id: pairedDr._id }, { $set: Object.assign(drSync, { lastActivityTime: new Date() }) });
         }
       }
     } catch(syncErr) { console.error("DR sync error (non-fatal):", syncErr.message); }
@@ -18724,7 +18787,16 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
       await Activity.create({ userId: req.user.id, type: "status_change", note: actNote, leadId: r._id, clientName: r.name || "", clientPhone: r.phone || "" });
       // If status is DoneDeal or EOI — create/update a Lead mirror in the main collection
       if (req.body.status === "DoneDeal" || req.body.status === "EOI") {
-        var existingLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
+        // B1 — resolve the mirror for THIS Daily Request by identity, never by
+        // phone (a returning customer's other deal/EOI shares the phone and would
+        // otherwise be overwritten — the #1031 incident).
+        var existingLead = await resolveMirrorForDR(r);
+        // B2 — if the resolved mirror is already claimed by a DIFFERENT DR, never
+        // touch it; drop to the CREATE branch so this transaction gets its own,
+        // independent, permanent record.
+        if (existingLead && existingLead.sourceRequestId && String(existingLead.sourceRequestId) !== String(r._id)) {
+          existingLead = null;
+        }
         // EOI mirrors need eoiStatus so the EOI page's Pending tab picks
         // them up; DoneDeal mirrors need globalStatus so the Deals page and
         // the admin dashboard both find them.
@@ -18780,6 +18852,7 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             lastActivityTime: new Date(),
             notes: req.body.notes || r.notes || existingLead.notes,
             eoiDeposit: req.body.eoiDeposit || existingLead.eoiDeposit || "",
+            sourceRequestId: existingLead.sourceRequestId || r._id,   // B1 — claim (adopt) a legacy mirror for this DR
           }, mirrorExtra);
           if (resolvedDrWeight !== null) existingMirrorPayload.projectWeight = resolvedDrWeight;
           var midDRu = await mintLeadIdIfEntering(req.body.status, existingLead.leadId);   // Feature A — self-heal if an existing mirror enters EOI/DoneDeal without an id
@@ -18838,13 +18911,19 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
             callbackTime: r.callbackTime || "",
             lastActivityTime: new Date(),
             eoiDeposit: req.body.eoiDeposit || "",
+            sourceRequestId: r._id,   // B1 — bind this fresh mirror to its Daily Request
             assignments: seedAssignments,
           }, mirrorExtra);
           if (resolvedDrWeight !== null) newMirrorPayload.projectWeight = resolvedDrWeight;
           var midDRc = await mintLeadIdIfEntering(req.body.status, null);   // Feature A — only if the mirror is created as EOI/DoneDeal
           if (midDRc != null) newMirrorPayload.leadId = midDRc;
-          await Lead.create(newMirrorPayload);
+          var createdMirror = await Lead.create(newMirrorPayload);
         }
+        // B1 — bind the mirror's id back onto the DR so every future edit resolves
+        // it by identity and can never re-collapse onto a returning customer's
+        // other deal/EOI (the #1031 incident).
+        var resolvedMirrorId = existingLead ? existingLead._id : createdMirror._id;
+        try { await DailyRequest.updateOne({ _id: r._id }, { $set: { mirrorLeadId: resolvedMirrorId } }); } catch(linkErr){ console.error("DR→mirror link failed (non-fatal):", linkErr && linkErr.message); }
         // Real-time broadcast for the Lead mirror. The auto-broadcast
         // middleware only emits dr_updated here (the response path is
         // /api/daily-requests), so admins never received the new/updated
@@ -18855,12 +18934,12 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
         // DR's own dr_updated event is still emitted by the middleware
         // after res.json(r), so the DR page also stays live.
         try {
-          var mirrorLead = await Lead.findOne({ phone: r.phone, source: "Daily Request" }).populate("agentId", "name title").populate("assignments.agentId", "name title").lean();
+          var mirrorLead = await Lead.findById(resolvedMirrorId).populate("agentId", "name title").populate("assignments.agentId", "name title").lean();
           if (mirrorLead) emitLead(mirrorLead);
         } catch(emitErr) { console.error("DR→EOI/Deal mirror broadcast failed (non-fatal):", emitErr.message); }
       } else if (req.body.status === "Deal Cancelled") {
         // DR moved out of EOI/DoneDeal — keep the mirror Lead in sync so the EOI page shows it under Deal Cancelled
-        var mirror = await Lead.findOne({ phone: r.phone, source: "Daily Request" });
+        var mirror = await resolveMirrorForDR(r);   // B4 — this DR's own mirror, by identity
         if (mirror && (mirror.status === "EOI" || mirror.status === "DoneDeal")) {
           await Lead.findByIdAndUpdate(mirror._id, { status: "Deal Cancelled", eoiApproved: false, lastActivityTime: new Date() });
         }
@@ -18893,12 +18972,14 @@ app.delete("/api/daily-requests/:id", auth, adminOnly, async function(req, res) 
     // that shares the phone.
     if (drDoc && drDoc.phone) {
       try {
-        var mirrorIds = await Lead.find({ phone: drDoc.phone, source: "Daily Request" }, { _id: 1 }).lean();
-        if (mirrorIds.length) {
-          var mirrorIdStrs = mirrorIds.map(function(d){ return String(d._id); });
-          await Lead.deleteMany({ _id: { $in: mirrorIds.map(function(d){ return d._id; }) } });
-          // And the mirror Leads' notifications, mirroring Lead.delete cascade.
-          try { await Notification.deleteMany({ leadId: { $in: mirrorIdStrs } }); } catch(nErr2) { console.error("[dr-delete mirror notif cascade]", nErr2 && nErr2.message); }
+        // B4 — delete ONLY this DR's own mirror (resolved by identity), never
+        // every lead sharing the phone (a returning customer's other deal).
+        var linkedMirror = await resolveMirrorForDR(drDoc);
+        if (linkedMirror) {
+          var linkedIdStr = String(linkedMirror._id);
+          await Lead.deleteMany({ _id: linkedMirror._id });
+          // And the mirror Lead's notifications, mirroring Lead.delete cascade.
+          try { await Notification.deleteMany({ leadId: linkedIdStr }); } catch(nErr2) { console.error("[dr-delete mirror notif cascade]", nErr2 && nErr2.message); }
           try { broadcast("lead_updated", {}); } catch(e) {}
           try { broadcast("notification_updated", {}); } catch(e) {}
         }
@@ -18919,17 +19000,13 @@ app.put("/api/daily-requests/:id/archive", auth, adminOnly, async function(req, 
     // standalone non-mirror Leads sharing a phone are unaffected.
     if (r.phone) {
       try {
-        var mirrorRes = await Lead.updateMany({ phone: r.phone, source: "Daily Request", archived: { $ne: true } }, { $set: { archived: true } });
-        if (mirrorRes && mirrorRes.modifiedCount > 0) {
-          // Cascade notifications for any mirror leads we just archived,
-          // matching the Lead.archive cascade behaviour. Single deleteMany
-          // by phone-resolved leadIds keeps the round-trip count low.
-          var mirrorIds = await Lead.find({ phone: r.phone, source: "Daily Request" }, { _id: 1 }).lean();
-          var mirrorIdStrs = mirrorIds.map(function(d){ return String(d._id); });
-          if (mirrorIdStrs.length) {
-            try { await Notification.deleteMany({ leadId: { $in: mirrorIdStrs } }); } catch(nErr) { console.error("[dr-archive notif cascade]", nErr && nErr.message); }
-            try { broadcast("notification_updated", {}); } catch(e) {}
-          }
+        // B4 — archive ONLY this DR's own mirror (resolved by identity), never
+        // every lead sharing the phone (a returning customer's other deal).
+        var linkedMirror = await resolveMirrorForDR(r);
+        if (linkedMirror && linkedMirror.archived !== true) {
+          await Lead.updateOne({ _id: linkedMirror._id }, { $set: { archived: true } });
+          try { await Notification.deleteMany({ leadId: String(linkedMirror._id) }); } catch(nErr) { console.error("[dr-archive notif cascade]", nErr && nErr.message); }
+          try { broadcast("notification_updated", {}); } catch(e) {}
           try { broadcast("lead_updated", {}); } catch(e) {}
         }
       } catch(mErr) { console.error("[dr-archive Lead cascade]", mErr && mErr.message); }
@@ -18945,8 +19022,12 @@ app.put("/api/daily-requests/:id/unarchive", auth, adminOnly, async function(req
     // Mirror cascade: bring the linked mirror Lead back too.
     if (r.phone) {
       try {
-        var mRes = await Lead.updateMany({ phone: r.phone, source: "Daily Request", archived: true }, { $set: { archived: false } });
-        if (mRes && mRes.modifiedCount > 0) { try { broadcast("lead_updated", {}); } catch(e) {} }
+        // B4 — unarchive ONLY this DR's own mirror (resolved by identity).
+        var linkedMirror = await resolveMirrorForDR(r);
+        if (linkedMirror && linkedMirror.archived === true) {
+          await Lead.updateOne({ _id: linkedMirror._id }, { $set: { archived: false } });
+          try { broadcast("lead_updated", {}); } catch(e) {}
+        }
       } catch(mErr) { console.error("[dr-unarchive Lead cascade]", mErr && mErr.message); }
     }
     res.json(r);
@@ -19508,8 +19589,13 @@ app.put("/api/leads/:id/archive", auth, async function(req, res) {
     // DR that shares its phone.
     if (lead && lead.source === "Daily Request" && lead.phone) {
       try {
-        var drRes = await DailyRequest.updateMany({ phone: lead.phone, archived: { $ne: true } }, { $set: { archived: true, lastActivityTime: new Date() } });
-        if (drRes && drRes.modifiedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
+        // B4 — archive ONLY this lead's paired DR (by identity), never every DR
+        // sharing the phone (a returning customer's other transaction).
+        var pairedDr = await resolveDRForMirror(lead);
+        if (pairedDr && pairedDr.archived !== true) {
+          await DailyRequest.updateOne({ _id: pairedDr._id }, { $set: { archived: true, lastActivityTime: new Date() } });
+          try { broadcast("dr_updated", {}); } catch(e) {}
+        }
       } catch(drErr) { console.error("[lead-archive DR cascade]", drErr && drErr.message); }
     }
     res.json(lead);
@@ -19531,8 +19617,12 @@ app.put("/api/leads/:id/unarchive", auth, async function(req, res) {
     // Mirror cascade: bring the linked DR back too if this lead is a DR mirror.
     if (lead.source === "Daily Request" && lead.phone) {
       try {
-        var drRes = await DailyRequest.updateMany({ phone: lead.phone, archived: true }, { $set: { archived: false, lastActivityTime: new Date() } });
-        if (drRes && drRes.modifiedCount > 0) { try { broadcast("dr_updated", {}); } catch(e) {} }
+        // B4 — unarchive ONLY this lead's paired DR (by identity).
+        var pairedDr = await resolveDRForMirror(lead);
+        if (pairedDr && pairedDr.archived === true) {
+          await DailyRequest.updateOne({ _id: pairedDr._id }, { $set: { archived: false, lastActivityTime: new Date() } });
+          try { broadcast("dr_updated", {}); } catch(e) {}
+        }
       } catch(drErr) { console.error("[lead-unarchive DR cascade]", drErr && drErr.message); }
     }
     // Commission revive — archiving a DoneDeal lead cancels its commission via
