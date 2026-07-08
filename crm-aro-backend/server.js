@@ -11487,109 +11487,84 @@ app.put("/api/leads/bulk-reassign", auth, adminOnly, async function(req, res) {
     }
     var { leadIds, agentId, force } = req.body;
     if(!leadIds||!leadIds.length||!agentId) return res.status(400).json({ error: "leadIds and agentId required" });
+    if (leadIds.length > 1000) return res.status(400).json({ error: "Batch limited to 1000 leads per request" });
     var agentObjId = new mongoose.Types.ObjectId(agentId);
     var isAdminForce = force === true && (req.user.role === "admin" || req.user.role === "sales_admin");
-    var newAssignment = {
-      agentId: agentObjId,
-      status: "NewLead",
-      assignedAt: new Date(),
-      lastActionAt: new Date(),
-      rotationTimer: new Date(),
-      noRotation: false,
-      notes: "",
-      budget: "",
-      callbackTime: "",
-      lastFeedback: "",
-      nextCallAt: null,
-      agentHistory: []
-    };
     var byName = req.user.name || "Admin";
+    var now = new Date();
+
+    // BATCHED (was ~5 sequential awaits/lead → 30s timeout at ~100 leads). Target
+    // agent fetched ONCE (was re-read every iteration); all leads + all prior-owner
+    // names read in one query each; one bulkWrite; the per-lead history entry is
+    // folded into the same $push (it used to be a second Lead.updateOne per lead).
+    var targetUser = await User.findById(agentId).select("name").lean();
+    var newAgentName = targetUser ? targetUser.name : "Unknown";
+    var leadDocs = await Lead.find({ _id: { $in: leadIds } }).lean();
+    var leadById = new Map();
+    leadDocs.forEach(function(l){ leadById.set(String(l._id), l); });
+    var oldIds = [], seenOld = {};
+    leadDocs.forEach(function(l){ if (l.agentId){ var s = String(l.agentId); if (!seenOld[s]){ seenOld[s] = true; oldIds.push(l.agentId); } } });
+    var oldNameById = new Map();
+    if (oldIds.length) {
+      (await User.find({ _id: { $in: oldIds } }).select("name").lean()).forEach(function(u){ oldNameById.set(String(u._id), u.name); });
+    }
+
     var skippedSelf = 0, skippedPrevious = 0, skippedFrozen = 0, reassigned = 0, notFound = 0;
-    // Update top-level fields AND push new assignments entry
+    var ops = [];
     for (var i = 0; i < leadIds.length; i++) {
-      var lead = await Lead.findById(leadIds[i]).lean();
+      var lead = leadById.get(String(leadIds[i]));
       if (!lead) { notFound++; continue; }
       var oldAgentId = lead.agentId;
-      // Skip: already the current owner (Bug 1 — no self-reassign).
-      // Force does NOT bypass same-agent: pushing a duplicate assignments[]
-      // slice for the current owner serves no purpose.
+      // Skip: already the current owner (Bug 1 — no self-reassign). Force does NOT
+      // bypass same-agent (a duplicate slice for the current owner is pointless).
       if (oldAgentId && String(oldAgentId) === String(agentId)) { skippedSelf++; continue; }
-      // Phase R-13.2 — frozen lead guard. DoneDeal / EOI / Pending EOI /
-      // Approved EOI leads have a committed agent (or are owned by an
-      // external-sales-agent / broker arrangement). Silent bulk reassign
-      // would corrupt the Deals-page Agent column. The admin `force` flag
-      // is the explicit override — same gate as the wasPreviouslyAssigned
-      // check below.
+      // Phase R-13.2 — frozen lead guard (DoneDeal/EOI/Pending/Approved EOI). Silent
+      // bulk reassign would corrupt the Deals-page Agent column; `force` overrides.
       if (!isAdminForce && isLeadFrozen(lead)) { skippedFrozen++; continue; }
-      // Skip: previously held this lead (Bug 3 — no return to past agent),
-      // unless admin explicitly forced.
+      // Skip: previously held this lead (Bug 3 — no return to past agent) unless forced.
       if (!isAdminForce && wasPreviouslyAssigned(lead, agentId)) { skippedPrevious++; continue; }
-      var updateOps = {
-        // Top-level notes/lastFeedback are no longer authoritative — the new agent's
-        // clean slice comes from a fresh assignments[] entry (see newAssignment), and
-        // the old agent's slice is preserved so their feedback survives rotation.
-        $set: { agentId: agentObjId, lastActivityTime: new Date(), lastRotationAt: new Date(), rotationCount: (lead.rotationCount || 0) + 1 },
-        $push: { assignments: newAssignment }
+
+      var newAssignment = {
+        agentId: agentObjId, status: "NewLead",
+        assignedAt: now, lastActionAt: now, rotationTimer: now,
+        noRotation: false, notes: "", budget: "", callbackTime: "", lastFeedback: "",
+        nextCallAt: null, agentHistory: []
       };
-      // Add old agent to previousAgentIds and log rotation event
-      var oldAgentName = "";
-      var newAgentName = "";
-      if (oldAgentId) {
-        updateOps.$push.previousAgentIds = oldAgentId;
-        var oldAgUser = await User.findById(oldAgentId).lean();
-        var newAgUser = await User.findById(agentId).lean();
-        oldAgentName = oldAgUser ? oldAgUser.name : "Unknown";
-        newAgentName = newAgUser ? newAgUser.name : "Unknown";
-        updateOps.$push.agentHistory = {
-          action: "Rotation",
-          fromAgent: oldAgentName,
-          toAgent: newAgentName,
-          // agentId is the rotation TARGET (receiver) — see daily-cap notes
-          // in autoRotateLead. Bulk-reassign is a manual admin action and
-          // doesn't gate on the cap, but its receivers still tally for it.
-          agentId: agentObjId,
-          reason: "manual",
-          by: byName,
-          date: new Date()
-        };
-      } else {
-        var newAgUser2 = await User.findById(agentId).lean();
-        newAgentName = newAgUser2 ? newAgUser2.name : "Unknown";
-        // Unassigned-lead reassign — the if(oldAgentId) branch above already
-        // stamps a counted Rotation entry; mirror it here so the daily-cap
-        // aggregation (~12488) + Settings counter see receipts on leads that
-        // had no prior owner. fromAgent:"" (no prior holder) → inbound-only,
-        // matching the engine's first_assignment entries (~17440 OUT counts skip it).
-        updateOps.$push.agentHistory = {
-          action: "Rotation",
-          fromAgent: "",
-          toAgent: newAgentName,
-          agentId: agentObjId,
-          reason: "manual",
-          by: byName,
-          date: new Date()
-        };
-      }
-      await Lead.findByIdAndUpdate(leadIds[i], updateOps);
-      // Admin timeline: one entry per lead so bulk ops are audit-able.
+      var oldAgentName = oldAgentId ? (oldNameById.get(String(oldAgentId)) || "Unknown") : "";
       var suffix = isAdminForce ? " (bulk reassign) [admin force override]" : " (bulk reassign)";
-      if (oldAgentId) {
-        await pushHistory(leadIds[i], historyEntry(
-          "rotated",
-          "Rotated from " + oldAgentName + " to " + newAgentName + " by " + byName + suffix,
+      var pushOps = {
+        assignments: newAssignment,
+        // Rotation receipt — agentId is the TARGET (receiver); counts toward the
+        // daily cap exactly as before. fromAgent "" when the lead had no prior
+        // owner (unifies the old two-branch code).
+        agentHistory: {
+          action: "Rotation", fromAgent: oldAgentName, toAgent: newAgentName,
+          agentId: agentObjId, reason: "manual", by: byName, date: now
+        },
+        // Admin audit-timeline entry — folded in (was a separate pushHistory write).
+        history: historyEntry(
+          oldAgentId ? "rotated" : "assigned",
+          oldAgentId
+            ? ("Rotated from " + oldAgentName + " to " + newAgentName + " by " + byName + suffix)
+            : ("Assigned to " + newAgentName + " by " + byName + " (bulk)"),
           byName,
           newAgentName
-        ));
-      } else {
-        await pushHistory(leadIds[i], historyEntry(
-          "assigned",
-          "Assigned to " + newAgentName + " by " + byName + " (bulk)",
-          byName,
-          newAgentName
-        ));
-      }
+        )
+      };
+      if (oldAgentId) pushOps.previousAgentIds = oldAgentId;
+
+      ops.push({ updateOne: {
+        filter: { _id: lead._id },
+        update: {
+          $set: { agentId: agentObjId, lastActivityTime: now, lastRotationAt: now },
+          $inc: { rotationCount: 1 },
+          $push: pushOps
+        }
+      }});
       reassigned++;
     }
+
+    if (ops.length > 0) await Lead.bulkWrite(ops, { ordered: false });
     await Activity.create({ userId: req.user.id, type: "reassign", note: "Bulk reassign — " + reassigned + "/" + leadIds.length + " leads" });
     res.json({
       ok: true,
@@ -14724,6 +14699,14 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
     var ringLen = agentPool.length;
     var byName = req.user && req.user.name ? req.user.name : "Admin";
 
+    // Plan every assignment in memory (round-robin unchanged), then flush ONE
+    // bulkWrite instead of a findOneAndUpdate + pushHistory PER lead. That per-item
+    // pair was ~2 sequential round-trips × hundreds of eligible leads → past the
+    // 30s client timeout. History is folded into the same $push; the concurrency
+    // guard (agentId + rotationStopped) is kept on each op, and a single
+    // verification read below determines which ops actually landed.
+    var redistOps = [];
+    var redistPlan = []; // [{ leadId, pickedId }]
     for (var li = 0; li < eligibleLeads.length; li++) {
       var lead = eligibleLeads[li];
       var currentAid = lead.agentId && lead.agentId._id ? String(lead.agentId._id) : String(lead.agentId || "");
@@ -14760,33 +14743,47 @@ app.post("/api/leads/bulk-redistribute-backlog", auth, async function(req, res){
         by: byName,
         date: new Date()
       };
-      var pushOps = { assignments: newAssignment, agentHistory: rotationLog };
-      if (currentAid) pushOps.previousAgentIds = new mongoose.Types.ObjectId(currentAid);
-
-      var writeRes = await Lead.findOneAndUpdate(
-        { _id: lead._id, agentId: currentAid ? new mongoose.Types.ObjectId(currentAid) : null, rotationStopped: { $ne: true } },
-        {
-          $set: {
-            agentId: new mongoose.Types.ObjectId(pickedId),
-            lastRotationAt: new Date()
-          },
-          $inc: { rotationCount: 1 },
-          $push: pushOps
-        },
-        { new: true }
-      );
-      if (!writeRes) { skipped++; continue; }
-
-      distributed++;
-      perAgent[pickedId] = (perAgent[pickedId] || 0) + 1;
-      try {
-        await pushHistory(lead._id, historyEntry(
+      var pushOps = {
+        assignments: newAssignment,
+        agentHistory: rotationLog,
+        // Folded-in admin timeline entry (was a separate pushHistory write).
+        history: historyEntry(
           "rotated",
           "Bulk redistribution — reassigned to " + targetUser.name + " by " + byName,
           byName,
           targetUser.name
-        ));
-      } catch (hErr) { /* non-fatal */ }
+        )
+      };
+      if (currentAid) pushOps.previousAgentIds = new mongoose.Types.ObjectId(currentAid);
+
+      redistOps.push({ updateOne: {
+        filter: { _id: lead._id, agentId: currentAid ? new mongoose.Types.ObjectId(currentAid) : null, rotationStopped: { $ne: true } },
+        update: {
+          $set: { agentId: new mongoose.Types.ObjectId(pickedId), lastRotationAt: new Date() },
+          $inc: { rotationCount: 1 },
+          $push: pushOps
+        }
+      }});
+      redistPlan.push({ leadId: lead._id, pickedId: pickedId });
+    }
+
+    if (redistOps.length > 0) await Lead.bulkWrite(redistOps, { ordered: false });
+
+    // Verify which planned writes actually landed (the guard skips any lead the
+    // sweeper re-rotated in the gap) → accurate distributed / perAgent / skipped,
+    // matching the old per-write !writeRes accounting.
+    if (redistPlan.length > 0) {
+      var verifyRows = await Lead.find({ _id: { $in: redistPlan.map(function(p){ return p.leadId; }) } }).select("_id agentId").lean();
+      var curAgentById = new Map();
+      verifyRows.forEach(function(l){ curAgentById.set(String(l._id), l.agentId ? String(l.agentId) : ""); });
+      redistPlan.forEach(function(p){
+        if (curAgentById.get(String(p.leadId)) === String(p.pickedId)) {
+          distributed++;
+          perAgent[p.pickedId] = (perAgent[p.pickedId] || 0) + 1;
+        } else {
+          skipped++;
+        }
+      });
     }
 
     res.json({ total: total, distributed: distributed, skipped: skipped, perAgent: perAgent, diagnostic: diagnostic });

@@ -5536,6 +5536,7 @@ var LeadsPage = function(p) {
   var [importing, setImporting] = useState(false); var [importMsg, setImportMsg] = useState("");
   var [selected2, setSelected2] = useState([]);
   var [showBulk, setShowBulk] = useState(false); var [bulkAgent, setBulkAgent] = useState("");
+  var [bulkReassignBusy, setBulkReassignBusy] = useState(false); var [bulkReassignErr, setBulkReassignErr] = useState("");
   // Phase A4-main (2026-05-05): bulk source-change modal state. Admin
   // selects leads via the existing multi-select, opens via the new
   // "Change Source" toolbar button, picks a canonical source, confirms.
@@ -6698,6 +6699,7 @@ var LeadsPage = function(p) {
 
   var doBulkReassign = async function(force) {
     if(!bulkAgent||selected2.length===0) return;
+    setBulkReassignBusy(true); setBulkReassignErr("");
     try {
       var body = {leadIds:selected2, agentId:bulkAgent};
       if (force === true) body.force = true;
@@ -6725,7 +6727,18 @@ var LeadsPage = function(p) {
         ? ("Reassigned "+res.reassigned+"/"+res.total+(res.skippedSelf?(" · "+res.skippedSelf+" skipped (same agent)"):"")+(!force&&skippedPrev?(" · "+skippedPrev+" skipped (previously held)"):"")+(skippedFrozen?(" · "+skippedFrozen+" skipped (DoneDeal/EOI frozen)"):"")+(res.notFound?(" · "+res.notFound+" not found"):""))
         : null;
       if (summary) alert(summary);
-    } catch(e){alert(e.message);}
+    } catch(e){
+      // In-modal error (no raw browser alert). Bulk reassign is safe to retry —
+      // re-running only pushes a fresh slice; a timeout likely means the server
+      // finished, so guide the admin to refresh and check before retrying.
+      var msg=(e&&e.message)||"Something went wrong";
+      if(/tim(e|ed)\s*out|timeout/i.test(msg)){
+        setBulkReassignErr("This is taking longer than expected. The reassignment may have already completed on the server — close this, refresh, and check the agent's leads before retrying.");
+      }else{
+        setBulkReassignErr(msg);
+      }
+    }
+    setBulkReassignBusy(false);
   };
 
   var leadActs = selected ? p.activities.filter(function(a){ var lid=gid(selected); return a.leadId&&(gid(a.leadId)===lid||a.leadId===lid); }) : [];
@@ -6854,10 +6867,13 @@ var LeadsPage = function(p) {
     </Modal>}
 
     {/* Bulk Reassign Modal */}
-    <Modal show={showBulk} onClose={function(){setShowBulk(false);}} title={t.bulkReassign}>
+    <Modal show={showBulk} onClose={function(){ if(!bulkReassignBusy){ setShowBulk(false); setBulkReassignErr(""); } }} title={t.bulkReassign}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>{selected2.length} leads selected</div>
+      {selected2.length>1000&&<div style={{ marginBottom:10, padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12 }}>⚠️ Max 1000 per batch — please select 1000 or fewer.</div>}
       <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
-      <div style={{ display:"flex", gap:10 }}><Btn outline onClick={function(){setShowBulk(false);}} style={{ flex:1 }}>{t.cancel}</Btn><Btn onClick={doBulkReassign} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
+      <div style={{ display:"flex", gap:10 }}><Btn outline disabled={bulkReassignBusy} onClick={function(){setShowBulk(false);setBulkReassignErr("");}} style={{ flex:1 }}>{t.cancel}</Btn><Btn loading={bulkReassignBusy} disabled={bulkReassignBusy||!bulkAgent||selected2.length>1000} onClick={function(){doBulkReassign();}} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
+      {bulkReassignBusy&&<div style={{ marginTop:10, fontSize:12, color:C.textLight }}>⏳ Reassigning {selected2.length} lead{selected2.length>1?"s":""}… this can take a few seconds. Please keep this window open.</div>}
+      {bulkReassignErr&&<div style={{ marginTop:10, padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12, lineHeight:1.5 }}>{bulkReassignErr}</div>}
     </Modal>
 
     {/* Phase A4-main bulk source change modal — opens from the toolbar's
@@ -6979,7 +6995,7 @@ var LeadsPage = function(p) {
         })}
       </div>}
       <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
-        {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={function(){setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
+        {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={function(){setBulkReassignErr("");setShowBulk(true);}} style={{ padding:"7px 11px", fontSize:12, color:C.info, borderColor:C.info }}><RotateCcw size={13}/> {t.bulkReassign} ({selected2.length})</Btn>}
         {selected2.length>0&&isOnlyAdmin&&<Btn outline onClick={async function(){
           if(!window.confirm("Archive "+selected2.length+" leads?"))return;
           var ids=[...selected2];
