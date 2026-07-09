@@ -15661,17 +15661,40 @@ var UsersPage = function(p) {
     p.setUsers(function(prev){return prev.map(function(u){return gid(u)===uid?Object.assign({},u,{qTargets:qt}):u;});});
   };
   var [qtModal,setQtModal]=useState(null);
+  // Active/Inactive filter. Predicate mirrors the Status column badge below
+  // (green when u.active is truthy) so pill counts match the rendered chips.
+  var [statusFilter,setStatusFilter]=useState("all");
+  var activeCount=p.users.filter(function(u){return !!u.active;}).length;
+  var inactiveCount=p.users.length-activeCount;
+  var visibleUsers=statusFilter==="all"
+    ? p.users
+    : p.users.filter(function(u){return statusFilter==="active"?!!u.active:!u.active;});
 
   return <div style={{ padding:"18px 16px 40px" }}>
     <div style={{ display:"flex", justifyContent:"space-between", marginBottom:18 }}>
       <h2 style={{ margin:0, fontSize:18, fontWeight:700 }}>{t.users} ({p.users.length})</h2>
       <Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 13px", fontSize:13 }}><UserPlus size={14}/> {t.addUser}</Btn>
     </div>
+    {/* Status filter pills — mirrors the Deals type-filter pill row. Counts
+        reflect the full list; default All. Client-side (full list is loaded). */}
+    <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+      {[["all",t.all,p.users.length,C.accent],["active",t.active,activeCount,C.success],["inactive",t.inactive,inactiveCount,C.danger]].map(function(pill){
+        var active=statusFilter===pill[0];
+        var theme=pill[3];
+        return <button key={pill[0]} onClick={function(){setStatusFilter(pill[0]);}} style={{
+          padding:"5px 12px", borderRadius:8, border:"1px solid",
+          borderColor: active ? theme : "#E2E8F0",
+          background: active ? theme+"12" : "#fff",
+          color: active ? theme : C.textLight,
+          fontSize:12, fontWeight:600, cursor:"pointer"
+        }}>{pill[1]} ({pill[2]})</button>;
+      })}
+    </div>
     <Card p={0}><div style={{ overflowX:"auto" }}><table style={{ width:"100%", borderCollapse:"collapse", minWidth:580 }}>
       <thead><tr style={{ background:"#F8FAFC", borderBottom:"2px solid #E8ECF1" }}>
         {[t.name,t.username,t.title,t.role,t.phone,"Quarterly Target","Last Seen","Starting Date",t.status,""].map(function(h){return <th key={h||"x"} style={{ textAlign:t.dir==="rtl"?"right":"left", padding:"11px 12px", fontSize:11, fontWeight:600, color:C.textLight, whiteSpace:"nowrap" }}>{h}</th>;})}
       </tr></thead>
-      <tbody>{p.users.map(function(u){
+      <tbody>{visibleUsers.map(function(u){
         var uid=gid(u);
         var displayName=u.username==="amgad"?"Amgad Mohamed":u.name;
         // Owner lockdown — mirrors the backend guards in PUT/DELETE /api/users/:id.
