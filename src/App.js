@@ -329,7 +329,11 @@ var SearchableSelect = function(props){
   var boxRef = useRef(null);
   var inputRef = useRef(null);
 
-  var allOpts = [{ value: "", label: emptyLabel }].concat(options);
+  // hideEmpty: omit the "" row entirely, for required pickers whose owner
+  // guarantees a selection (else the user could clear it to "" and downstream
+  // consumers would query on an empty id).
+  var disabled = !!props.disabled;
+  var allOpts = (props.hideEmpty ? [] : [{ value: "", label: emptyLabel }]).concat(options);
   var ql = q.trim().toLowerCase();
   var filtered = ql ? allOpts.filter(function(o){ return String(o.label||"").toLowerCase().indexOf(ql) !== -1; }) : allOpts;
   var selected = allOpts.filter(function(o){ return String(o.value)===String(props.value||""); })[0];
@@ -357,24 +361,37 @@ var SearchableSelect = function(props){
   var fontSize = props.fontSize || 12;
 
   return <div ref={boxRef} style={{ position:"relative", width:width, maxWidth:maxWidth, boxSizing:"border-box" }}>
-    <button type="button" onClick={function(){ setOpen(function(o){ return !o; }); }}
-      style={{ width:"100%", textAlign:"start", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, background:"#fff", fontSize:fontSize, cursor:"pointer", boxSizing:"border-box", display:"flex", justifyContent:"space-between", alignItems:"center", gap:6, color:(triggerLabel?C.text:C.textLight), fontFamily:"inherit" }}>
+    <button type="button" disabled={disabled} onClick={function(){ if (disabled) return; setOpen(function(o){ return !o; }); }}
+      style={{ width:"100%", textAlign:"start", padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, background:(disabled?"#F8FAFC":"#fff"), fontSize:fontSize, cursor:(disabled?"not-allowed":"pointer"), opacity:(disabled?0.7:1), boxSizing:"border-box", display:"flex", justifyContent:"space-between", alignItems:"center", gap:6, color:(triggerLabel?C.text:C.textLight), fontFamily:"inherit" }}>
       <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{triggerLabel || props.placeholder || "Select…"}</span>
       <span style={{ color:C.textLight, flexShrink:0 }}>▾</span>
     </button>
-    {open && <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,0.16)", zIndex:1000, maxHeight:260, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+    {open && !disabled && <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, background:"#fff", border:"1px solid #E2E8F0", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,0.16)", zIndex:1000, maxHeight:260, overflow:"hidden", display:"flex", flexDirection:"column" }}>
       <input ref={inputRef} value={q} onChange={function(e){ setQ(e.target.value); }} onKeyDown={onKey}
         placeholder={props.placeholder || "Search…"}
         style={{ margin:8, padding:"6px 8px", borderRadius:8, border:"1px solid "+C.border, fontSize:fontSize, outline:"none", boxSizing:"border-box", fontFamily:"inherit" }}/>
       <div style={{ overflowY:"auto" }}>
         {filtered.length===0 && <div style={{ padding:"8px 12px", fontSize:fontSize, color:C.textLight }}>No matches</div>}
-        {filtered.map(function(o, idx){
-          var isSel = String(o.value)===String(props.value||"");
-          return <div key={String(o.value)+"|"+idx} onMouseEnter={function(){ setHi(idx); }} onMouseDown={function(e){ e.preventDefault(); choose(o); }}
-            style={{ padding:"7px 12px", fontSize:fontSize, cursor:"pointer", background:(idx===hi?"#F1F5F9":"#fff"), color:(o.value?C.text:C.textLight), fontWeight:(isSel?700:400), whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-            {o.label || (o.value || "")}
-          </div>;
-        })}
+        {(function(){
+          // Group headers are presentation only — `hi`/ArrowUp/ArrowDown index into
+          // `filtered` (selectable options), so headers can never take focus.
+          var lastGroup = null;
+          return filtered.map(function(o, idx){
+            var isSel = String(o.value)===String(props.value||"");
+            var row = <div key={String(o.value)+"|"+idx} onMouseEnter={function(){ setHi(idx); }} onMouseDown={function(e){ e.preventDefault(); choose(o); }}
+              style={{ padding:"7px 12px", fontSize:fontSize, cursor:"pointer", background:(idx===hi?"#F1F5F9":"#fff"), color:(o.value?C.text:C.textLight), fontWeight:(isSel?700:400), whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+              {o.label || (o.value || "")}
+            </div>;
+            var g = o.group || null;
+            var needsHeader = g && g !== lastGroup;
+            lastGroup = g;
+            if (!needsHeader) return row;
+            return <Fragment key={"g|"+g+"|"+idx}>
+              <div style={{ padding:"6px 12px 3px", fontSize:Math.max(9,fontSize-2), fontWeight:700, color:C.textLight, textTransform:"uppercase", letterSpacing:0.4, background:"#F8FAFC" }}>{g}</div>
+              {row}
+            </Fragment>;
+          });
+        })()}
       </div>
     </div>}
   </div>;
@@ -901,7 +918,21 @@ var BiometricLockScreen = function(p) {
 var Inp = function(p) {
   return <div style={{ marginBottom:13 }}>
     <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>{p.label}{p.req&&<span style={{ color:C.danger, marginRight:3 }}>*</span>}</label>
-    {p.type==="select"
+    {p.type==="select" && p.searchable
+      // Opt-in searchable variant. SearchableSelect always prepends its own
+      // empty row, so hoist any existing "- Select -" placeholder into
+      // emptyLabel instead of passing it through (else it renders twice).
+      // onChange is re-wrapped as a synthetic event so call sites keep using
+      // e.target.value unchanged.
+      ? (function(){
+          var norm = (p.options||[]).map(function(o){ return o!==null && typeof o==="object" ? { value:o.value, label:o.label||String(o.value), group:o.group } : { value:o, label:String(o) }; });
+          var blank = norm.filter(function(o){ return String(o.value||"")===""; })[0];
+          var rest = norm.filter(function(o){ return String(o.value||"")!==""; });
+          return <SearchableSelect value={p.value} onChange={function(v){ p.onChange({ target:{ value:v } }); }}
+            options={rest} emptyLabel={blank?blank.label:(p.emptyLabel||"— Select —")}
+            placeholder={p.searchPlaceholder||"Search…"} width="100%" maxWidth={9999} fontSize={14}/>;
+        })()
+      : p.type==="select"
       ? <select value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>{p.options.map(function(o){return <option key={o.value!==undefined?o.value:o} value={o.value!==undefined?o.value:o}>{o.label||o}</option>;})}</select>
       : p.type==="textarea"
       ? <textarea rows={3} placeholder={p.placeholder||""} value={p.value} onChange={p.onChange} style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, outline:"none", boxSizing:"border-box", resize:"vertical", fontFamily:"inherit" }}/>
@@ -3211,7 +3242,7 @@ var LeadForm = function(p) {
   // Property / Sales layout) and the regular Add-Lead / EOI form. Extracted so
   // both can place them without duplicating the JSX.
   var sourceField = !isReq ? <Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/> : null;
-  var agentField = isAdmin ? <Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
+  var agentField = isAdmin ? <Inp label={t.agent} searchable type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
     var agentList = salesUsers;
     if (isEOIForm || isDoneDealForm) {
       var amgadUsers = (p.users || []).filter(function(u){ return u.username === "amgad" && u.active; });
@@ -3287,7 +3318,7 @@ var LeadForm = function(p) {
               <Inp label="Phone" req={withUs} value={party.phone||""} onChange={function(e){updRP(side,"phone",e.target.value);}}/>
             </div>
             {withUs && <>
-              {isAdmin && <Inp label="👤 Agent" req type="select" value={party.agentId||""} onChange={function(e){updRP(side,"agentId",e.target.value);}} options={resaleAgentOpts}/>}
+              {isAdmin && <Inp label="👤 Agent" req searchable type="select" value={party.agentId||""} onChange={function(e){updRP(side,"agentId",e.target.value);}} options={resaleAgentOpts}/>}
               <div style={g2}>
                 <Inp label="💰 Commission (EGP)" req value={amtDisp} onChange={function(e){
                   var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");
@@ -3536,14 +3567,10 @@ var LeadForm = function(p) {
           {form.externalSalesAgentEnabled && <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:"0 12px" }}>
             <div>
               <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>Second Sales Agent<span style={{ color:C.danger, marginLeft:3 }}>*</span></label>
-              <select value={form.externalSalesAgentId || ""}
-                onChange={function(e){ upd("externalSalesAgentId", e.target.value); }}
-                style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", color:C.text, boxSizing:"border-box", cursor:"pointer" }}>
-                <option value="">- Select -</option>
-                {salesUsers.map(function(u){
-                  return <option key={gid(u)} value={gid(u)}>{u.name}{u.title?" — "+u.title:""}</option>;
-                })}
-              </select>
+              <SearchableSelect value={form.externalSalesAgentId || ""}
+                onChange={function(v){ upd("externalSalesAgentId", v); }}
+                options={salesUsers.map(function(u){ return { value:gid(u), label:u.name+(u.title?" — "+u.title:"") }; })}
+                emptyLabel="- Select -" placeholder="Search agent…" width="100%" maxWidth={9999} fontSize={14}/>
             </div>
             <Inp label="Manual Commission (EGP)" req
               value={form.externalSalesAgentManualAmount || ""}
@@ -5260,6 +5287,7 @@ var LeadsPage = function(p) {
   // so admins can still filter to historical leads owned by deactivated users.
   // Never use for assignment selects: inactive users must stay excluded there.
   var salesUsersForFilter = (function(){var act=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});var ina=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&!u.active;});return act.concat(ina);})();
+  var agentFilterOpts = salesUsersForFilter.map(function(u){ return { value:gid(u), label:u.name+(u.active?"":" (inactive)") }; });
   var isManager = p.cu.role==="manager"||p.cu.role==="team_leader";
   var myTeamUsers = p.myTeamUsers || salesUsers;
   var isReq = !!p.isRequest;
@@ -6870,7 +6898,7 @@ var LeadsPage = function(p) {
     <Modal show={showBulk} onClose={function(){ if(!bulkReassignBusy){ setShowBulk(false); setBulkReassignErr(""); } }} title={t.bulkReassign}>
       <div style={{ marginBottom:14, padding:"10px 14px", background:"#F0F9FF", borderRadius:10, fontSize:13 }}>{selected2.length} leads selected</div>
       {selected2.length>1000&&<div style={{ marginBottom:10, padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12 }}>⚠️ Max 1000 per batch — please select 1000 or fewer.</div>}
-      <Inp label={t.reassignTo} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
+      <Inp label={t.reassignTo} searchable type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat((isOnlyAdmin?p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;}):myTeamUsers).map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>
       <div style={{ display:"flex", gap:10 }}><Btn outline disabled={bulkReassignBusy} onClick={function(){setShowBulk(false);setBulkReassignErr("");}} style={{ flex:1 }}>{t.cancel}</Btn><Btn loading={bulkReassignBusy} disabled={bulkReassignBusy||!bulkAgent||selected2.length>1000} onClick={function(){doBulkReassign();}} style={{ flex:1 }}>{t.bulkReassign}</Btn></div>
       {bulkReassignBusy&&<div style={{ marginTop:10, fontSize:12, color:C.textLight }}>⏳ Reassigning {selected2.length} lead{selected2.length>1?"s":""}… this can take a few seconds. Please keep this window open.</div>}
       {bulkReassignErr&&<div style={{ marginTop:10, padding:"8px 10px", background:"#FEF3F2", color:C.danger, borderRadius:8, fontSize:12, lineHeight:1.5 }}>{bulkReassignErr}</div>}
@@ -7022,10 +7050,8 @@ var LeadsPage = function(p) {
           <option value="oldest">📅 Oldest</option>
           <option value="name">🔤 Name</option>
         </select>
-        {isAdmin&&<select value={agentFilter} onChange={function(e){setLockedOnly(false);setAgentFilter(e.target.value);setNoAgentFilter(false);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", color:C.text }}>
-          <option value="">👤 All Agents</option>
-          {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
-        </select>}
+        {isAdmin&&<SearchableSelect value={agentFilter} onChange={function(v){setLockedOnly(false);setAgentFilter(v);setNoAgentFilter(false);}}
+          options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width={200} maxWidth={200} fontSize={12}/>}
         {isOnlyAdmin&&<button onClick={function(){setLockedOnly(false);setInactiveAgentFilter(false);setNoAgentFilter(!noAgentFilter);setAgentFilter("");}} style={{ padding:"5px 12px", borderRadius:7, border:"1px solid", borderColor:noAgentFilter?"#EF4444":"#E8ECF1", background:noAgentFilter?"#FEE2E2":"#fff", color:noAgentFilter?"#B91C1C":C.textLight, fontSize:11, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>🚫 No Agent {noAgentFilter?"✓":""}</button>}
         {isOnlyAdmin&&<button onClick={function(){
           var turningOn = !inactiveAgentFilter;
@@ -12671,7 +12697,7 @@ var EOIPage = function(p) {
                   <div style={{ marginBottom:12 }}><label style={cLbl}>Phone{reqStar}</label><input value={party.phone||""} onChange={function(e){setConvRP(side,"phone",e.target.value);}} style={cStyle}/></div>
                 </div>
                 {withUs && <>
-                  <div style={{ marginBottom:12 }}><label style={cLbl}>👤 Agent <span style={{color:C.danger}}>*</span></label><select value={party.agentId||""} onChange={function(e){setConvRP(side,"agentId",e.target.value);}} style={Object.assign({background:"#fff"},cStyle)}><option value="">- Select -</option>{convAgentOpts.map(function(u){return <option key={u.value} value={u.value}>{u.label}</option>;})}</select></div>
+                  <div style={{ marginBottom:12 }}><label style={cLbl}>👤 Agent <span style={{color:C.danger}}>*</span></label><SearchableSelect value={party.agentId||""} onChange={function(v){setConvRP(side,"agentId",v);}} options={convAgentOpts} emptyLabel="- Select -" placeholder="Search agent…" width="100%" maxWidth={9999} fontSize={13}/></div>
                   <div style={g2}>
                     <div style={{ marginBottom:12 }}><label style={cLbl}>💰 Commission (EGP) <span style={{color:C.danger}}>*</span></label><input value={party.commissionAmount?Number(String(party.commissionAmount).replace(/,/g,"")).toLocaleString():""} onChange={function(e){var raw=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");setConvRP(side,"commissionAmount",raw?Number(raw).toLocaleString():"");var a=num(raw);setConvRP(side,"commissionRate",(a>0&&bC>0)?String(Math.round(a/bC*10000)/100):"");}} placeholder="e.g. 60,000" style={cStyle}/></div>
                     <div style={{ marginBottom:12 }}><label style={cLbl}>Commission %</label><input value={party.commissionRate||""} onChange={function(e){var raw=e.target.value.replace(/[^0-9.]/g,"");setConvRP(side,"commissionRate",raw);var r=num(raw);setConvRP(side,"commissionAmount",(r>0&&bC>0)?Number(Math.round(bC*r)/100).toLocaleString():"");}} placeholder="e.g. 2" style={cStyle}/></div>
@@ -13144,6 +13170,7 @@ var DealsPage = function(p) {
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   // Filter dropdown only — includes inactive agents so admins can filter historical deals.
   var salesUsersForFilter=(function(){var act=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});var ina=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&!u.active;});return act.concat(ina);})();
+  var agentFilterOpts=salesUsersForFilter.map(function(u){ return { value:gid(u), label:u.name+(u.active?"":" (inactive)") }; });
   var [showAdd,setShowAdd]=useState(false);
   var [editDeal,setEditDeal]=useState(null);
   var [selectedDeal,setSelectedDeal]=useState(null);
@@ -13722,10 +13749,8 @@ var DealsPage = function(p) {
     {p.isMobile?<div style={{ marginBottom:14 }}>
       <div style={{ display:"flex", gap:8, marginBottom:8 }}>
         <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, flex:1, minWidth:0, boxSizing:"border-box" }}/>
-        {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", flex:1, minWidth:0, boxSizing:"border-box" }}>
-          <option value="">👤 All Agents</option>
-          {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
-        </select>}
+        {isAdmin&&<div style={{ flex:1, minWidth:0 }}><SearchableSelect value={dealAgent} onChange={setDealAgent}
+          options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width="100%" maxWidth={9999} fontSize={12}/></div>}
       </div>
       {canSeeDeveloper(p.cu)&&<div style={{ marginBottom:8 }}>
         <SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width="100%" maxWidth={9999} fontSize={12}/>
@@ -13743,10 +13768,8 @@ var DealsPage = function(p) {
       {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>:<div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
-      {isAdmin&&<select value={dealAgent} onChange={function(e){setDealAgent(e.target.value);}} style={{ padding:"6px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-        <option value="">👤 All Agents</option>
-        {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
-      </select>}
+      {isAdmin&&<SearchableSelect value={dealAgent} onChange={setDealAgent}
+        options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width={200} maxWidth={200} fontSize={12}/>}
       {canSeeDeveloper(p.cu)&&<SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width={200} maxWidth={200} fontSize={12}/>}
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
@@ -13930,11 +13953,9 @@ var DealsPage = function(p) {
       </div>
       <div style={{ marginBottom:14 }}>
         <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>Agent 2</div>
-        <select value={splitAgent2} onChange={function(e){setSplitAgent2(e.target.value);}}
-          style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, background:"#fff", boxSizing:"border-box" }}>
-          <option value="">— Select Agent —</option>
-          {salesUsers.filter(function(u){var uid=gid(u);var a1=splitModal.agentId&&splitModal.agentId._id?splitModal.agentId._id:splitModal.agentId;return uid!==a1;}).map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name} — {u.title}</option>;})}
-        </select>
+        <SearchableSelect value={splitAgent2} onChange={setSplitAgent2}
+          options={salesUsers.filter(function(u){var uid=gid(u);var a1=splitModal.agentId&&splitModal.agentId._id?splitModal.agentId._id:splitModal.agentId;return uid!==a1;}).map(function(u){return { value:gid(u), label:u.name+" — "+u.title };})}
+          emptyLabel="— Select Agent —" placeholder="Search agent…" width="100%" maxWidth={9999} fontSize={14}/>
       </div>
       {getDealSplit(gid(splitModal))&&<div style={{ padding:"8px 12px", background:"#FEF3C7", borderRadius:8, fontSize:12, marginBottom:10 }}>
         Current split: {getDealSplitFromObj(splitModal).agent2Name} — <button onClick={async function(){
@@ -14380,6 +14401,7 @@ var DailyRequestsPage = function(p) {
   var salesUsers=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});
   // Filter dropdown only — includes inactive agents so admins can filter historical DRs.
   var salesUsersForFilter=(function(){var act=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&u.active;});var ina=p.users.filter(function(u){return (u.role==="sales"||u.role==="manager"||u.role==="team_leader")&&!u.active;});return act.concat(ina);})();
+  var agentFilterOpts=salesUsersForFilter.map(function(u){ return { value:gid(u), label:u.name+(u.active?"":" (inactive)") }; });
   var [requests,setRequests]=useState([]);
   var [loading,setLoading]=useState(true);
   var [showAdd,setShowAdd]=useState(false);
@@ -14918,10 +14940,8 @@ var DailyRequestsPage = function(p) {
       })()}
     </div>
     <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
-      {isAdmin&&<select value={agentFilter} onChange={function(e){setAgentFilter(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
-        <option value="">👤 All Agents</option>
-        {salesUsersForFilter.map(function(u){return <option key={gid(u)} value={gid(u)}>{u.name}{u.active?"":" (inactive)"}</option>;})}
-      </select>}
+      {isAdmin&&<SearchableSelect value={agentFilter} onChange={function(v){setAgentFilter(v);}}
+        options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width={200} maxWidth={200} fontSize={12}/>}
       <select value={sortBy} onChange={function(e){setSortBy(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, background:"#fff" }}>
         <option value="lastActivity">⏱ Last Activity</option>
         <option value="newest">🆕 Newest</option>
@@ -15246,7 +15266,7 @@ var DailyRequestsPage = function(p) {
         <Inp label={"Location"} req value={form.area} onChange={function(e){setForm(function(f){return Object.assign({},f,{area:e.target.value});})}} placeholder=""/>
         {form.status!=="EOI"&&form.status!=="DoneDeal"&&<div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} req value={form.budget} onChange={function(e){setForm(function(f){return Object.assign({},f,{budget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/></div>}
       </div>
-      {isAdmin&&<Inp label={t.agent} type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
+      {isAdmin&&<Inp label={t.agent} searchable type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.status+" *"} req type="select" value={form.status||"NewLead"} onChange={function(e){setForm(function(f){return Object.assign({},f,{status:e.target.value});})}} options={sc.map(function(s){return{value:s.value,label:s.label};})}/>
       {(form.status==="EOI"||form.status==="DoneDeal")&&<div>
         <Inp label={"🏠 Project"} value={form.dealProject} onChange={function(e){setForm(function(f){return Object.assign({},f,{dealProject:e.target.value});})}}/>
@@ -15278,7 +15298,7 @@ var DailyRequestsPage = function(p) {
         <Inp label={"Location"} value={editForm.area} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{area:e.target.value});})}}/>
         <div style={{ gridColumn:"1/-1" }}><Inp label={"Budget"} value={editForm.budget} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{budget:(function(){var rb=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return rb?Number(rb).toLocaleString():"";})()});})}}/></div>
       </div>
-      <Inp label={t.agent} type="select" value={editForm.agentId} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>
+      <Inp label={t.agent} searchable type="select" value={editForm.agentId} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>
       <Inp label={t.callbackTime} type="datetime-local" value={editForm.callbackTime?String(editForm.callbackTime).slice(0,16):""} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{callbackTime:e.target.value});})}}/>
       <Inp label={t.status} type="select" value={editForm.status||"NewLead"} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{status:e.target.value});})}} options={sc.map(function(s){return{value:s.value,label:s.label};})}/>
       <Inp label={"Feedback"} type="textarea" value={editForm.notes} onChange={function(e){setEditForm(function(f){return Object.assign({},f,{notes:e.target.value});})}}/>
@@ -15293,7 +15313,7 @@ var DailyRequestsPage = function(p) {
         ?<div style={{ padding:"16px", textAlign:"center", color:C.danger, fontSize:13 }}>⚠️ Please select leads first using the checkboxes</div>
         :<div>
           <div style={{ marginBottom:10, fontSize:13, color:C.textLight }}>{selected2.length} leads selected</div>
-          <Inp label={"Reassign To"} type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>
+          <Inp label={"Reassign To"} searchable type="select" value={bulkAgent} onChange={function(e){setBulkAgent(e.target.value);}} options={[{value:"",label:"- Select Agent -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>
           <div style={{ display:"flex", gap:10, marginTop:10 }}>
             <Btn onClick={async function(){
               if(!bulkAgent)return;
@@ -16177,10 +16197,9 @@ var TargetPeriodsManager = function(pp) {
                   <div style={{ marginTop:12, paddingTop:10, borderTop:"1px dashed "+C.border }}>
                     <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:6 }}>Add a departed / off-roster member</div>
                     <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap", marginBottom:6 }}>
-                      <select value={pickUser[String(period._id)]||""} onChange={function(ev){var v=ev.target.value;setPickUser(function(prev){var n=Object.assign({},prev);n[String(period._id)]=v;return n;});}} style={Object.assign({},inpS,{width:"auto",maxWidth:280})}>
-                        <option value="">— pick a user (includes deactivated) —</option>
-                        {addableUsers(period).map(function(u){ return <option key={gid(u)} value={gid(u)}>{u.name} ({u.role}){u.active===false?" — inactive":""}</option>; })}
-                      </select>
+                      <SearchableSelect value={pickUser[String(period._id)]||""} onChange={function(v){setPickUser(function(prev){var n=Object.assign({},prev);n[String(period._id)]=v;return n;});}}
+                        options={addableUsers(period).map(function(u){ return { value:gid(u), label:u.name+" ("+u.role+")"+(u.active===false?" — inactive":"") }; })}
+                        emptyLabel="— pick a user (includes deactivated) —" placeholder="Search user…" width={280} maxWidth={280} fontSize={12}/>
                       <Btn outline disabled={busy||!pickUser[String(period._id)]} onClick={function(){addExisting(period);}} style={{ padding:"4px 9px", fontSize:11 }}>Add user</Btn>
                     </div>
                     {!(manualForm[String(period._id)]&&manualForm[String(period._id)].open)
@@ -18639,19 +18658,12 @@ var ReportsAgentsBody = function(p) {
     <Card style={{ marginBottom:14, padding:"12px 14px" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
         <span style={{ fontSize:11, fontWeight:600, color:C.textLight, textTransform:"uppercase", letterSpacing:"0.04em" }}>Agent</span>
-        <select value={selectedAgentId || ""} onChange={function(e){ setSelectedAgentId(e.target.value); }}
+        <SearchableSelect value={selectedAgentId || ""} onChange={setSelectedAgentId}
           disabled={agentList.loading || agents.length === 0}
-          style={{ padding:"6px 10px", borderRadius:7, border:"1px solid #E2E8F0", fontSize:12, background:"#fff", minWidth:260 }}>
-          {agentList.loading
-            ? <option value="">Loading…</option>
-            : agents.length === 0
-              ? <option value="">No eligible agents</option>
-              : agents.map(function(a){
-                  return <option key={a.id} value={a.id}>
-                    {a.name} ({roleLabel(a.role)}) — {fmtEGP(a.revenue)}
-                  </option>;
-                })}
-        </select>
+          hideEmpty={!agentList.loading && agents.length > 0}
+          emptyLabel={agentList.loading ? "Loading…" : "No eligible agents"}
+          options={agents.map(function(a){ return { value:a.id, label:a.name+" ("+roleLabel(a.role)+") — "+fmtEGP(a.revenue) }; })}
+          placeholder="Search agent…" width={260} maxWidth={260} fontSize={12}/>
         {selectedAgent && (selectedAgent.title || selectedAgent.teamName) && <span style={{ fontSize:11, color:C.textLight }}>
           {[selectedAgent.title, selectedAgent.teamName].filter(Boolean).join(" · ")}
         </span>}
@@ -24634,10 +24646,9 @@ var AssetTrackerPage = function(p) {
               </div>
               <div>
                 <label style={fieldLabel}>Category *</label>
-                <select style={inputStyle} value={form.categoryId} onChange={onCategoryChange}>
-                  <option value="">Choose…</option>
-                  {categories.map(function(c){ return <option key={c._id} value={c._id}>{c.name} ({c.codePrefix})</option>; })}
-                </select>
+                <SearchableSelect value={form.categoryId} onChange={function(v){ onCategoryChange({ target:{ value:v } }); }}
+                  options={categories.map(function(c){ return { value:c._id, label:c.name+" ("+c.codePrefix+")", group:c.group }; })}
+                  emptyLabel="Choose…" placeholder="Search category…" width="100%" maxWidth={9999} fontSize={14}/>
               </div>
               <div>
                 <label style={fieldLabel}>Branch *</label>
@@ -24672,10 +24683,9 @@ var AssetTrackerPage = function(p) {
               {/* Initial custodian — only on create + when assignmentType is personal. */}
               {formMode === "create" && form.assignmentType === "personal" && <div style={{gridColumn:"1 / -1"}}>
                 <label style={fieldLabel}>Initial custodian *</label>
-                <select style={inputStyle} value={form.currentCustodian} onChange={function(e){setForm(Object.assign({},form,{currentCustodian:e.target.value}));}}>
-                  <option value="">Choose a user…</option>
-                  {custodianCandidates.map(function(u){ return <option key={u._id} value={u._id}>{u.name} ({u.username})</option>; })}
-                </select>
+                <SearchableSelect value={form.currentCustodian} onChange={function(v){setForm(Object.assign({},form,{currentCustodian:v}));}}
+                  options={custodianCandidates.map(function(u){ return { value:u._id, label:u.name+" ("+u.username+")" }; })}
+                  emptyLabel="Choose a user…" placeholder="Search user…" width="100%" maxWidth={9999} fontSize={14}/>
                 <div style={{fontSize:11,color:"#888",marginTop:4}}>Personal active assets require a custodian.</div>
               </div>}
               <div style={{gridColumn:"1 / -1"}}>
@@ -26416,7 +26426,7 @@ var CommissionEditCollectionModal = function(p) {
         Add a recipient to this ambassador deal with a manual EGP amount.
         <br/><b>Tip:</b> picking an existing User links the payout to their profile (so it shows on the Payout Report). Use the manual-name field below only for off-system recipients.
       </div>
-      <Inp label="User (recommended)" type="select" value={addRecipUserId} onChange={function(e){
+      <Inp label="User (recommended)" searchable type="select" value={addRecipUserId} onChange={function(e){
         setAddRecipUserId(e.target.value);
         if (e.target.value) {
           var u = ambStaff.find(function(x){ return String(gid(x)) === String(e.target.value); });
@@ -28786,14 +28796,9 @@ var CommissionsPage = function(p) {
           return <option key={y} value={y}>{y}</option>;
         })}
       </select>
-      <select value={agentFilter} onChange={function(e){ setAgentFilter(e.target.value); }} style={{
-        padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:13, background:"#fff", minWidth:160
-      }}>
-        <option value="">All agents</option>
-        {(p.users || []).filter(function(u){ return u && (u.role === "sales" || u.role === "team_leader"); }).map(function(u){
-          return <option key={String(u._id)} value={String(u._id)}>{u.name}</option>;
-        })}
-      </select>
+      <SearchableSelect value={agentFilter} onChange={setAgentFilter}
+        options={(p.users || []).filter(function(u){ return u && (u.role === "sales" || u.role === "team_leader"); }).map(function(u){ return { value:String(u._id), label:u.name }; })}
+        emptyLabel="All agents" placeholder="Search agent…" width={200} maxWidth={200} fontSize={13}/>
       {/* Developer (D5) — searchable filter; options from the managed list. */}
       <SearchableSelect value={developerFilter} onChange={setDeveloperFilter}
         options={(commDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; })}
@@ -29823,7 +29828,7 @@ var CommissionsPage = function(p) {
       {/* Phase R-13.1 — User picker. Linking the override to a User lets the
           Payout Report aggregate paid amounts by userId. Selecting a user
           autofills the Name field and overrides any manual name on submit. */}
-      <Inp label="User (recommended)" type="select" value={addRecipUserId} onChange={function(e){
+      <Inp label="User (recommended)" searchable type="select" value={addRecipUserId} onChange={function(e){
         setAddRecipUserId(e.target.value);
         if (e.target.value) {
           var u = (p.users || []).find(function(x){ return String(x._id || gid(x)) === String(e.target.value); });
