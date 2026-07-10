@@ -5276,29 +5276,42 @@ app.get("/api/settings/audit", auth, async function(req, res) {
 });
 
 // Rollback a single audit entry: reapply its oldValue at `field` on the
-// rotation settings doc, mark the original entry rolledBack, and log a new
-// audit entry describing the rollback itself.
+// AppSetting doc the field actually lives in, mark the original entry
+// rolledBack, and log a new audit entry describing the rollback itself.
+// The entry is only marked rolledBack once the revert write has landed —
+// an unsupported field or a missing settings doc errors out and leaves the
+// entry untouched so it can be retried.
 app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
   try {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
     var entry = await SettingsAudit.findById(req.params.id);
     if (!entry) return res.status(404).json({ error: "Audit entry not found" });
     if (entry.rolledBack) return res.status(400).json({ error: "Already rolled back" });
-    // The rollback path below is hardcoded to the rotation AppSetting doc.
-    // projectWeights audit rows (field prefix "projectWeights.") cannot be
-    // rolled back this way without writing to the wrong doc — guard
-    // explicitly. Re-saving via the Commission Projects flow reverts the
-    // change cleanly.
-    if (entry.field && String(entry.field).indexOf("projectWeights.") === 0) {
+    var field = String(entry.field || "");
+    // projectWeights + campaigns rows carry per-key field names that don't map
+    // onto a single settings path, so they have no mechanical revert. Guard
+    // explicitly rather than writing them to the wrong doc.
+    if (field.indexOf("projectWeights.") === 0) {
       return res.status(400).json({ error: "Rollback not yet supported for project-weight changes — re-save via Commission Projects" });
     }
-    if (entry.field && String(entry.field).indexOf("campaigns.") === 0) {
+    if (field.indexOf("campaigns.") === 0) {
       return res.status(400).json({ error: "Rollback not yet supported for campaign changes — re-edit via Settings → Campaigns" });
     }
 
-    var path = "value." + entry.field;
-    var setOp = {}; setOp[path] = entry.oldValue;
-    await AppSetting.findOneAndUpdate({ key: "rotation" }, { $set: setOp }, { upsert: true });
+    // Route the revert by field prefix. commission-rates rows are audited with
+    // a "commissionRates." prefix but live at the root of their OWN AppSetting
+    // doc (key "commissionRates"), so the prefix is stripped before building
+    // the path. Everything else is a flattened rotation-settings path.
+    var isRates    = field.indexOf("commissionRates.") === 0;
+    var settingKey = isRates ? "commissionRates" : "rotation";
+    var fieldPath  = isRates ? field.slice("commissionRates.".length) : field;
+    if (!fieldPath) return res.status(400).json({ error: "Audit entry has no revertible field" });
+
+    var setOp = {}; setOp["value." + fieldPath] = entry.oldValue;
+    // No upsert: a missing settings doc means there is nothing to revert to,
+    // and upserting would fabricate a partial bundle from a single field.
+    var doc = await AppSetting.findOneAndUpdate({ key: settingKey }, { $set: setOp }, { new: true });
+    if (!doc) return res.status(409).json({ error: "Settings \"" + settingKey + "\" not found — nothing to roll back" });
 
     entry.rolledBack = true;
     await entry.save();
@@ -5314,6 +5327,12 @@ app.post("/api/settings/audit/:id/rollback", auth, async function(req, res) {
       });
     } catch (auditErr) {
       console.error("[settings audit rollback]", auditErr && auditErr.message ? auditErr.message : auditErr);
+    }
+
+    if (isRates) {
+      bustCommissionRatesCache();
+      try { broadcast("settings_updated", { key: "commissionRates", value: doc.value }); } catch(e) {}
+      return res.json(doc.value);
     }
 
     var updated = await getRotationSettings();

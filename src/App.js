@@ -19995,8 +19995,8 @@ var RotationDiagnosticsTab = function(props) {
     setHoldBusy(false);
   };
   // TEMPORARY — single-slice inspection state.
-  var [insLeadId, setInsLeadId] = useState("6a05a1a8cecaa45ad07c1c4b");
-  var [insAgent, setInsAgent] = useState("Ahmed Kassem");
+  var [insLeadId, setInsLeadId] = useState("");
+  var [insAgent, setInsAgent] = useState("");
   var [insBusy, setInsBusy] = useState(false);
   var [insError, setInsError] = useState("");
   var [insData, setInsData] = useState(null);
@@ -22540,6 +22540,7 @@ var SettingsPage = function(p) {
 
         var doRollback = async function(entry){
           if(!entry || entry.rolledBack) return;
+          if(!isOwner) return;   // BE gates rollback to admin; sales_admin never sees the button
           if(!window.confirm("Are you sure? This will revert \""+entry.field+"\" to its previous value and create a counter-entry in the log.")) return;
           try {
             await apiFetch("/api/settings/audit/"+entry._id+"/rollback","POST",null,p.token,p.csrfToken);
@@ -22552,7 +22553,10 @@ var SettingsPage = function(p) {
 
         return <div style={{fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}}>
           <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Recent settings changes</div>
-          <div style={{fontSize:12,color:"#666",marginBottom:12}}>Every change to company settings, with who made it and when. Click Rollback to revert a single change.</div>
+          <div style={{fontSize:12,color:"#666",marginBottom:12}}>
+            Changes to rotation settings, business-rule timers, project weights, commission rates, and campaigns — with who made each one and when.
+            {isOwner ? " Click Rollback to revert a single change." : ""}
+          </div>
 
           {/* Filter bar */}
           <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
@@ -22586,7 +22590,7 @@ var SettingsPage = function(p) {
                   </div>
                   <div style={{fontSize:12,lineHeight:1.5}}>
                     {auditEntries.length===0
-                      ? "Once the /api/settings/audit endpoint ships, every change to Rotation, Team & Roles, Business Rules, and Integrations will appear here with a Rollback option."
+                      ? "Saving Rotation, Business Rules, Commissions, Commission Projects, or Campaigns records one entry per changed field here. Lead edits, status changes, user/role changes, and logins are not tracked on this tab."
                       : "Try clearing the filters or widening the date range."}
                   </div>
                 </div>
@@ -22604,12 +22608,12 @@ var SettingsPage = function(p) {
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
                         <span style={{color:"#666",fontSize:11}}>{formatTs(e.timestamp||e.createdAt)}</span>
-                        <button type="button" disabled={rolled}
+                        {isOwner && <button type="button" disabled={rolled}
                           onClick={rolled ? undefined : function(){doRollback(e);}}
                           title={rolled ? "Already rolled back" : "Revert this change"}
                           style={{fontSize:12,padding:"4px 10px",border:"0.5px solid rgba(0,0,0,0.1)",background:"transparent",borderRadius:6,cursor: rolled ? "not-allowed" : "pointer",color:"#1a1a1a",fontFamily:"inherit",opacity: rolled ? 0.4 : 0.8}}>
                           Rollback
-                        </button>
+                        </button>}
                       </div>
                     </div>;
                   })}
