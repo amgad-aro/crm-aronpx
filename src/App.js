@@ -5,7 +5,8 @@ import {
   Settings, Home, Briefcase, Target, TrendingUp, UserPlus, CheckCircle,
   Activity, Layers, DollarSign, X, Lock, Globe, LogOut, Eye, EyeOff, User, Mail,
   Trash2, AlertCircle, Menu, Upload, MessageSquare, ChevronRight, ChevronDown,
-  ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet, MapPin
+  ClipboardList, Edit, Archive, Award, Zap, RotateCcw, ExternalLink, KeyRound, FileSpreadsheet, MapPin,
+  Monitor, Smartphone, Shield, Clock, RefreshCw
 } from "lucide-react";
 
 // QR code generation for AssetTracker. Static import is fine — ~10 kB
@@ -28,6 +29,70 @@ import { getCurrentPosition as geoGetCurrentPosition } from "./utils/geolocation
 /* ========== CRM ARO v7 — Complete Edition ========== */
 
 const API = process.env.REACT_APP_API_URL || "https://crm-aro-backend-production.up.railway.app";
+
+// ===== SESSION STORAGE (Phase 2) =====
+// The JWT session blob lives in localStorage (Remember me / native) OR in
+// sessionStorage (web, unchecked → cleared when the tab/browser closes). Every
+// reader/clearer must consult BOTH so a session in either store is honored and
+// fully cleared on logout / 401.
+function sessionStoreWrite(obj, persistent) {
+  var raw;
+  try { raw = JSON.stringify(obj); } catch(e) { return; }
+  try {
+    if (persistent) {
+      localStorage.setItem('crm_aro_session', raw);
+      try { sessionStorage.removeItem('crm_aro_session'); } catch(e){}
+    } else {
+      sessionStorage.setItem('crm_aro_session', raw);
+      try { localStorage.removeItem('crm_aro_session'); } catch(e){}
+    }
+  } catch(e){}
+}
+function sessionStoreRead() {
+  try {
+    var raw = (typeof window !== "undefined" && window.localStorage) ? localStorage.getItem('crm_aro_session') : null;
+    if (!raw && typeof window !== "undefined" && window.sessionStorage) raw = sessionStorage.getItem('crm_aro_session');
+    if (raw) { var s = JSON.parse(raw); if (s && s.user && s.token) return s; }
+  } catch(e){}
+  return null;
+}
+function sessionStoreClear() {
+  try { localStorage.removeItem('crm_aro_session'); } catch(e){}
+  try { sessionStorage.removeItem('crm_aro_session'); } catch(e){}
+}
+// Stable per-install device id — SAME key + UUID pattern as pushNotifications.js
+// (get-or-create) so login always sends a non-empty, consistent deviceId.
+function getOrCreateDeviceId() {
+  try {
+    var id = localStorage.getItem("crm_device_id");
+    if (!id) {
+      id = (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : ("dev-" + Math.random().toString(36).slice(2) + Date.now().toString(36));
+      localStorage.setItem("crm_device_id", id);
+    }
+    return id;
+  } catch(e) { return ""; }
+}
+// Capacitor platform ("android"/"ios"/"web"); "web" on the browser build.
+function getClientPlatform() {
+  try {
+    if (typeof window !== "undefined" && window.Capacitor && typeof window.Capacitor.getPlatform === "function") {
+      return String(window.Capacitor.getPlatform() || "web").toLowerCase();
+    }
+  } catch(e){}
+  return "web";
+}
+// Extract the session-id (sid) claim from a JWT payload (base64url) WITHOUT
+// verifying — used only to tell the backend which session to revoke on logout.
+function sidFromToken(tok) {
+  try {
+    var part = String(tok).split(".")[1];
+    if (!part) return null;
+    var payload = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/")));
+    return (payload && payload.sid) ? payload.sid : null;
+  } catch(e) { return null; }
+}
 
 async function apiFetch(path, method, body, token, csrfToken) {
   var opts = { method: method || "GET", headers: { "Content-Type": "application/json" } };
@@ -54,7 +119,7 @@ async function apiFetch(path, method, body, token, csrfToken) {
   var data;
   try { data = await res.json(); } catch(e) { data = {}; }
   if (res.status === 401) {
-    try { localStorage.removeItem('crm_aro_session'); } catch(e) {}
+    sessionStoreClear();
     if (data && data.code === "deactivated") {
       try { alert("Your account has been deactivated. Please contact admin."); } catch(e){}
     }
@@ -70,7 +135,7 @@ var TR = {
   ar: {
     dir: "rtl",
     login: "تسجيل الدخول", loginBtn: "دخول", loginError: "Username أو كلمة المرور غلط",
-    username: "Username", password: "Password", logout: "تسجيل خروج",
+    username: "Username", password: "Password", logout: "تسجيل خروج", rememberMe: "تذكرني", myDevices: "أجهزتي",
     dashboard: "الرئيسية", leads: "الLeads", deals: "الDeals", projects: "المشاريع",
     reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
@@ -138,7 +203,7 @@ var TR = {
   en: {
     dir: "ltr",
     login: "Login", loginBtn: "Sign In", loginError: "Invalid username or password",
-    username: "Username", password: "Password", logout: "Logout",
+    username: "Username", password: "Password", logout: "Logout", rememberMe: "Remember me", myDevices: "My Devices",
     dashboard: "Dashboard", leads: "Leads", deals: "Deals", projects: "Projects",
     reports: "Reports", team: "Sales Team", users: "Users",
     units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Request",
@@ -1267,13 +1332,172 @@ var StatusModal = function(p) {
   </Modal>;
 };
 
+// ===== SESSIONS / DEVICES (Phase 2 — device & session management) =====
+// Coarse userAgent -> { browser, os } for display. Deliberately simple: enough
+// to tell devices apart in the list, not a full UA-parsing library.
+function parseUserAgentLabel(ua) {
+  ua = String(ua || "");
+  if (!ua) return { browser: "Unknown device", os: "" };
+  var browser = /Edg\//.test(ua) ? "Edge"
+    : /OPR\/|Opera/.test(ua) ? "Opera"
+    : (/Chrome\//.test(ua) && !/Chromium/.test(ua)) ? "Chrome"
+    : /Firefox\//.test(ua) ? "Firefox"
+    : (/Safari\//.test(ua) && /Version\//.test(ua)) ? "Safari"
+    : /Capacitor/i.test(ua) ? "ARO App"
+    : "Browser";
+  var os = /Windows NT/.test(ua) ? "Windows"
+    : /iPhone|iPad|iPod/.test(ua) ? "iOS"
+    : /Android/.test(ua) ? "Android"
+    : /Mac OS X|Macintosh/.test(ua) ? "macOS"
+    : /Linux/.test(ua) ? "Linux"
+    : "";
+  return { browser: browser, os: os };
+}
+// 2-letter ISO country code -> flag emoji (regional-indicator letters). "" when missing.
+function countryFlagEmoji(cc) {
+  try {
+    if (!cc || String(cc).length !== 2) return "";
+    return String(cc).toUpperCase().replace(/[A-Z]/g, function(c){ return String.fromCodePoint(127397 + c.charCodeAt(0)); });
+  } catch(e) { return ""; }
+}
+// One device/session row. Presentational — parent injects the revoke handler.
+var SessionRow = function(p) {
+  var s = p.session; var t = p.t;
+  var ua = parseUserAgentLabel(s.userAgent);
+  var isMobile = s.deviceType === "mobile" || s.platform === "android" || s.platform === "ios";
+  var DevIcon = isMobile ? Smartphone : Monitor;
+  var platLabel = s.platform === "android" ? "Android app"
+    : s.platform === "ios" ? "iOS app"
+    : s.platform === "web" ? "Web"
+    : (ua.os || "Web");
+  var loc = [countryFlagEmoji(s.geoCountry), s.geoCity, s.geoCountry].filter(Boolean).join(" ");
+  return <div style={{ display:"flex", alignItems:"center", gap:14, padding:"13px 15px", border:"1px solid "+(s.current?"#BBF7D0":C.border), borderRadius:12, background:s.current?"#F0FDF4":"#fff", marginBottom:10 }}>
+    <div style={{ width:42, height:42, borderRadius:10, background:"#F1F5F9", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><DevIcon size={20} color={C.primary}/></div>
+    <div style={{ flex:1, minWidth:0 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+        <span style={{ fontWeight:700, color:C.text, fontSize:14 }}>{ua.browser}{ua.os?(" · "+ua.os):""}</span>
+        {s.current ? <Badge bg="#DCFCE7" color="#15803D"><CheckCircle size={11}/> This device</Badge> : null}
+        <Badge bg="#F1F5F9" color={C.textLight}>{platLabel}</Badge>
+      </div>
+      <div style={{ fontSize:12.5, color:C.textLight, marginTop:5, display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+        {loc ? <span style={{ display:"inline-flex", alignItems:"center", gap:4 }}><MapPin size={12}/>{loc}</span> : null}
+        {s.ip ? <span style={{ display:"inline-flex", alignItems:"center", gap:4 }}><Globe size={12}/>{s.ip}</span> : null}
+        <span style={{ display:"inline-flex", alignItems:"center", gap:4 }}><Clock size={12}/>{timeAgo(s.lastActive, t)}</span>
+      </div>
+      <div style={{ fontSize:11.5, color:"#94A3B8", marginTop:3 }}>Signed in {absoluteDateTime(s.createdAt)}</div>
+    </div>
+    <button onClick={function(){ p.onRevoke(s); }} disabled={p.busy} title={s.current?"Sign out this device":"Sign out"} style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 12px", borderRadius:9, border:"1px solid "+C.danger, background:"#fff", color:C.danger, fontSize:12.5, fontWeight:600, cursor:p.busy?"not-allowed":"pointer", opacity:p.busy?0.55:1, flexShrink:0, whiteSpace:"nowrap" }}><LogOut size={13}/> Sign out</button>
+  </div>;
+};
+// Presentational list + toolbar. Data + handlers injected so the same panel
+// serves both the self-view page and the admin per-user modal.
+var SessionsPanel = function(p) {
+  var t = p.t;
+  var active = (p.sessions || []).filter(function(s){ return !s.revoked; });
+  var others = p.selfView ? active.filter(function(s){ return !s.current; }).length : active.length;
+  if (p.loading) return <div style={{ padding:"38px 0", textAlign:"center" }}><Loader/></div>;
+  if (p.error) return <div style={{ padding:"20px", textAlign:"center", color:C.danger, fontSize:13 }}>{p.error}</div>;
+  return <div>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14, gap:10, flexWrap:"wrap" }}>
+      <div style={{ fontSize:13, color:C.textLight }}>{active.length} active {active.length===1?"device":"devices"}</div>
+      <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+        <button onClick={p.onRefresh} disabled={p.busy} title="Refresh" style={{ width:34, height:34, borderRadius:9, border:"1px solid "+C.border, background:"#fff", cursor:p.busy?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><RefreshCw size={15} color={C.textLight}/></button>
+        {p.onRevokeAll && others > 0 ? <Btn danger onClick={p.onRevokeAll} loading={p.busy}><LogOut size={13}/> {p.revokeAllLabel||"Sign out all other devices"}</Btn> : null}
+      </div>
+    </div>
+    {active.length === 0
+      ? <div style={{ padding:"36px 16px", textAlign:"center", color:C.textLight, fontSize:13 }}><Shield size={30} color={C.border} style={{ marginBottom:10 }}/><div>{p.emptyLabel||"No active sessions."}</div></div>
+      : active.map(function(s){ return <SessionRow key={s.sid} session={s} t={t} busy={p.busy} onRevoke={p.onRevoke}/>; })
+    }
+  </div>;
+};
+// Self-view page (sidebar "My Devices"). Any authenticated user sees their own
+// sessions. Revoking the CURRENT device clears storage and reloads to login.
+var DevicesPage = function(p) {
+  var t = p.t;
+  var [sessions, setSessions] = useState([]);
+  var [loading, setLoading] = useState(true);
+  var [err, setErr] = useState("");
+  var [busy, setBusy] = useState(false);
+  var load = useCallback(function() {
+    setLoading(true); setErr("");
+    apiFetch("/api/sessions", "GET", null, p.token).then(function(rows){
+      setSessions(Array.isArray(rows) ? rows : []); setLoading(false);
+    }).catch(function(e){ setErr((e && e.message) || "Failed to load sessions"); setLoading(false); });
+  }, [p.token]);
+  useEffect(function(){ load(); }, [load]);
+  var revokeOne = function(s) {
+    if (!window.confirm(s.current ? "Sign out this device? You'll be returned to the login screen." : "Sign out this device?")) return;
+    setBusy(true);
+    apiFetch("/api/sessions/" + encodeURIComponent(s.sid) + "/revoke", "POST", {}, p.token, p.csrfToken).then(function(){
+      if (s.current) { sessionStoreClear(); window.location.reload(); return; }
+      setBusy(false); load();
+    }).catch(function(e){ setBusy(false); alert((e && e.message) || "Failed to sign out"); });
+  };
+  var revokeAll = function() {
+    if (!window.confirm("Sign out all your OTHER devices? This device stays signed in.")) return;
+    setBusy(true);
+    apiFetch("/api/sessions/revoke-all", "POST", {}, p.token, p.csrfToken).then(function(){
+      setBusy(false); load();
+    }).catch(function(e){ setBusy(false); alert((e && e.message) || "Failed"); });
+  };
+  return <div style={{ padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:"ltr", maxWidth:780, margin:"0 auto" }}>
+    <div style={{ marginBottom:18 }}>
+      <h1 style={{ margin:0, fontSize:22, fontWeight:800, color:C.text, display:"flex", alignItems:"center", gap:10 }}><Shield size={22} color={C.accent}/> My Devices &amp; Sessions</h1>
+      <div style={{ color:C.textLight, fontSize:13, marginTop:6 }}>Devices where you're currently signed in. Sign out any you don't recognize.</div>
+    </div>
+    <Card>
+      <SessionsPanel t={t} sessions={sessions} loading={loading} error={err} busy={busy} selfView={true} onRefresh={load} onRevoke={revokeOne} onRevokeAll={revokeAll} emptyLabel="No active sessions yet — they appear here after your next sign-in."/>
+    </Card>
+  </div>;
+};
+// Admin/owner per-user view, rendered inside the Users-page modal. Cross-user
+// reads/revokes are enforced admin/owner-only on the backend too.
+var UserDevicesPanel = function(p) {
+  var t = p.t;
+  var [sessions, setSessions] = useState([]);
+  var [loading, setLoading] = useState(true);
+  var [err, setErr] = useState("");
+  var [busy, setBusy] = useState(false);
+  var load = useCallback(function() {
+    setLoading(true); setErr("");
+    apiFetch("/api/sessions?userId=" + encodeURIComponent(p.userId), "GET", null, p.token).then(function(rows){
+      setSessions(Array.isArray(rows) ? rows : []); setLoading(false);
+    }).catch(function(e){ setErr((e && e.message) || "Failed to load sessions"); setLoading(false); });
+  }, [p.userId, p.token]);
+  useEffect(function(){ load(); }, [load]);
+  var revokeOne = function(s) {
+    if (!window.confirm("Sign out this device for " + (p.userName || "this user") + "?")) return;
+    setBusy(true);
+    apiFetch("/api/sessions/" + encodeURIComponent(s.sid) + "/revoke", "POST", {}, p.token, p.csrfToken).then(function(){
+      setBusy(false); load();
+    }).catch(function(e){ setBusy(false); alert((e && e.message) || "Failed"); });
+  };
+  var revokeAll = function() {
+    var act = (sessions || []).filter(function(s){ return !s.revoked; });
+    if (!act.length) return;
+    if (!window.confirm("Sign out ALL " + act.length + " device(s) for " + (p.userName || "this user") + "?")) return;
+    setBusy(true);
+    Promise.all(act.map(function(s){
+      return apiFetch("/api/sessions/" + encodeURIComponent(s.sid) + "/revoke", "POST", {}, p.token, p.csrfToken).catch(function(){});
+    })).then(function(){ setBusy(false); load(); });
+  };
+  return <SessionsPanel t={t} sessions={sessions} loading={loading} error={err} busy={busy} selfView={false} onRefresh={load} onRevoke={revokeOne} onRevokeAll={revokeAll} revokeAllLabel="Sign out all devices" emptyLabel="No sessions recorded for this user yet."/>;
+};
+
 // ===== LOGIN =====
 var LoginPage = function(p) {
   var t = p.t;
   var [user, setUser] = useState(""); var [pass, setPass] = useState(""); var [err, setErr] = useState(""); var [showPass, setShowPass] = useState(false); var [loading, setLoading] = useState(false);
+  var [remember, setRemember] = useState(true);
   var go = async function() {
     if (!user||!pass) return; setLoading(true); setErr("");
-    try { var data = await apiFetch("/api/login","POST",{username:user,password:pass}); p.onLogin(data.user,data.token,data.csrfToken); }
+    var platform = getClientPlatform();
+    var isNative = platform === "android" || platform === "ios";
+    try {
+      var data = await apiFetch("/api/login","POST",{ username:user, password:pass, rememberMe:remember, platform:platform, deviceId:getOrCreateDeviceId() });
+      p.onLogin(data.user, data.token, data.csrfToken, remember || isNative);
+    }
     catch(e) { setErr(t.loginError); } setLoading(false);
   };
   return <div style={{ position:"relative", minHeight:"100vh", background:"linear-gradient(170deg,#fbfbfd,#f4f1ec)", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Cairo','Segoe UI',sans-serif", padding:16, overflow:"hidden" }}>
@@ -1301,6 +1525,10 @@ var LoginPage = function(p) {
           <button onClick={function(){setShowPass(!showPass);}} style={{ position:"absolute", top:"50%", right:14, transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:"#c4bdb0", display:"flex" }}>{showPass?<EyeOff size={18}/>:<Eye size={18}/>}</button>
         </div>
       </div>
+      <label style={{ display:"flex", alignItems:"center", gap:9, marginBottom:22, cursor:"pointer", userSelect:"none" }}>
+        <input type="checkbox" checked={remember} onChange={function(e){ setRemember(e.target.checked); }} style={{ width:17, height:17, accentColor:"#c19a59", cursor:"pointer" }}/>
+        <span style={{ fontSize:13.5, color:C.text, fontWeight:500 }}>{t.rememberMe||"Remember me"}</span>
+      </label>
       <button onClick={go} disabled={loading} style={{ width:"100%", height:54, borderRadius:14, border:"none", background:"linear-gradient(135deg,#d4af6e,#c19a59,#b08842)", color:"#fff", fontSize:16, fontWeight:700, cursor:"pointer", boxShadow:"0 8px 20px rgba(193,154,89,0.32)", opacity:loading?0.75:1 }}>{loading?t.loading:t.loginBtn}</button>
       <div style={{ textAlign:"center", marginTop:16 }}>
         <a href="/forgot-password" onClick={function(e){ e.preventDefault(); window.history.pushState({}, "", "/forgot-password"); window.dispatchEvent(new PopStateEvent("popstate")); }} style={{ color:"#b08842", fontSize:13, fontWeight:500, textDecoration:"none" }}>Forgot Password?</a>
@@ -1590,6 +1818,8 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke={col} strokeWidth={sw}/><path d="M9 2v1.5M9 14.5V16M2 9h1.5M14.5 9H16M4.1 4.1l1.1 1.1M12.8 12.8l1.1 1.1M4.1 13.9l1.1-1.1M12.8 5.2l1.1-1.1" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "assets":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 1.5L2 5v8l7 3.5L16 13V5L9 1.5z" stroke={col} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/><path d="M2 5l7 3.5L16 5M9 8.5V16" stroke={col} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/></svg>;
+    case "devices":
+      return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="3.5" width="14" height="9" rx="1.5" stroke={col} strokeWidth={sw}/><path d="M6.5 15.5h5M9 12.5v3" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     default:
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="3" stroke={col} strokeWidth={sw}/></svg>;
   }
@@ -1612,6 +1842,7 @@ var Sidebar = function(p) {
     !isHR&&!isOfficeBoy&&{id:"eoi",label:"EOI"},
     !isHR&&!isOfficeBoy&&{id:"deals",label:t.deals},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
+    {id:"devices",label:t.myDevices||"My Devices"},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
@@ -15626,6 +15857,8 @@ var UsersPage = function(p) {
   var [teamSaving,setTeamSaving]=useState(false);
   var [editModal,setEditModal]=useState(null); // {userId, userName, title, role}
   var [editSaving,setEditSaving]=useState(false);
+  var [devicesModal,setDevicesModal]=useState(null); // {userId, userName}
+  var canSeeDevices=p.cu.role==="admin"||p.cu.isOwner===true; // cross-user device view = admin/owner only (matches backend)
   var saveUserEdit=async function(){
     if(!editModal)return;
     // Saturday schedule validation: alternating requires a pattern start date.
@@ -15774,6 +16007,7 @@ var UsersPage = function(p) {
           : <Badge bg={u.active?"#DCFCE7":"#FEE2E2"} color={u.active?"#15803D":"#B91C1C"} onClick={function(){toggleActive(u);}}>{u.active?t.active:t.inactive}</Badge>}</td>
         <td style={{ padding:"11px 12px" }}><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={function(){if(!ownerLocked){setPwModal({userId:uid,userName:displayName});setPwForm({newPass:"",confirmPass:""});setPwMsg("");}}} disabled={ownerLocked} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:ownerLocked?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:ownerLocked?0.3:1 }} title={ownerLocked?"Owner password resets via Forgot Password only":t.changePassword}><KeyRound size={12} color={C.info}/></button>
               {isOnlyAdmin&&!ownerLocked&&<button onClick={function(){setEditModal({userId:uid,userName:displayName,isOwner:isOwnerRow,title:u.title||"",role:u.role||"sales",startingDate:u.startingDate?String(u.startingDate).slice(0,10):"",saturdaySchedule:u.saturdaySchedule||"always_work",saturdayPatternStartDate:u.saturdayPatternStartDate?String(u.saturdayPatternStartDate).slice(0,10):""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title={t.edit||"Edit"}><Edit size={12} color={C.accent}/></button>}
+              {canSeeDevices&&<button onClick={function(){setDevicesModal({userId:uid,userName:displayName});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Devices & sessions"><Monitor size={12} color={C.info}/></button>}
               <button onClick={function(){setTeamModal({userId:uid,userName:u.name,userRole:u.role,teamId:u.teamId||"",teamName:u.teamName||"",reportsTo:u.reportsTo||""});}} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Edit Team"><Users size={12} color="#8B5CF6"/></button><button onClick={function(){if(!isOwnerRow&&u.role!=="admin")del(uid);}} disabled={isOwnerRow||u.role==="admin"} style={{ width:28, height:28, borderRadius:6, border:"1px solid #E2E8F0", background:"#fff", cursor:(isOwnerRow||u.role==="admin")?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", opacity:(isOwnerRow||u.role==="admin")?0.3:1 }} title={isOwnerRow?"Owner cannot be deleted":(u.role==="admin"?"Admin users cannot be deleted":"")}><Trash2 size={12} color={C.danger}/></button></div></td>
       </tr>;})}
       </tbody>
@@ -15837,6 +16071,7 @@ var UsersPage = function(p) {
         }} style={{ flex:1 }}>✅ Save</Btn>
       </div>
     </Modal>}
+    {devicesModal&&<Modal show={true} onClose={function(){setDevicesModal(null);}} title={"🖥️ Devices & Sessions — "+devicesModal.userName} w={640}><UserDevicesPanel userId={devicesModal.userId} userName={devicesModal.userName} token={p.token} csrfToken={p.csrfToken} t={t}/></Modal>}
     {editModal&&<Modal show={true} onClose={function(){setEditModal(null);}} title={"✏️ Edit User — "+editModal.userName}>
       <Inp label={t.title} type="select" value={editModal.title}
         onChange={function(e){
@@ -30730,16 +30965,7 @@ export default function CRMApp() {
   // call could 401 on an expired token and trigger window.location.reload()
   // before the user saw the asset, dropping them at a real login screen on
   // the deep-link URL. Reading synchronously avoids both problems.
-  var savedSession = (function() {
-    try {
-      var raw = (typeof window !== "undefined" && window.localStorage) ? localStorage.getItem('crm_aro_session') : null;
-      if (raw) {
-        var s = JSON.parse(raw);
-        if (s && s.user && s.token) return s;
-      }
-    } catch(e) {}
-    return null;
-  })();
+  var savedSession = sessionStoreRead();
   var [currentUser,setCurrentUser]=useState(savedSession ? savedSession.user : null);
   var [token,setToken]=useState(savedSession ? savedSession.token : null);
   var [csrfToken,setCsrfToken]=useState(savedSession && savedSession.csrfToken ? savedSession.csrfToken : null);
@@ -31596,14 +31822,17 @@ export default function CRMApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  var handleLogin=function(user,tok,csrfTok){
+  var handleLogin=function(user,tok,csrfTok,persistent){
     setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
     // Honour a pending QR deep-link instead of forcing dashboard. Only admins
     // and the Owner can actually see the assets page; non-admins fall through
     // to the dashboard default below via the renderPage guard.
     var defaultPage = deepLinkAssetCode ? "assets" : "dashboard";
     setPage(defaultPage);
-    try { localStorage.setItem('crm_aro_session', JSON.stringify({user:Object.assign({},user),token:tok,csrfToken:csrfTok})); } catch(e){}
+    // Persist to localStorage when Remember me is checked or on native; else to
+    // sessionStorage (cleared when the tab/browser closes). persistent is
+    // undefined for legacy callers -> default to localStorage (prior behavior).
+    sessionStoreWrite({user:Object.assign({},user),token:tok,csrfToken:csrfTok}, persistent !== false);
     // Native push: request permission + register the device token. No-op on web.
     try { initPushNotifications(); } catch(e){}
   };
@@ -31643,7 +31872,16 @@ export default function CRMApp() {
   // refreshed the full 1000-lead list after each rotation, and produced the
   // 409 noise (server cron vs browser cron racing) tracked in MEMORY.md.
 
-  var handleLogout=function(){try{removeTokenFromBackend();}catch(e){}try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);try{localStorage.removeItem('crm_aro_session');}catch(e){}};
+  var handleLogout=function(){
+    // Best-effort: revoke THIS session server-side so the token can't be reused
+    // before expiry. Raw fetch (not apiFetch) to bypass the 401->reload handler;
+    // ignore any failure and clear locally regardless.
+    try {
+      var _sid = sidFromToken(token);
+      if (_sid && token) { fetch(API + "/api/sessions/" + encodeURIComponent(_sid) + "/revoke", { method:"POST", headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+token, "X-CSRF-Token": csrfToken||"" } }).catch(function(){}); }
+    } catch(e){}
+    try{removeTokenFromBackend();}catch(e){}try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);sessionStoreClear();
+  };
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
   // Push tap-to-open: consume a pending leadId captured by the native push
@@ -31669,8 +31907,8 @@ export default function CRMApp() {
       // that and survives login-within-the-same-mount.
       var liveToken = null;
       try {
-        var raw = (typeof window !== "undefined" && window.localStorage) ? localStorage.getItem("crm_aro_session") : null;
-        if (raw) { var s = JSON.parse(raw); if (s && s.token) liveToken = s.token; }
+        var _ss = sessionStoreRead();
+        if (_ss && _ss.token) liveToken = _ss.token;
       } catch(e){ liveToken = null; }
       // GUARD: with no valid token, NEVER fire the fetch — a null-token request
       // would 401 and wipe the session. Just navigate to the right page so the
@@ -31790,7 +32028,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets"};
+  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets",devices:(t.myDevices||"My Devices")};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -31838,6 +32076,7 @@ export default function CRMApp() {
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "team": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <TeamPage {...sp}/>;
       case "users": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <UsersPage {...sp}/>;
+      case "devices": return <DevicesPage {...sp}/>;
       case "brokers": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <BrokersPage {...sp}/> : <DashboardPage {...sp}/>;
       case "archive": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <ArchivePage {...sp}/>;
       case "attendance": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <AttendancePage {...sp}/>;
