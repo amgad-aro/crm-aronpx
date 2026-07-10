@@ -12,6 +12,7 @@ var Resend = require("resend").Resend;
 var rateLimit = require("express-rate-limit");
 var { sendPushNotification } = require("./notifications");
 var b2 = require("./b2");
+var geoip = require("geoip-lite");
 
 // Coerce anything the frontend sends for an ObjectId-typed field into a
 // 24-hex string or null. Handles: empty string, populated {_id, name, ...}
@@ -1200,6 +1201,34 @@ AuditLog.collection.createIndex({ targetUserId: 1, timestamp: -1 }).catch(functi
 AuditLog.collection.createIndex({ performedBy: 1, timestamp: -1 }).catch(function(){});
 AuditLog.collection.createIndex({ type: 1, timestamp: -1 }).catch(function(){});
 
+// Session — one row per login (per device). `sid` is embedded as a JWT claim so a
+// specific session/device can be revoked server-side even though the JWT itself is
+// stateless (enforced in checkUserActive). Tokens minted before this feature carry
+// no sid claim and are grandfathered — never matched here, valid until natural
+// expiry. geoCity is intentionally always null: we ship geoip-lite country-only
+// (the city DB is a ~100MB build/RAM cost we don't use — see trim-geoip-city.js).
+var Session = mongoose.model("Session", new mongoose.Schema({
+  userId:     { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  sid:        { type: String, required: true, unique: true },
+  deviceId:   { type: String, default: "" },
+  userAgent:  { type: String, default: "" },
+  deviceType: { type: String, default: "unknown" }, // mobile | desktop | unknown (detectDeviceType)
+  platform:   { type: String, default: "" },         // web | android | ios (client-reported)
+  ip:         { type: String, default: "" },
+  geoCountry: { type: String, default: null },
+  geoCity:    { type: String, default: null },        // always null under country-only geoip
+  createdAt:  { type: Date, default: Date.now },
+  lastActive: { type: Date, default: Date.now },
+  revoked:    { type: Boolean, default: false },
+  revokedAt:  { type: Date, default: null },
+  expiresAt:  { type: Date, required: true }
+}));
+// Fast per-user revoked-sid load in checkUserActive.
+Session.collection.createIndex({ userId: 1, revoked: 1 }).catch(function(){});
+// TTL — auto-delete a session doc once its token has expired. Safe here: this is
+// the Session model, NOT Lead (the Lead.expiresAt TTL prohibition does not apply).
+Session.collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(function(){});
+
 // ===== TeamMembershipEvent — Phase 1 of the time-locked Target Period overhaul.
 // Append-only log of every team-membership transition (join / leave / transfer),
 // written whenever POST/PUT/DELETE /api/users changes a user's reportsTo, teamId,
@@ -2081,23 +2110,39 @@ async function seedAdmin() {
 }
 
 // ===== AUTH MIDDLEWARE =====
-// Lightweight in-memory cache of users' active flag. The auth middleware
-// re-checks active on every protected request so admin-driven inactivation
-// takes effect for already-logged-in users without waiting for the 7-day
-// JWT to expire. 30-second TTL bounds DB load; PUT /api/users/:id busts the
-// entry on demand, so admin toggles propagate within milliseconds.
+// Lightweight in-memory cache of users' active flag + revoked session ids. The
+// auth middleware re-checks these on every protected request so admin-driven
+// inactivation, password-reset force-logout, and per-session revocation take
+// effect for already-logged-in users without waiting for the JWT to expire.
+// 30-second TTL bounds DB load; PUT /api/users/:id and the session-revoke routes
+// bust the entry on demand, so changes propagate within milliseconds.
 var userActiveCache = {};
 var USER_ACTIVE_CACHE_TTL_MS = 30 * 1000;
 
-async function checkUserActive(userId, tokenIat) {
+async function checkUserActive(userId, tokenIat, tokenSid) {
   var cached = userActiveCache[userId];
   if (!cached || (Date.now() - cached.t) >= USER_ACTIVE_CACHE_TTL_MS) {
     try {
       var u = await User.findById(userId).select("active passwordChangedAt").lean();
+      // Load this user's revoked (and not-yet-TTL-pruned) session ids so the
+      // per-request revocation test is an in-memory lookup, not a DB hit per
+      // request. Bounded by the TTL index on Session.expiresAt.
+      var revokedSids = {};
+      try {
+        var revoked = await Session.find({ userId: userId, revoked: true }).select("sid").lean();
+        for (var ri = 0; ri < revoked.length; ri++) {
+          if (revoked[ri] && revoked[ri].sid) revokedSids[revoked[ri].sid] = 1;
+        }
+      } catch (se) {
+        // Revocation load failed — fail open on revocation ONLY (the active and
+        // password-reset checks below still enforce). Don't lock users out on a
+        // transient Session-collection hiccup.
+      }
       cached = userActiveCache[userId] = {
         active: u ? u.active !== false : false,
         // ms-epoch; null when the user has never reset their password
         pwdChangedAtMs: (u && u.passwordChangedAt) ? new Date(u.passwordChangedAt).getTime() : null,
+        revokedSids: revokedSids,
         t: Date.now()
       };
     } catch (e) {
@@ -2110,6 +2155,11 @@ async function checkUserActive(userId, tokenIat) {
   // Force-logout JWTs issued before the password was last reset (mirrors the
   // active-toggle force-logout). tokenIat is in seconds since epoch per RFC 7519.
   if (cached.pwdChangedAtMs && typeof tokenIat === "number" && (tokenIat * 1000) < cached.pwdChangedAtMs) {
+    return false;
+  }
+  // Per-session revocation. Grandfathering: tokens minted before session tracking
+  // carry no sid → skip this test entirely and stay valid until natural expiry.
+  if (tokenSid && cached.revokedSids && cached.revokedSids[tokenSid]) {
     return false;
   }
   return true;
@@ -2130,7 +2180,7 @@ async function auth(req, res, next) {
   } catch (e) {
     return res.status(401).json({ error: "Invalid token" });
   }
-  var stillActive = await checkUserActive(decoded.id, decoded.iat);
+  var stillActive = await checkUserActive(decoded.id, decoded.iat, decoded.sid);
   if (!stillActive) {
     return res.status(401).json({ error: "Account deactivated", code: "deactivated" });
   }
@@ -4807,11 +4857,53 @@ app.post("/api/login", loginLimiter, async function(req, res) {
     var valid = await bcrypt.compare(req.body.password, user.password);
     if (!valid) return res.status(401).json({ error: "Invalid credentials" });
 
+    // "Remember me" + native handling. Capacitor (android/ios) clients always get
+    // the long-lived token regardless of the checkbox; web honors rememberMe.
+    var platform = String((req.body && req.body.platform) || "").toLowerCase();
+    var isNative = platform === "android" || platform === "ios";
+    // Backward-compat: a login body WITHOUT a rememberMe field (e.g. the pre-Phase-2
+    // web client) defaults to long-lived, so we don't silently drop everyone to
+    // 1-day tokens before the frontend ships the checkbox. Only an explicit
+    // rememberMe:false from the new UI yields a short (1-day) token.
+    var rememberMeProvided = !!(req.body && Object.prototype.hasOwnProperty.call(req.body, "rememberMe"));
+    var rememberMe = rememberMeProvided ? !!req.body.rememberMe : true;
+    var longLived = rememberMe || isNative;
+    var expiresIn = longLived ? "30d" : "1d";
+    var sessionTtlMs = longLived ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+
+    // Mint a server-side session and embed its id (sid) in the JWT so this specific
+    // device can be revoked later (see checkUserActive / the /api/sessions routes).
+    var sid = crypto.randomUUID();
+    var loginUa = req.headers["user-agent"] || "";
+    var loginIp = req.ip || "";
+    var loginGeo = geoLookup(loginIp);
+
     var token = jwt.sign({
       id: user._id,
       role: user.role,
-      name: user.name
-    }, process.env.JWT_SECRET, { expiresIn: "30d" });
+      name: user.name,
+      sid: sid
+    }, process.env.JWT_SECRET, { expiresIn: expiresIn });
+
+    try {
+      await Session.create({
+        userId:     user._id,
+        sid:        sid,
+        deviceId:   String((req.body && req.body.deviceId) || ""),
+        userAgent:  loginUa,
+        deviceType: detectDeviceType(loginUa),
+        platform:   platform,
+        ip:         loginIp,
+        geoCountry: loginGeo.country,
+        geoCity:    loginGeo.city,
+        createdAt:  new Date(),
+        lastActive: new Date(),
+        expiresAt:  new Date(Date.now() + sessionTtlMs)
+      });
+    } catch (sessErr) {
+      // Never block login on a session-store failure — the JWT alone still auths.
+      console.error("[session create]", sessErr && sessErr.message ? sessErr.message : sessErr);
+    }
 
     await User.findByIdAndUpdate(user._id, { lastSeen: new Date() });
     res.json({
@@ -4945,6 +5037,15 @@ app.post("/api/auth/reset-password", resetLimiter, async function(req, res) {
     user.passwordChangedAt = new Date();
     await user.save();
 
+    // Revoke every server-side session for this user on password change. (The
+    // passwordChangedAt < iat test in checkUserActive also force-logs-out pre-reset
+    // tokens — including grandfathered sid-less ones — this covers the sid path.)
+    try {
+      await Session.updateMany({ userId: user._id, revoked: false }, { $set: { revoked: true, revokedAt: new Date() } });
+    } catch (revErr) {
+      console.error("[reset-password revoke sessions]", revErr && revErr.message ? revErr.message : revErr);
+    }
+
     // Force-logout existing sessions: bust the active-flag cache so the
     // next protected request re-fetches passwordChangedAt and rejects any
     // JWT issued before the reset (see checkUserActive above).
@@ -4966,6 +5067,12 @@ app.post("/api/heartbeat", auth, async function(req, res) {
       update.lastActive = new Date();
     }
     await User.findByIdAndUpdate(req.user.id, update);
+    // Refresh THIS session's presence here (the client heartbeats ~every 60s),
+    // NOT on every request — keeps per-request write load flat. Grandfathered
+    // sid-less tokens simply skip this.
+    if (req.user.sid) {
+      try { await Session.updateOne({ sid: req.user.sid }, { $set: { lastActive: new Date() } }); } catch(e){}
+    }
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -4976,6 +5083,81 @@ app.get("/api/me", auth, async function(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ===== SESSIONS / DEVICE TRACKING =====
+// A user always sees their OWN sessions. Viewing ANOTHER user's sessions is
+// restricted to admin role or the Owner flag — HR, office_boy, sales_admin, team
+// leaders, etc. are explicitly NOT allowed to inspect other users' devices.
+async function callerIsAdminOrOwner(reqUserId) {
+  var me = await User.findById(reqUserId).select("role isOwner").lean();
+  return !!(me && (me.role === "admin" || me.isOwner === true));
+}
+
+app.get("/api/sessions", auth, async function(req, res) {
+  try {
+    var targetUserId = String(req.user.id);
+    if (req.query.userId && String(req.query.userId) !== targetUserId) {
+      if (!(await callerIsAdminOrOwner(req.user.id))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      targetUserId = String(req.query.userId);
+    }
+    var sessions = await Session.find({ userId: targetUserId }).sort({ lastActive: -1 }).lean();
+    res.json(sessions.map(function(s) {
+      return {
+        id:         s._id,
+        sid:        s.sid,
+        deviceId:   s.deviceId,
+        userAgent:  s.userAgent,
+        deviceType: s.deviceType,
+        platform:   s.platform,
+        ip:         s.ip,
+        geoCountry: s.geoCountry,
+        geoCity:    s.geoCity,
+        createdAt:  s.createdAt,
+        lastActive: s.lastActive,
+        revoked:    s.revoked,
+        revokedAt:  s.revokedAt,
+        expiresAt:  s.expiresAt,
+        current:    s.sid === req.user.sid
+      };
+    }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Revoke a single session. Callers can revoke their own; admin/Owner can revoke
+// anyone's. Busts the owner's cache so it takes effect within milliseconds.
+app.post("/api/sessions/:sid/revoke", auth, async function(req, res) {
+  try {
+    var target = await Session.findOne({ sid: req.params.sid });
+    if (!target) return res.status(404).json({ error: "Session not found" });
+    if (String(target.userId) !== String(req.user.id)) {
+      if (!(await callerIsAdminOrOwner(req.user.id))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+    if (!target.revoked) {
+      target.revoked = true;
+      target.revokedAt = new Date();
+      await target.save();
+    }
+    delete userActiveCache[String(target.userId)];
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Revoke all of the caller's OTHER sessions (log out every other device). Never
+// touches the current session (identified by the sid claim in the caller's JWT).
+app.post("/api/sessions/revoke-all", auth, async function(req, res) {
+  try {
+    var filter = { userId: req.user.id, revoked: false };
+    if (req.user.sid) filter.sid = { $ne: req.user.sid };
+    var result = await Session.updateMany(filter, { $set: { revoked: true, revokedAt: new Date() } });
+    delete userActiveCache[String(req.user.id)];
+    var n = result ? (result.modifiedCount != null ? result.modifiedCount : result.nModified) : 0;
+    res.json({ success: true, revoked: n || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ===== APP SETTINGS — ROTATION CONFIG (single source of truth in MongoDB) =====
@@ -6090,6 +6272,32 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 function detectDeviceType(ua) {
   if (!ua) return "unknown";
   return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? "mobile" : "desktop";
+}
+
+// Offline IP -> country via geoip-lite (bundled MaxMind GeoLite data — no external
+// API calls). We ship country-only (see trim-geoip-city.js) so city is always
+// null. Returns { country, city } with nulls for private/localhost/link-local and
+// unresolved IPs so a session row never blocks login and never crashes on a LAN
+// address. Handles IPv6-mapped IPv4 (::ffff:) and a stray X-Forwarded-For list.
+function geoLookup(ip) {
+  try {
+    if (!ip) return { country: null, city: null };
+    var clean = String(ip).replace(/^::ffff:/, "").split(",")[0].trim();
+    if (!clean ||
+        clean === "::1" || clean === "127.0.0.1" ||
+        /^10\./.test(clean) ||
+        /^192\.168\./.test(clean) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(clean) ||
+        /^169\.254\./.test(clean) ||
+        /^f[cd][0-9a-f]{2}:/i.test(clean)) {
+      return { country: null, city: null };
+    }
+    var g = geoip.lookup(clean);
+    if (!g) return { country: null, city: null };
+    return { country: g.country || null, city: g.city || null };
+  } catch (e) {
+    return { country: null, city: null };
+  }
 }
 
 // Multi-branch geofence resolver. Returns:
@@ -29455,14 +29663,20 @@ wss.on("connection", function(ws){
   ws.on("pong", function(){ ws.isAlive = true; });
   // Auth handshake: client must send {type:"auth", token} after connect.
   // Until authenticated, the client receives only the hello greeting.
-  ws.on("message", function(raw){
+  ws.on("message", async function(raw){
     try {
       var msg = JSON.parse(raw.toString());
       if (msg && msg.type === "auth" && msg.token) {
         try {
           var decoded = jwt.verify(msg.token, process.env.JWT_SECRET || "secret");
+          // Mirror the REST auth middleware: reject deactivated users, pre-reset
+          // tokens, and revoked sessions on the socket too. Grandfathered sid-less
+          // tokens pass (checkUserActive skips the sid test when there's no sid).
+          var wsOk = await checkUserActive(decoded.id, decoded.iat, decoded.sid);
+          if (!wsOk) { try { ws.send(JSON.stringify({ type: "auth_failed", ts: Date.now() })); } catch(e){} return; }
           ws.userId = String(decoded.id || "");
           ws.role = String(decoded.role || "");
+          ws.sid = decoded.sid || null;
           // BATCH 4 — precompute scope so the broadcast hot path is sync.
           // Until this resolves, ws.scopeCache stays null and clientShould
           // Receive fails closed for scope-relevant events (auth-window race).

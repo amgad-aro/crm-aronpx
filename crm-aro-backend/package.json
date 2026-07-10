@@ -5,7 +5,11 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "postinstall": "node trim-geoip-city.js"
+  },
+  "engines": {
+    "node": ">=24"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1078.0",
@@ -19,6 +23,7 @@
     "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",
     "firebase-admin": "^13.10.0",
+    "geoip-lite": "^2.0.3",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.6.3",
     "nodemailer": "^6.9.0",
