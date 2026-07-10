@@ -6274,10 +6274,27 @@ function detectDeviceType(ua) {
   return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? "mobile" : "desktop";
 }
 
+// GEO_OVERRIDES — manual country corrections for ISP IP ranges that the offline
+// geoip-lite DB (and even ipinfo.io) mis-map. Consulted FIRST in geoLookup, before
+// geoip-lite. Simple prefix match on the cleaned IPv4 string; add entries as bad
+// ranges surface (see the sessions ip-prefix audit).
+//   152.233.  -> EG : an Egyptian ISP range every geo DB reports as Brazil (BR).
+var GEO_OVERRIDES = [
+  { prefix: "152.233.", country: "EG" }
+];
+function geoCountryOverride(ip) {
+  for (var i = 0; i < GEO_OVERRIDES.length; i++) {
+    var o = GEO_OVERRIDES[i];
+    if (o && o.prefix && String(ip).indexOf(o.prefix) === 0) return o.country;
+  }
+  return null;
+}
+
 // Offline IP -> country via geoip-lite (bundled MaxMind GeoLite data — no external
 // API calls). We ship country-only (see trim-geoip-city.js) so city is always
-// null. Returns { country, city } with nulls for private/localhost/link-local and
-// unresolved IPs so a session row never blocks login and never crashes on a LAN
+// null. GEO_OVERRIDES are checked FIRST (fixes known ISP mis-mappings), then
+// geoip-lite. Returns { country, city } with nulls for private/localhost/link-local
+// and unresolved IPs so a session row never blocks login and never crashes on a LAN
 // address. Handles IPv6-mapped IPv4 (::ffff:) and a stray X-Forwarded-For list.
 function geoLookup(ip) {
   try {
@@ -6292,6 +6309,9 @@ function geoLookup(ip) {
         /^f[cd][0-9a-f]{2}:/i.test(clean)) {
       return { country: null, city: null };
     }
+    // Manual ISP overrides win over geoip-lite (which mis-maps some ranges).
+    var ovr = geoCountryOverride(clean);
+    if (ovr) return { country: ovr, city: null };
     var g = geoip.lookup(clean);
     if (!g) return { country: null, city: null };
     return { country: g.country || null, city: g.city || null };
