@@ -6283,9 +6283,11 @@ function detectDeviceType(ua) {
 // ranges surface (see the sessions ip-prefix audit).
 //   152.233.    -> EG : Egyptian ISP range every geo DB reports as Brazil (BR).
 //   79.127.178. -> EG : Egyptian mobile-carrier CGNAT range geolocated as Czech (CZ).
+//   212.102.36. -> EG : Egyptian mobile-carrier range geolocated as Italy (IT).
 var GEO_OVERRIDES = [
   { prefix: "152.233.",    country: "EG" },
-  { prefix: "79.127.178.", country: "EG" }
+  { prefix: "79.127.178.", country: "EG" },
+  { prefix: "212.102.36.", country: "EG" }
 ];
 function geoCountryOverride(ip) {
   for (var i = 0; i < GEO_OVERRIDES.length; i++) {
