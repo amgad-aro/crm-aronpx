@@ -6281,9 +6281,11 @@ function detectDeviceType(ua) {
 // geoip-lite DB (and even ipinfo.io) mis-map. Consulted FIRST in geoLookup, before
 // geoip-lite. Simple prefix match on the cleaned IPv4 string; add entries as bad
 // ranges surface (see the sessions ip-prefix audit).
-//   152.233.  -> EG : an Egyptian ISP range every geo DB reports as Brazil (BR).
+//   152.233.    -> EG : Egyptian ISP range every geo DB reports as Brazil (BR).
+//   79.127.178. -> EG : Egyptian mobile-carrier CGNAT range geolocated as Czech (CZ).
 var GEO_OVERRIDES = [
-  { prefix: "152.233.", country: "EG" }
+  { prefix: "152.233.",    country: "EG" },
+  { prefix: "79.127.178.", country: "EG" }
 ];
 function geoCountryOverride(ip) {
   for (var i = 0; i < GEO_OVERRIDES.length; i++) {
