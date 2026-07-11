@@ -5086,21 +5086,28 @@ app.get("/api/me", auth, async function(req, res) {
 });
 
 // ===== SESSIONS / DEVICE TRACKING =====
-// A user always sees their OWN sessions. Viewing ANOTHER user's sessions is
-// restricted to admin role or the Owner flag — HR, office_boy, sales_admin, team
-// leaders, etc. are explicitly NOT allowed to inspect other users' devices.
-async function callerIsAdminOrOwner(reqUserId) {
-  var me = await User.findById(reqUserId).select("role isOwner").lean();
-  return !!(me && (me.role === "admin" || me.isOwner === true));
+// Sessions / device management is OWNER-ONLY on every route — every non-owner
+// (INCLUDING admins) gets 403, even for their own sessions. Uses the Owner
+// Protection Layer's identity check (isOwnerUser / the isOwner flag), NOT role.
+// The self-view page and the Users-page Devices control are owner-only on the
+// frontend too. Because ONLY the Owner can reach these routes, the per-target
+// ownerProtected() guard is moot and intentionally omitted (see PART B report).
+async function requireOwner(req, res, next) {
+  try {
+    var u = await User.findById(req.user.id).select("isOwner active").lean();
+    if (!u || u.active === false || !isOwnerUser(u)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    return next();
+  } catch (e) { return res.status(500).json({ error: e.message }); }
 }
 
-app.get("/api/sessions", auth, async function(req, res) {
+app.get("/api/sessions", auth, requireOwner, async function(req, res) {
   try {
+    // Owner-only route (requireOwner). The Owner may view any user's sessions via
+    // ?userId, or their own when it's omitted.
     var targetUserId = String(req.user.id);
     if (req.query.userId && String(req.query.userId) !== targetUserId) {
-      if (!(await callerIsAdminOrOwner(req.user.id))) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
       targetUserId = String(req.query.userId);
     }
     var sessions = await Session.find({ userId: targetUserId }).sort({ lastActive: -1 }).lean();
@@ -5126,17 +5133,12 @@ app.get("/api/sessions", auth, async function(req, res) {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Revoke a single session. Callers can revoke their own; admin/Owner can revoke
-// anyone's. Busts the owner's cache so it takes effect within milliseconds.
-app.post("/api/sessions/:sid/revoke", auth, async function(req, res) {
+// Revoke a single session. Owner-only (the Owner can revoke anyone's session).
+// Busts the owner's cache so it takes effect within milliseconds.
+app.post("/api/sessions/:sid/revoke", auth, requireOwner, async function(req, res) {
   try {
     var target = await Session.findOne({ sid: req.params.sid });
     if (!target) return res.status(404).json({ error: "Session not found" });
-    if (String(target.userId) !== String(req.user.id)) {
-      if (!(await callerIsAdminOrOwner(req.user.id))) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-    }
     if (!target.revoked) {
       target.revoked = true;
       target.revokedAt = new Date();
@@ -5149,7 +5151,8 @@ app.post("/api/sessions/:sid/revoke", auth, async function(req, res) {
 
 // Revoke all of the caller's OTHER sessions (log out every other device). Never
 // touches the current session (identified by the sid claim in the caller's JWT).
-app.post("/api/sessions/revoke-all", auth, async function(req, res) {
+// Owner-only, self-scoped.
+app.post("/api/sessions/revoke-all", auth, requireOwner, async function(req, res) {
   try {
     var filter = { userId: req.user.id, revoked: false };
     if (req.user.sid) filter.sid = { $ne: req.user.sid };

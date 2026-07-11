@@ -1842,7 +1842,7 @@ var Sidebar = function(p) {
     !isHR&&!isOfficeBoy&&{id:"eoi",label:"EOI"},
     !isHR&&!isOfficeBoy&&{id:"deals",label:t.deals},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
-    {id:"devices",label:t.myDevices||"My Devices"},
+    p.cu.isOwner===true&&{id:"devices",label:t.myDevices||"My Devices",adminSection:true},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
@@ -15858,7 +15858,7 @@ var UsersPage = function(p) {
   var [editModal,setEditModal]=useState(null); // {userId, userName, title, role}
   var [editSaving,setEditSaving]=useState(false);
   var [devicesModal,setDevicesModal]=useState(null); // {userId, userName}
-  var canSeeDevices=p.cu.role==="admin"||p.cu.isOwner===true; // cross-user device view = admin/owner only (matches backend)
+  var canSeeDevices=p.cu.isOwner===true; // sessions feature is OWNER-ONLY (Owner flag, not role — matches backend requireOwner)
   var saveUserEdit=async function(){
     if(!editModal)return;
     // Saturday schedule validation: alternating requires a pattern start date.
@@ -32076,7 +32076,7 @@ export default function CRMApp() {
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "team": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <TeamPage {...sp}/>;
       case "users": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <UsersPage {...sp}/>;
-      case "devices": return <DevicesPage {...sp}/>;
+      case "devices": return currentUser.isOwner===true ? <DevicesPage {...sp}/> : <DashboardPage {...sp}/>;
       case "brokers": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <BrokersPage {...sp}/> : <DashboardPage {...sp}/>;
       case "archive": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <ArchivePage {...sp}/>;
       case "attendance": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <AttendancePage {...sp}/>;
