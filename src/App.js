@@ -135,7 +135,7 @@ var TR = {
   ar: {
     dir: "rtl",
     login: "تسجيل الدخول", loginBtn: "دخول", loginError: "Username أو كلمة المرور غلط",
-    username: "Username", password: "Password", logout: "تسجيل خروج", rememberMe: "تذكرني", myDevices: "أجهزتي",
+    username: "Username", password: "Password", logout: "تسجيل خروج", rememberMe: "تذكرني",
     dashboard: "الرئيسية", leads: "الLeads", deals: "الDeals", projects: "المشاريع",
     reports: "التقارير", team: "فريق المبيعات", users: "Users",
     units: "الوحدات", settings: "الإعدادات", channels: "القنوات", dailyReq: "Daily Request",
@@ -203,7 +203,7 @@ var TR = {
   en: {
     dir: "ltr",
     login: "Login", loginBtn: "Sign In", loginError: "Invalid username or password",
-    username: "Username", password: "Password", logout: "Logout", rememberMe: "Remember me", myDevices: "My Devices",
+    username: "Username", password: "Password", logout: "Logout", rememberMe: "Remember me",
     dashboard: "Dashboard", leads: "Leads", deals: "Deals", projects: "Projects",
     reports: "Reports", team: "Sales Team", users: "Users",
     units: "Units", settings: "Settings", channels: "Channels", dailyReq: "Daily Request",
@@ -1411,48 +1411,9 @@ var SessionsPanel = function(p) {
     }
   </div>;
 };
-// Self-view page (sidebar "My Devices"). Any authenticated user sees their own
-// sessions. Revoking the CURRENT device clears storage and reloads to login.
-var DevicesPage = function(p) {
-  var t = p.t;
-  var [sessions, setSessions] = useState([]);
-  var [loading, setLoading] = useState(true);
-  var [err, setErr] = useState("");
-  var [busy, setBusy] = useState(false);
-  var load = useCallback(function() {
-    setLoading(true); setErr("");
-    apiFetch("/api/sessions", "GET", null, p.token).then(function(rows){
-      setSessions(Array.isArray(rows) ? rows : []); setLoading(false);
-    }).catch(function(e){ setErr((e && e.message) || "Failed to load sessions"); setLoading(false); });
-  }, [p.token]);
-  useEffect(function(){ load(); }, [load]);
-  var revokeOne = function(s) {
-    if (!window.confirm(s.current ? "Sign out this device? You'll be returned to the login screen." : "Sign out this device?")) return;
-    setBusy(true);
-    apiFetch("/api/sessions/" + encodeURIComponent(s.sid) + "/revoke", "POST", {}, p.token, p.csrfToken).then(function(){
-      if (s.current) { sessionStoreClear(); window.location.reload(); return; }
-      setBusy(false); load();
-    }).catch(function(e){ setBusy(false); alert((e && e.message) || "Failed to sign out"); });
-  };
-  var revokeAll = function() {
-    if (!window.confirm("Sign out all your OTHER devices? This device stays signed in.")) return;
-    setBusy(true);
-    apiFetch("/api/sessions/revoke-all", "POST", {}, p.token, p.csrfToken).then(function(){
-      setBusy(false); load();
-    }).catch(function(e){ setBusy(false); alert((e && e.message) || "Failed"); });
-  };
-  return <div style={{ padding:"24px 16px 40px", fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", direction:"ltr", maxWidth:780, margin:"0 auto" }}>
-    <div style={{ marginBottom:18 }}>
-      <h1 style={{ margin:0, fontSize:22, fontWeight:800, color:C.text, display:"flex", alignItems:"center", gap:10 }}><Shield size={22} color={C.accent}/> My Devices &amp; Sessions</h1>
-      <div style={{ color:C.textLight, fontSize:13, marginTop:6 }}>Devices where you're currently signed in. Sign out any you don't recognize.</div>
-    </div>
-    <Card>
-      <SessionsPanel t={t} sessions={sessions} loading={loading} error={err} busy={busy} selfView={true} onRefresh={load} onRevoke={revokeOne} onRevokeAll={revokeAll} emptyLabel="No active sessions yet — they appear here after your next sign-in."/>
-    </Card>
-  </div>;
-};
-// Admin/owner per-user view, rendered inside the Users-page modal. Cross-user
-// reads/revokes are enforced admin/owner-only on the backend too.
+// Owner-only per-user view, rendered inside the Users-page Devices modal — the
+// single place device/session management lives (the standalone self-view page was
+// removed). Reads/revokes are enforced owner-only on the backend (requireOwner).
 var UserDevicesPanel = function(p) {
   var t = p.t;
   var [sessions, setSessions] = useState([]);
@@ -1818,8 +1779,6 @@ var SidebarIcon = function(id, active){
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke={col} strokeWidth={sw}/><path d="M9 2v1.5M9 14.5V16M2 9h1.5M14.5 9H16M4.1 4.1l1.1 1.1M12.8 12.8l1.1 1.1M4.1 13.9l1.1-1.1M12.8 5.2l1.1-1.1" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     case "assets":
       return <svg style={base} viewBox="0 0 18 18" fill="none"><path d="M9 1.5L2 5v8l7 3.5L16 13V5L9 1.5z" stroke={col} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/><path d="M2 5l7 3.5L16 5M9 8.5V16" stroke={col} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/></svg>;
-    case "devices":
-      return <svg style={base} viewBox="0 0 18 18" fill="none"><rect x="2" y="3.5" width="14" height="9" rx="1.5" stroke={col} strokeWidth={sw}/><path d="M6.5 15.5h5M9 12.5v3" stroke={col} strokeWidth={sw} strokeLinecap="round"/></svg>;
     default:
       return <svg style={base} viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="3" stroke={col} strokeWidth={sw}/></svg>;
   }
@@ -1842,7 +1801,6 @@ var Sidebar = function(p) {
     !isHR&&!isOfficeBoy&&{id:"eoi",label:"EOI"},
     !isHR&&!isOfficeBoy&&{id:"deals",label:t.deals},
     isSalesOrTL&&{id:"kpis",label:"KPIs"},
-    p.cu.isOwner===true&&{id:"devices",label:t.myDevices||"My Devices",adminSection:true},
     isOnlyAdmin&&{id:"reports",label:t.reports,adminSection:true},
     isOnlyAdmin&&{id:"commissions",label:"Commissions",adminSection:true},
     isAdmin&&{id:"team",label:t.team,adminSection:true},
@@ -32028,7 +31986,7 @@ export default function CRMApp() {
 
   var isAdmin=currentUser.role==="admin"||currentUser.role==="manager"||currentUser.role==="team_leader"; var isOnlyAdmin=currentUser.role==="admin"||currentUser.role==="sales_admin";
   var currentPage=page||"dashboard";
-  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets",devices:(t.myDevices||"My Devices")};
+  var titles={dashboard:t.dashboard,kpis:"KPIs",leads:t.leads,dailyReq:t.dailyReq,deals:t.deals,eoi:"EOI",projects:t.projects,reports:t.reports,team:t.team,users:t.users,archive:t.archive,queue:"Assignment Queue",attendance:"Attendance",offsiteRequests:"Off-site Requests",salaries:"Salaries",companyOffDays:"Company Off-Days",settings:t.settings,assets:"Assets"};
   // Server already filters users by role — p.users IS the team
   var myId = String(currentUser.id||currentUser._id||"");
 
@@ -32076,7 +32034,6 @@ export default function CRMApp() {
       case "reports": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <ReportsPage {...sp}/> : <DashboardPage {...sp}/>;
       case "team": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <TeamPage {...sp}/>;
       case "users": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <UsersPage {...sp}/>;
-      case "devices": return currentUser.isOwner===true ? <DevicesPage {...sp}/> : <DashboardPage {...sp}/>;
       case "brokers": return (currentUser.role==="admin"||currentUser.role==="sales_admin") ? <BrokersPage {...sp}/> : <DashboardPage {...sp}/>;
       case "archive": return currentUser.role==="office_boy" ? <DashboardPage {...sp}/> : <ArchivePage {...sp}/>;
       case "attendance": return (currentUser.role==="hr"||currentUser.role==="office_boy") ? <DashboardPage {...sp}/> : <AttendancePage {...sp}/>;
