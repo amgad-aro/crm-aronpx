@@ -401,8 +401,13 @@ var SearchableSelect = function(props){
   var allOpts = (props.hideEmpty ? [] : [{ value: "", label: emptyLabel }]).concat(options);
   var ql = q.trim().toLowerCase();
   var filtered = ql ? allOpts.filter(function(o){ return String(o.label||"").toLowerCase().indexOf(ql) !== -1; }) : allOpts;
-  var selected = allOpts.filter(function(o){ return String(o.value)===String(props.value||""); })[0];
-  var triggerLabel = selected ? selected.label : (props.value || "");
+  // Object-safe value: a caller may pass a populated ref ({_id,...}) instead of
+  // an id string. Coerce to _id so it matches an option AND triggerLabel never
+  // ends up a raw object — React refuses to render one as a child, blanking the
+  // page. Hardens every searchable dropdown, not just the one that surfaced it.
+  var rawVal = (props.value && typeof props.value === "object") ? (props.value._id || "") : props.value;
+  var selected = allOpts.filter(function(o){ return String(o.value)===String(rawVal||""); })[0];
+  var triggerLabel = selected ? selected.label : (rawVal || "");
 
   useEffect(function(){
     if (!open) return;
@@ -2951,6 +2956,13 @@ var LeadForm = function(p) {
     }
     if (base.externalSalesAgentId && typeof base.externalSalesAgentId === "object") {
       base.externalSalesAgentId = String(base.externalSalesAgentId._id || "");
+    }
+    // agentId comes back POPULATED ({_id,name,title,...}) from the leads-list
+    // query. Coerce to its id string so the searchable Agent picker binds to an
+    // option value — a raw object would render as a React child and blank the
+    // whole form. Mirrors the externalBrokerId / externalSalesAgentId normalize.
+    if (base.agentId && typeof base.agentId === "object") {
+      base.agentId = String(base.agentId._id || "");
     }
     // Defensive normalize: an existing lead may come back with externalDealConfig
     // as an empty object (or with string-typed pcts from old payloads). Coerce
