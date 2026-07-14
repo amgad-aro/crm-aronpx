@@ -12762,6 +12762,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // Leaving an absent field undefined lets that guard PRESERVE the existing
     // split; an explicit null/"" from the split modal still normalizes and clears.
     if (req.body.splitAgent2Id !== undefined) req.body.splitAgent2Id = normId(req.body.splitAgent2Id);
+    // Nested resale-party agent refs — same empty-string / populated-object
+    // CastError guard as the top-level agentId above. validateResaleParties
+    // sanitizes these on create + convert, but the edit PUT applies
+    // req.body.resaleParties directly, so a not-with-us party's "" agentId would
+    // CastError on findByIdAndUpdate ("Cast to ObjectId failed for value \"\"").
+    if (req.body.resaleParties && typeof req.body.resaleParties === "object") {
+      ["seller", "buyer"].forEach(function(side){
+        var pty = req.body.resaleParties[side];
+        if (pty && typeof pty === "object") pty.agentId = normId(pty.agentId);
+      });
+    }
     // The 🔒 lock is restricted to admin / sales_admin / team_leader / manager.
     // Silently drop the field from other roles so a sales client can't bypass
     // the UI gate — the rest of the PUT still applies.
