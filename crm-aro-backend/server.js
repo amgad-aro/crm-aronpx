@@ -754,6 +754,13 @@ var commissionCycleSchema = new mongoose.Schema({
   commissionRate:     { type: Number, default: 0 },   // نسبه العموله (0.03 = 3%)
   claimAmount:        { type: Number, default: 0 },   // = claimUnitValue × commissionRate (gross invoice incl. VAT)
   receivedAmount:     { type: Number, default: 0 },   // admin-entered net cash actually received
+  // Withholding-5% exemption (new Egyptian tax regulation — developers skip the
+  // 5% withholding at source until ARO hits an annual sales threshold, then it
+  // resumes). Per-CYCLE because a deal's cycles can straddle the threshold.
+  // false (default) = withholding applies normally, so existing cycles are
+  // unaffected. Admin/SA-toggled; blocked on ambassador deals (already no
+  // withholding) and locked once the cycle reaches paid_to_team.
+  withholdingExempt:  { type: Boolean, default: false },
   claim_submitted:    { type: commissionStageSchema, default: function(){ return {}; } },
   invoice_submitted:  { type: commissionStageSchema, default: function(){ return {}; } },
   received:           { type: commissionStageSchema, default: function(){ return {}; } },
@@ -25782,7 +25789,7 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
         // Canonical per-cycle state-tax split — same math everywhere.
         var nv = ca / 1.14;   // net of VAT
         var vt = ca - nv;     // VAT 14%
-        var wh = nv * 0.05;   // withholding 5% (base = net of VAT)
+        var wh = cy.withholdingExempt ? 0 : nv * 0.05;   // withholding 5% (base = net of VAT); 0 when the cycle is withholding-exempt
 
         // Phase R-14 — CASH trigger: received.date. Drives Total Claims,
         // Net of VAT, Withholding 5%, Net Revenue, and the Withholding-by-deal
@@ -25814,16 +25821,23 @@ app.get("/api/commissions/annual-summary", auth, salesAdminOnly, async function(
             // theoretical net that reconciles to Excel).
             netRevenueTotal  += (ca - vt - wh);
 
-            withholdingByDeal.push({
-              cycleId:           String(cy._id),
-              commissionId:      String(doc._id),
-              customerName:      snap.customerName || "",
-              projectName:       snap.projectName || "",
-              cycleNumber:       cy.cycleNumber,
-              claimDate:         rd,   // received.date — the cash-in date
-              claimAmount:       ca,
-              withholdingAmount: wh
-            });
+            // Withholding-exempt cycles contribute 0 withholding (wh === 0) — omit
+            // them from the per-deal withholding table so it isn't padded with
+            // 0-value rows. They still count in Total Claims / Net of VAT / Net
+            // Revenue above (with withholding 0); the "No 5% W/H" cycle badge on
+            // the Commissions page explains the higher net.
+            if (!cy.withholdingExempt) {
+              withholdingByDeal.push({
+                cycleId:           String(cy._id),
+                commissionId:      String(doc._id),
+                customerName:      snap.customerName || "",
+                projectName:       snap.projectName || "",
+                cycleNumber:       cy.cycleNumber,
+                claimDate:         rd,   // received.date — the cash-in date
+                claimAmount:       ca,
+                withholdingAmount: wh
+              });
+            }
           }
         }
 
@@ -26046,7 +26060,7 @@ app.get("/api/commissions/profit-by-deal", auth, strictAdminOnly, async function
           } else {
             var nv = ca / 1.14;
             var vt = ca - nv;
-            var wh = nv * 0.05;
+            var wh = cy.withholdingExempt ? 0 : nv * 0.05;
             revenue += (ca - vt - wh);
           }
         }
@@ -26705,7 +26719,7 @@ app.get("/api/annual-pnl", auth, strictAdminOnly, async function(req, res) {
         } else {
           var nv = ca / 1.14;
           var vt = ca - nv;
-          var wh = nv * 0.05;
+          var wh = cy.withholdingExempt ? 0 : nv * 0.05;
           grossClaim       += ca;
           netOfVatTotal    += nv;
           vatTotal         += vt;
@@ -27764,6 +27778,86 @@ app.patch("/api/commissions/:id/cycles/:cycleId/claim-data", auth, salesAdminOnl
   } catch(e) {
     console.error("[PATCH /api/commissions/:id/cycles/:cycleId/claim-data]", e && e.message);
     res.status(500).json({ error: e && e.message ? e.message : "claim_backfill_failed" });
+  }
+});
+
+// PATCH cycle withholding-exempt — toggle the per-cycle 5%-withholding exemption
+// (new Egyptian tax regulation: developers skip the 5% withholding at source
+// until ARO hits an annual sales threshold, then it resumes; per-cycle because a
+// deal's collection cycles can straddle the threshold). Admin/sales_admin only.
+// Rules: blocked on ambassador deals (they already pay no withholding); editable
+// while the cycle is pending_claim/claim_submitted/invoice_submitted/received;
+// locked once the cycle reaches paid_to_team; never on a cancelled commission or
+// cancelled cycle. Body: { exempt: Boolean }. When the stored receivedAmount is
+// still the formula pre-fill (net of 5% withholding, or full claim when already
+// exempt), it is rolled to the new exempt state; an admin-entered receivedAmount
+// is left untouched (formula-match heuristic — taxed vs exempt differ by ~4.4%
+// of the claim, far beyond the 0.5 EGP tolerance, so no manual value collides).
+// NOTE: intentionally does NOT call computeAllRecipientShares — team shares are
+// claimAmount-based and unaffected by withholding, and that helper re-reads
+// current per-1000 rates (would re-rate a frozen chain if rates drifted). Other
+// cycle-mutating endpoints (stage, claim-data, add-cycle) likewise skip it.
+app.patch("/api/commissions/:id/cycles/:cycleId/withholding-exempt", auth, salesAdminOnly, async function(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ error: "Invalid id" });
+    var c = await Commission.findById(req.params.id);
+    if (!c) return res.status(404).json({ error: "Commission not found" });
+    if (c.status === "cancelled") return res.status(400).json({ error: "cannot edit a cancelled commission" });
+    // Ambassador deals pay NO withholding — the exemption is meaningless and must
+    // never be set on them (the analytics aggregators take the ambassador branch
+    // and ignore the withholding term regardless, but reject up front for clarity).
+    if (c.ambassadorSplit && c.ambassadorSplit.isAmbassador) {
+      return res.status(400).json({ error: "withholding exemption does not apply to ambassador deals" });
+    }
+    var cyc = c.cycles.id(req.params.cycleId);
+    if (!cyc) return res.status(404).json({ error: "Cycle not found" });
+    if (cyc.state === "paid_to_team") return res.status(400).json({ error: "cannot change withholding exemption on a paid-to-team cycle" });
+    if (cyc.state === "cancelled")    return res.status(400).json({ error: "cannot change withholding exemption on a cancelled cycle" });
+
+    var body = req.body || {};
+    if (body.exempt !== true && body.exempt !== false) {
+      return res.status(400).json({ error: "exempt (boolean) is required" });
+    }
+    var exempt    = body.exempt;
+    var wasExempt = !!cyc.withholdingExempt;
+
+    function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
+
+    // Formula-match receivedAmount recompute (received-stage only; earlier stages
+    // have receivedAmount 0, later stages are locked/blocked above). The received
+    // pre-fill is claimAmount − 5%-withholding when taxed, or the full claimAmount
+    // when exempt. If the stored value still matches the formula under the OLD
+    // exempt state, it was the auto pre-fill → roll it to the NEW state's value;
+    // any other number was typed by the admin and is preserved.
+    var recomputedReceived = null;
+    if (cyc.state === "received") {
+      var ca = Number(cyc.claimAmount || 0);
+      if (ca > 0) {
+        var taxedNet   = round2(ca - (ca / 1.14) * 0.05);
+        var exemptNet  = round2(ca);
+        var curReceived = round2(Number(cyc.receivedAmount || 0));
+        var oldFormula = wasExempt ? exemptNet : taxedNet;
+        if (Math.abs(curReceived - oldFormula) < 0.5) {
+          var newVal = exempt ? exemptNet : taxedNet;
+          if (newVal !== curReceived) { cyc.receivedAmount = newVal; recomputedReceived = newVal; }
+        }
+      }
+    }
+
+    cyc.withholdingExempt = exempt;
+    c.markModified("cycles");
+    await c.save();
+
+    var noteSuffix = recomputedReceived != null
+      ? " (received recomputed → " + Math.round(recomputedReceived).toLocaleString() + " EGP)"
+      : "";
+    await logCommissionActivity(req.user, c.leadId, "commission_cycle_withholding_exempt",
+      "[Commission] cycle " + cyc.cycleNumber + " — withholding 5% " + (exempt ? "EXEMPT" : "applies") + noteSuffix);
+
+    res.json(c.toObject());
+  } catch(e) {
+    console.error("[PATCH /api/commissions/:id/cycles/:cycleId/withholding-exempt]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "withholding_exempt_failed" });
   }
 });
 
