@@ -27633,6 +27633,10 @@ var CommissionsPage = function(p) {
   // page reload. No persistence by design — pure UI scratchpad.
   var [calcUnit, setCalcUnit] = useState("");
   var [calcRate, setCalcRate] = useState("");
+  // Withholding-5% toggle for the calculator (default ON = current behavior).
+  // When OFF, the Withholding row shows 0 and Net Due = Gross (no 5% subtracted).
+  // Calculator-only, no persistence — mirrors the per-cycle withholdingExempt feature.
+  var [calcApplyWithholding, setCalcApplyWithholding] = useState(true);
   // Phase R-6 — Expenses + P&L section on Annual Summary tab (admin only).
   // pnl is the full /api/annual-pnl response (totals + chart bins + folded
   // expense rows). Refetched on year change + after any expense/tax edit.
@@ -29050,7 +29054,7 @@ var CommissionsPage = function(p) {
       var calcGross    = calcUnitNum > 0 && calcRateDec > 0 ? calcUnitNum * calcRateDec : 0;
       var calcNetOfVat = calcGross > 0 ? calcGross / 1.14 : 0;
       var calcVat      = calcGross - calcNetOfVat;
-      var calcWith5    = calcNetOfVat * 0.05;
+      var calcWith5    = calcApplyWithholding ? calcNetOfVat * 0.05 : 0;
       var calcNetDue   = calcGross > 0 ? calcGross - calcWith5 : 0;
 
       return <div style={{ maxWidth:600, marginBottom:18, background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"14px 16px" }}>
@@ -29069,7 +29073,13 @@ var CommissionsPage = function(p) {
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Gross Commission (incl. VAT)</span><b>{fmtMoney2(calcGross)}</b></div>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Net of VAT</span><span>{fmtMoney2(calcNetOfVat)}</span></div>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>VAT 14%</span><span>{fmtMoney2(calcVat)}</span></div>
-          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}><span>Withholding 5%</span><span>{fmtMoney2(calcWith5)}</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:3 }}>
+            <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", userSelect:"none" }} title="Apply 5% withholding">
+              <input type="checkbox" checked={calcApplyWithholding} onChange={function(e){ setCalcApplyWithholding(e.target.checked); }} style={{ cursor:"pointer", margin:0 }}/>
+              <span style={{ color: calcApplyWithholding ? C.text : C.textLight }}>Withholding 5%</span>
+            </label>
+            <span style={{ color: calcApplyWithholding ? C.text : C.textLight }}>{fmtMoney2(calcWith5)}</span>
+          </div>
           <div style={{ display:"flex", justifyContent:"space-between", paddingTop:6, marginTop:4, borderTop:"1px solid #CBD5E1", color:C.success, fontWeight:700 }}><span>Net Due</span><span>{fmtMoney2(calcNetDue)}</span></div>
         </div>
       </div>;
