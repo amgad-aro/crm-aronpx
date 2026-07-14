@@ -26908,7 +26908,8 @@ var CommissionCycleStageModal = function(p) {
       // Phase R-5 — exact formula: netReceived = grossClaim − (grossClaim / 1.14) × 0.05.
       // Pre-fill at piaster precision; MoneyInput preserves the decimal until the
       // admin edits the field (its onChange strip is integer-only — pre-R-5 behavior).
-      var nr = ca - (ca / 1.14) * 0.05;
+      // Withholding-exempt cycle: no 5% withheld, so the net received == full claim.
+      var nr = cyc.withholdingExempt ? ca : ca - (ca / 1.14) * 0.05;
       return round2(nr).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
     return "";
@@ -26952,7 +26953,7 @@ var CommissionCycleStageModal = function(p) {
   var gross    = cuvNum > 0 && rateDec > 0 ? cuvNum * rateDec : 0;
   var netOfVat = gross > 0 ? gross / 1.14 : 0;
   var vat      = gross - netOfVat;
-  var with5    = netOfVat * 0.05;
+  var with5    = (cyc && cyc.withholdingExempt) ? 0 : netOfVat * 0.05;
   var netRcv   = gross > 0 ? gross - with5 : 0;
   // Phase R-14 — ambassador deals pay NO VAT and NO withholding; the only
   // deduction is the optional developer tax. The claim preview must reflect
@@ -27065,7 +27066,7 @@ var CommissionClaimBackfillModal = function(p) {
   var gross    = unitNum > 0 && rateDec > 0 ? unitNum * rateDec : 0;
   var netOfVat = gross > 0 ? gross / 1.14 : 0;
   var vat      = gross - netOfVat;
-  var with5    = netOfVat * 0.05;
+  var with5    = (cyc && cyc.withholdingExempt) ? 0 : netOfVat * 0.05;
   var netRcv   = gross > 0 ? gross - with5 : 0;
   // Phase R-14 — ambassador deals: no VAT / no withholding; only the optional
   // developer tax. Mirror the stage-modal claim preview branch.
@@ -28118,6 +28119,17 @@ var CommissionsPage = function(p) {
     // Restore — only a cancelled cycle inside a still-active/fully_paid
     // commission. (Page is already admin/sales_admin-gated at the route level.)
     var canRestore = !isCancelledCommission && cycle.state === "cancelled";
+    // Withholding-5% exemption (per-cycle). Checkbox is admin/SA-only and hidden
+    // on ambassador + resale deals (already tax-free), on paid_to_team/cancelled
+    // cycles, and on a cancelled commission. The "No 5% W/H" badge shows for all
+    // roles when set — but never on ambassador/resale cycles (withholding is 0
+    // there anyway, so the badge would mislead).
+    var cycIsAmb    = !!(c && c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
+    var cycIsResale = !!(c && c.snapshot && c.snapshot.saleType === "Resale");
+    var isAdminSA   = p.cu && (p.cu.role === "admin" || p.cu.role === "sales_admin");
+    var canToggleWithholdingExempt = isAdminSA && !cycIsAmb && !cycIsResale
+      && cycle.state !== "paid_to_team" && cycle.state !== "cancelled" && !isCancelledCommission;
+    var showNoWhBadge = !!cycle.withholdingExempt && !cycIsAmb && !cycIsResale;
     return <div key={String(cycle._id || cycle.cycleNumber)} style={{ border:"1px solid #E2E8F0", borderRadius:10, padding:"10px 12px", marginBottom:8, background: isActiveCycle ? "#FAFBFF" : "#fff" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: 12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -28125,6 +28137,7 @@ var CommissionsPage = function(p) {
           <span style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:10, background: pillBg, color: pillFg }}>
             {String(cycle.state || "").replace(/_/g, " ")}
           </span>
+          {showNoWhBadge && <span title="Under new tax regulation — no 5% withholding on this cycle" style={{ fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:10, background:"#EFF6FF", color:"#1D4ED8" }}>No 5% W/H</span>}
         </div>
         <div style={{ fontSize:11, color:C.textLight, display:"flex", alignItems:"center", gap:8 }}>
           {Number(cycle.receivedAmount || 0) > 0 && <span>Received: <b>{fmtMoney(cycle.receivedAmount)}</b></span>}
@@ -28149,6 +28162,14 @@ var CommissionsPage = function(p) {
         {renderStageDot(c, cycle, "received")}
         {renderStageDot(c, cycle, "paid_to_team")}
       </div>
+      {canToggleWithholdingExempt && <div style={{ marginTop:8 }}>
+        <label title="Under new tax regulation — no 5% withholding on this cycle" style={{ display:"inline-flex", alignItems:"center", gap:6, cursor: savingFlag ? "wait" : "pointer", fontSize:11, color:C.textLight, userSelect:"none" }}>
+          <input type="checkbox" checked={!!cycle.withholdingExempt} disabled={savingFlag}
+            onChange={function(e){ var nv = e.target.checked; writeCommission("PATCH", "/api/commissions/" + c._id + "/cycles/" + cycle._id + "/withholding-exempt", { exempt: nv }, "Cycle updated").catch(function(){}); }}
+            style={{ cursor: savingFlag ? "wait" : "pointer", margin:0 }}/>
+          <span>Withholding exempt (5%)</span>
+        </label>
+      </div>}
       {/* Phase R-5 — tax breakdown line. Only shown when claim data exists.
           Old cycles (claimAmount === 0) skip this block. All derived values
           render at piaster precision (round2) for Excel-reconcile parity. */}
@@ -28165,7 +28186,7 @@ var CommissionsPage = function(p) {
         }
         var nv    = ga / 1.14;
         var vt    = ga - nv;
-        var wh    = nv * 0.05;
+        var wh    = cycle.withholdingExempt ? 0 : nv * 0.05;
         var nr    = ga - wh;
         return <div style={{ marginTop:8, paddingTop:6, borderTop:"1px dashed #E2E8F0", fontSize:10, color:C.textLight, lineHeight:1.6 }}>
           <div>Unit Value {fmt(cycle.claimUnitValue)} EGP  •  Rate {rateP.toFixed(2)}%  •  Total {fmt(ga)} EGP</div>
@@ -30090,11 +30111,17 @@ var CommissionsPage = function(p) {
       var c = brokerCalcFor;
       var es = c.externalSplit || {};
       var gross = 0;
+      // Accumulate withholding per-cycle so per-cycle exemptions apply (a cycle
+      // with withholdingExempt contributes 0 withholding). VAT below is still off
+      // the full gross — the exemption waives only the 5% withholding, not VAT.
+      var withholding = 0;
       if (Array.isArray(c.cycles)) {
         for (var i = 0; i < c.cycles.length; i++) {
           var cy = c.cycles[i];
           if (!cy || cy.state === "cancelled") continue;
-          gross += Number(cy.claimAmount || 0);
+          var cca = Number(cy.claimAmount || 0);
+          gross += cca;
+          withholding += cy.withholdingExempt ? 0 : (cca / 1.14) * 0.05;
         }
       }
       var taxPct = Number(es.commissionTaxPct || 0);
@@ -30112,7 +30139,6 @@ var CommissionsPage = function(p) {
       // broker share. The VAT term is the R-14 fix — it was previously
       // omitted, so "Company net" overstated by the 14% VAT.
       var vat = gross - (gross / 1.14);
-      var withholding = (gross / 1.14) * 0.05;
       var netRevenue = gross - vat - withholding;
       // Sales-agent line — only when toggle was ON (snapshot.salesAgent has a
       // positive computedShare). For toggle OFF, hide the line entirely.
