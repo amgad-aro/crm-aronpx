@@ -129,7 +129,7 @@ Canonical formula (used by the deal-form Live Preview, the cycle-stage modal, th
 Gross Commission (incl. VAT) = Budget × commissionRate / 100
 Net of VAT                   = Gross / 1.14
 VAT 14%                      = Gross − Net of VAT
-Withholding 5%               = Net of VAT × 0.05
+Withholding 5%               = Net of VAT × 0.05   (per cycle: 0 when cyc.withholdingExempt — see note below)
 Net Due                      = Gross − Withholding
 ```
 
@@ -139,6 +139,20 @@ Invariants:
 3. `ensureCommissionForLead` seeds cycle 1 with `claimUnitValue = budget`, `commissionRate = Lead.commissionRate / 100` (decimal), `claimAmount = Lead.commissionAmount`. PUT `/api/leads/:id` propagates Lead edits into cycle 1 ONLY when cycle 1 is still in `pending_claim`. Once admin advances cycle 1, the cycle becomes the source of truth and Lead edits no longer touch it.
 4. `Lead.externalDealConfig.commissionTaxPct` is the External "informal broker pre-deduction" (admin-typed, 0 allowed). It is **NOT** state tax and **NOT** the canonical commission tax. Future contributors MUST NOT reintroduce a "Tax %" input on the main deal form — that name belongs to the (relabeled) Broker Split section only.
 5. External deals NEVER pay the per-1000 chain (`teamLeader/manager/director` slots are `null` on the snapshot when `dealType === "external"`). Only the broker (always) and the optional "Sales Agent involved" toggle's external sales agent are paid.
+
+### Withholding-5% per-cycle exemption (shipped 2026-07-14)
+
+New Egyptian tax regulation lets developers skip the 5% withholding **at source** until ARO hits an annual sales threshold, after which it resumes. Because a deal's collection cycles can straddle the threshold, the exemption is tracked **per cycle**, not per deal: `Commission.cycles[].withholdingExempt` (Boolean, default `false` — so all existing cycles are unaffected, no migration).
+
+When a cycle is exempt, its withholding term is 0 everywhere the canonical formula is applied:
+```
+Withholding 5% = cyc.withholdingExempt ? 0 : Net of VAT × 0.05
+```
+**VAT 14% is NEVER waived — only the 5% withholding.** Net of VAT, the VAT card, and the Monthly VAT table are unchanged; Net Revenue simply rises by exactly the withholding amount for exempt cycles.
+
+- **Toggle:** `PATCH /api/commissions/:id/cycles/:cycleId/withholding-exempt` `{ exempt: Boolean }` (`salesAdminOnly`). Rejects ambassador deals (400 — they already pay no withholding); **locked once the cycle is `paid_to_team`**; blocked on a cancelled commission/cycle. Rolls a formula-driven `receivedAmount` to the new state (0.5 EGP formula-match heuristic — admin-typed amounts are preserved). Logs `commission_cycle_withholding_exempt`. **Intentionally does NOT call `computeAllRecipientShares`** — team shares are `claimAmount`-based and unaffected by withholding, and that helper re-reads current per-1000 rates (would re-rate a frozen chain if rates drifted). Sibling cycle endpoints (stage, claim-data, add-cycle) likewise skip it.
+- **Analytics:** applied in lockstep across all three aggregators (`/api/commissions/annual-summary`, `/api/annual-pnl`, `/api/commissions/profit-by-deal`), so the reconciliation invariants (`Σ deals.revenue === pnl.netRevenue`; `Σ deals.aroNet === pnl.netRevenue − teamCommissions.total`) still hold exactly. Exempt cycles are excluded from the Annual Summary Withholding-by-deal table (no 0-value rows) but still counted in Total Claims / Net of VAT / Net Revenue. The External Broker Calc modal accumulates withholding per-cycle too.
+- **FE:** admin/SA **"Withholding exempt (5%)" checkbox** per cycle in `renderCycle` (hidden on ambassador + resale deals, `paid_to_team`/`cancelled` cycles, and cancelled commissions) + an all-roles blue **"No 5% W/H" badge** next to the state pill (never rendered on ambassador/resale, where withholding is 0 anyway). The Commission Calculator has an independent **"Apply 5% withholding"** checkbox (calculator-only, no persistence). The **deal-form Live Preview still always shows the full 5%** — it runs at deal creation, before any cycle exists.
 
 ## Per-Deal Recipient Overrides (shipped 2026-05-17)
 
