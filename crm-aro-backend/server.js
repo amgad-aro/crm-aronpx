@@ -157,6 +157,14 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // Deals-page display/scope anchor there.
   dealAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   dealSplitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  // LEGACY / former-agent name for historical deals (pre-CRM) whose agent has NO
+  // user account. When set: agentId AND dealAgentId stay null so the deal credits
+  // NO real user (excluded from every per-agent target/stat/leaderboard/rotation
+  // aggregation — they all match agentId ∈ realOids). The commission is created
+  // with a null salesAgent (broker-only shape); the payout side uses the
+  // Commissions page "+ Add manual recipient". Deals page shows this name with a
+  // "(legacy)" tag. Admin/sales_admin only; never visible in a sales user's list.
+  legacyAgentName:{type:String,default:""},
   preDealStatus:{type:String,default:""},
   dealStatus:{type:String,default:""}, // "" | "Deal Cancelled"
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
@@ -3592,13 +3600,18 @@ async function buildSnapshotForLead(leadDoc, party) {
   if (primaryAgentId) {
     try { primaryAgent = await User.findById(primaryAgentId).lean(); } catch(e){}
   }
+  // Legacy/former-agent deal: no user account, credit NO real user. Treated like
+  // a broker-only external for snapshot purposes — salesAgent + the whole per-1000
+  // chain are null; the payout is added later as a manual recipient. This must NOT
+  // throw (below) and must NOT dereference primaryAgent for the chain walk.
+  var isLegacyAgentDeal = !primaryAgent && !!(leadDoc.legacyAgentName && String(leadDoc.legacyAgentName).trim());
   // Phase R-13.1 — External deals legitimately may have no Lead.agentId:
   //   - toggle ON  → external sales agent fills the salesAgent slot.
   //   - toggle OFF → broker-only deal, salesAgent is null on the snapshot.
-  // For Internal deals, the primary agent is still required. Ambassador deals
-  // null the chain regardless, so a missing agent here is not fatal (the
-  // original agent is seeded onto ambassadorSplit.recipients[] instead).
-  if (!primaryAgent && !isExternalDeal && !isAmbassadorDeal) {
+  // For Internal deals, the primary agent is still required UNLESS this is a
+  // legacy-agent deal. Ambassador deals null the chain regardless, so a missing
+  // agent here is not fatal (the original agent is seeded onto ambassadorSplit).
+  if (!primaryAgent && !isExternalDeal && !isAmbassadorDeal && !isLegacyAgentDeal) {
     throw new Error("buildSnapshotForLead: lead has no resolvable primary agent");
   }
 
@@ -3632,7 +3645,9 @@ async function buildSnapshotForLead(leadDoc, party) {
   }
 
   var primaryChain;
-  if (isExternalDeal || isAmbassadorDeal) {
+  if (isExternalDeal || isAmbassadorDeal || !primaryAgent) {
+    // No resolvable primary agent (external broker-only, ambassador, or legacy) →
+    // no per-1000 chain to walk.
     primaryChain = { teamLeader: null, manager: null, director: null };
   } else {
     primaryChain = await walkReportsToChain(primaryAgent._id);
@@ -3894,7 +3909,14 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
       && !!leadDoc.externalSalesAgentId;
     var externalBrokerOnly = isExternalLead && !leadDoc.agentId && !extToggleOn
       && !!leadDoc.externalBrokerId;
-    if (!leadDoc.agentId && !extToggleOn && !externalBrokerOnly) return null;
+    // Legacy/former-agent deal — no user account (legacyAgentName set) but still a
+    // real internal deal that needs a commission, created with a null salesAgent
+    // (same shape as a broker-only deal; payout added as a manual recipient). This
+    // must PASS the agent-presence gate below or the deal would silently get no
+    // commission and the "+ Add manual recipient" flow would have nothing to attach to.
+    var isLegacyLead = !leadDoc.agentId && !isExternalLead && !isAmbassadorLead
+      && !!(leadDoc.legacyAgentName && String(leadDoc.legacyAgentName).trim());
+    if (!leadDoc.agentId && !extToggleOn && !externalBrokerOnly && !isLegacyLead) return null;
 
     var primaryAgentIdStr = "";
     if (leadDoc.agentId) {
@@ -3931,7 +3953,7 @@ async function ensureCommissionForLead(leadIdOrDoc, actingUser) {
         if (isAmbassadorLead) return !!(c.ambassadorSplit && c.ambassadorSplit.isAmbassador);
         var sa = c.snapshot && c.snapshot.salesAgent;
         var saId = sa && sa.userId ? String(sa.userId) : "";
-        if (externalBrokerOnly) return !saId; // both sides agent-less
+        if (externalBrokerOnly || isLegacyLead) return !saId; // both sides agent-less
         return saId === primaryAgentIdStr;
       });
       if (lastCancelled) {
@@ -11111,7 +11133,7 @@ app.get("/api/eois", auth, async function(req, res) {
 //
 // Field projection same as EOI list (heavy fields stripped; panel hydrates
 // via /api/leads/:id). Role-scoped via buildLeadSearchScopeQuery.
-var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages dealAgentId dealSplitAgent2Id"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
+var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages dealAgentId dealSplitAgent2Id legacyAgentName"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
 
 app.get("/api/deals", auth, async function(req, res) {
   try {
@@ -11401,6 +11423,11 @@ app.post("/api/leads", auth, async function(req, res) {
     // Normalize agentId — frontend may send empty string (unassigned), a
     // populated {_id, name, ...} object (when editing, though this path is
     // create-only), or a plain id string.
+    // Legacy/former-agent deal (admin only) — a typed name, no user account. Force
+    // agentId null so NO real user is credited (targets/stats/leaderboard exclude it).
+    var isLegacyAgentCreate = !!String(req.body.legacyAgentName || "").trim() &&
+      (req.user.role === "admin" || req.user.role === "sales_admin");
+    if (isLegacyAgentCreate) req.body.agentId = "";
     var normalizedAgent = normId(req.body.agentId);
     var agentId = normalizedAgent ? new mongoose.Types.ObjectId(normalizedAgent) : null;
     // Phase R-13.2 — frozen-at-create gate. A lead created directly in a
@@ -11554,7 +11581,10 @@ app.post("/api/leads", auth, async function(req, res) {
         }
         // Toggle-on shape is already validated by validateAndNormalizeExternalDeal:
         // it requires externalSalesAgentId + manualAmount > 0 when enabled.
-      } else {
+      } else if (!isLegacyAgentCreate) {
+        // Legacy/former-agent deals are exempt — they intentionally have no primary
+        // agent (the commission is created with a null salesAgent; payout is added
+        // as a manual recipient on the Commissions page).
         if (!normalizedAgent) {
           // Phase R-14 — type-aware wording. Ambassador deals also require a
           // primary agent (it seeds ambassadorSplit.recipients[] as the
@@ -11600,6 +11630,9 @@ app.post("/api/leads", auth, async function(req, res) {
       // development + unitType as the unit. Absent/false = legacy semantics.
       fieldsV2:         req.body.fieldsV2 === true,
       agentId:          agentId,
+      // Legacy/former-agent name (only when no real agent was picked). Stored so
+      // the Deals page can label the row; never resolves to a user.
+      legacyAgentName:  isLegacyAgentCreate ? String(req.body.legacyAgentName).trim() : "",
       budget:           req.body.budget || "",
       notes:            req.body.notes || "",
       callbackTime:     req.body.callbackTime || "",
@@ -13058,12 +13091,17 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       // "Sara" case). Using `req.body.agentId || <stored agentId>` makes a stored
       // agent pass and rejects only a truly agent-less internal deal.
       var ldForRecipCheck = await Lead.findById(req.params.id)
-        .select("agentId dealType externalBrokerId externalSalesAgentEnabled externalSalesAgentId").lean();
+        .select("agentId dealType externalBrokerId externalSalesAgentEnabled externalSalesAgentId legacyAgentName").lean();
       var effAgent = req.body.agentId
         || (ldForRecipCheck && ldForRecipCheck.agentId
               ? String(ldForRecipCheck.agentId._id || ldForRecipCheck.agentId) : "");
       var effDealType  = (req.body.dealType !== undefined) ? req.body.dealType : (ldForRecipCheck && ldForRecipCheck.dealType);
       var effExtBroker = (req.body.externalBrokerId !== undefined) ? req.body.externalBrokerId : (ldForRecipCheck && ldForRecipCheck.externalBrokerId);
+      // Legacy/former-agent deal (typed name, no user) — exempt from the primary-
+      // agent requirement below.
+      var effLegacy = (req.body.legacyAgentName !== undefined)
+        ? String(req.body.legacyAgentName || "").trim()
+        : (ldForRecipCheck && ldForRecipCheck.legacyAgentName ? String(ldForRecipCheck.legacyAgentName).trim() : "");
       if (String(effDealType) === "external") {
         if (!effExtBroker) {
           return res.status(400).json({
@@ -13072,7 +13110,7 @@ app.put("/api/leads/:id", auth, async function(req, res) {
           });
         }
       } else {
-        if (!effAgent) {
+        if (!effAgent && !effLegacy) {
           return res.status(400).json({
             error: "primary_sales_recipient_required",
             message: "يجب تعيين Agent للّيد قبل عمل Done Deal."
@@ -13104,6 +13142,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     }
     // Never overwrite agentId with null/empty unless explicitly reassigning
     if (!update.agentId) delete update.agentId;
+    // Legacy/former-agent edit — a typed name means NO real user is credited. Runs
+    // AFTER the delete above so the null actually persists ($set), hard-nulling
+    // both agent anchors regardless of any stale agentId on the doc.
+    if (String(req.body.legacyAgentName || "").trim()) {
+      update.legacyAgentName = String(req.body.legacyAgentName).trim();
+      update.agentId = null;
+      update.dealAgentId = null;
+    }
     // Split deal: preserve the existing split on partial PUTs. normId at ~11195
     // turns an ABSENT splitAgent2Id into null, which $set would otherwise write —
     // silently wiping the split (and flipping the deal from half to full toward
@@ -13280,8 +13326,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       // falling back to the holder for admin/owner-on-behalf. Independent of
       // eoiAgentId so a deal closed by a different agent than the EOI keeps its
       // own attribution. Read by buildSnapshotForLead → commission salesAgent.
-      update.dealAgentId = actionAuthorId(req.user, oldLead);
-      update.dealSplitAgent2Id = oldLead.splitAgent2Id || null;
+      // Skipped for a legacy/former-agent deal — it must credit NO real user
+      // (the legacy block later hard-nulls both anchors regardless).
+      if (!String(req.body.legacyAgentName || "").trim()) {
+        update.dealAgentId = actionAuthorId(req.user, oldLead);
+        update.dealSplitAgent2Id = oldLead.splitAgent2Id || null;
+      }
       // Phase R-13.2 — same window-expiry kill as the EOI transition above.
       update.manualWindowExpiresAt = null;
       // Stamp the real occurrence date on first close so it is persisted

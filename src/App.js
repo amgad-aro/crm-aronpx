@@ -3021,6 +3021,10 @@ var LeadForm = function(p) {
   var [devPendName, setDevPendName] = useState((initialDraft && initialDraft.devPendName) || "");
   var [devPendOpen, setDevPendOpen] = useState(false);
   var [devList, setDevList] = useState([]);
+  // Legacy/former-agent toggle (Add Deal, admin only) — mirrors the developer-
+  // pending pattern. Open = the Agent SearchableSelect is replaced by a free-text
+  // input; filling it clears form.agentId so NO real user is credited.
+  var [legacyAgentOpen, setLegacyAgentOpen] = useState(!!(initialDraft && initialDraft.legacyAgentName) || !!(p.initial && p.initial.legacyAgentName));
   // Phase R-12 Part 5 — commission lock. When editing an existing deal whose
   // active commission already exists, the dealType / broker / pct fields are
   // frozen on the FE (matched by the backend lock at PUT /api/leads/:id).
@@ -3285,7 +3289,11 @@ var LeadForm = function(p) {
     inflight.current = true;
     setSaving(true);
     try {
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: form.agentId||"", status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      // Legacy/former-agent: a typed name means NO real user is credited — send
+      // legacyAgentName and force agentId empty. Otherwise send the picked agentId
+      // and an empty legacyAgentName (so switching back to a real agent clears it).
+      var legacyNm = (legacyAgentOpen ? String(form.legacyAgentName||"").trim() : "");
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: legacyNm ? "" : (form.agentId||""), legacyAgentName: legacyNm, status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
       // Field unification (Yosra): Deal Date ≡ Contraction Date. The Contraction
       // Date input is the single source — mirror it into dealDate (the backbone
       // read by quarter filters / TargetPeriods / leaderboard / commission
@@ -3443,16 +3451,30 @@ var LeadForm = function(p) {
   // Property / Sales layout) and the regular Add-Lead / EOI form. Extracted so
   // both can place them without duplicating the JSX.
   var sourceField = !isReq ? <Inp label={t.source} req type="select" value={form.source} onChange={function(e){upd("source",e.target.value);}} options={buildSourceOptions(form.source)}/> : null;
-  var agentField = isAdmin ? <Inp label={t.agent} searchable type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
-    var agentList = salesUsers;
-    if (isEOIForm || isDoneDealForm) {
-      var amgadUsers = (p.users || []).filter(function(u){ return u.username === "amgad" && u.active; });
-      amgadUsers.forEach(function(a){
-        if (!agentList.some(function(u){ return gid(u) === gid(a); })) agentList = agentList.concat([a]);
-      });
-    }
-    return agentList;
-  })().map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/> : null;
+  var agentField = isAdmin ? <div style={{ marginBottom:13 }}>
+    {!legacyAgentOpen && <Inp label={t.agent} searchable type="select" value={form.agentId} onChange={function(e){upd("agentId",e.target.value);}} options={[{value:"",label:"- Select -"}].concat((function(){
+      var agentList = salesUsers;
+      if (isEOIForm || isDoneDealForm) {
+        var amgadUsers = (p.users || []).filter(function(u){ return u.username === "amgad" && u.active; });
+        amgadUsers.forEach(function(a){
+          if (!agentList.some(function(u){ return gid(u) === gid(a); })) agentList = agentList.concat([a]);
+        });
+      }
+      return agentList;
+    })().map(function(u){return{value:gid(u),label:u.name+" - "+u.title};}))}/>}
+    {/* Legacy/former-agent free-text input — for historical deals whose agent has
+        NO user account. Filling it credits no real user (agentId stays empty). */}
+    {legacyAgentOpen && <Inp label={t.agent + " — legacy name"} value={form.legacyAgentName||""}
+      onChange={function(e){ upd("legacyAgentName", e.target.value); }}
+      placeholder="Type the former agent's name (no user account)"/>}
+    {/* Toggle — only on the Add Deal form (mirrors the developer-pending toggle). */}
+    {isDoneDealForm && <button type="button" onClick={function(){
+      if (legacyAgentOpen) { setLegacyAgentOpen(false); upd("legacyAgentName", ""); }
+      else { setLegacyAgentOpen(true); upd("agentId", ""); }
+    }} style={{ marginTop:6, background:"none", border:"none", padding:0, color:C.info, fontSize:12, cursor:"pointer", textDecoration:"underline", textAlign:"left" }}>
+      {legacyAgentOpen ? "← Pick an existing agent instead" : "Agent not in the list? Enter name manually"}
+    </button>}
+  </div> : null;
   var developerBlock = ((isEOIForm||isDoneDealForm)&&!p.editId) ? <div style={{ marginBottom:13 }}>
     <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏗️ Developer <span style={{color:C.danger}}>*</span></label>
     {!devPendOpen && <SearchableSelect
@@ -3475,7 +3497,7 @@ var LeadForm = function(p) {
   return <div>
     {draftRestored&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#EFF6FF", borderRadius:10, fontSize:13, fontWeight:500, color:"#1E40AF", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
       <span>↩︎ Unsaved draft restored{draftHadAttach?" — re-attach any documents/images":""}</span>
-      <button type="button" onClick={function(){ clearLeadDraft(draftKey); setDevSelId(""); setDevPendName(""); setDraftRestored(false); setDraftHadAttach(false); setForm(function(f){ return Object.assign({},f,{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", unitCode:"", notes:"", eoiDeposit:"", eoiDate:"", dealDate:"", callbackTime:"", source:p.isReq?"Daily Request":"", agentId:"", downPaymentPct:"", installmentYears:"", commissionRate:"" }); }); }} style={{ flexShrink:0, background:"none", border:"none", padding:"2px 6px", color:C.danger, fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline" }}>Discard</button>
+      <button type="button" onClick={function(){ clearLeadDraft(draftKey); setDevSelId(""); setDevPendName(""); setLegacyAgentOpen(false); setDraftRestored(false); setDraftHadAttach(false); setForm(function(f){ return Object.assign({},f,{ name:"", phone:"", phone2:"", email:"", budget:"", project:"", unitCode:"", notes:"", eoiDeposit:"", eoiDate:"", dealDate:"", callbackTime:"", source:p.isReq?"Daily Request":"", agentId:"", legacyAgentName:"", downPaymentPct:"", installmentYears:"", commissionRate:"" }); }); }} style={{ flexShrink:0, background:"none", border:"none", padding:"2px 6px", color:C.danger, fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline" }}>Discard</button>
     </div>}
     {dupWarning&&<div style={{ marginBottom:14, padding:"10px 14px", background:"#FEF3C7", borderRadius:10, fontSize:13, fontWeight:500, color:"#B45309", display:"flex", alignItems:"center", gap:8 }}>
       <AlertCircle size={16}/> {t.duplicateFound} — <b>{dupWarning.name}</b>
@@ -13346,10 +13368,12 @@ var DealsPage = function(p) {
   // who CLOSED the deal, stamped at close and never moved by rotation). Server
   // sends it as a populated {name}; fall back to a users[] lookup.
   var dealAuthorAg=function(l){var a=l&&l.dealAgentId;if(!a)return null;if(a.name)return a.name;var u=p.users.find(function(x){return gid(x)===a;});return u?u.name:null;};
-  // ALL tabs show WHO CLOSED the deal (per-action attribution): prefer the
-  // anchored author regardless of tab; fall back to agentAtTime → live for legacy
-  // rows with no anchor.
-  var getAg=function(l){var live=liveAg(l);return dealAuthorAg(l)||agentAtTime(l,live);};
+  // ALL tabs show WHO CLOSED the deal (per-action attribution): a legacy/former-
+  // agent deal shows its typed name (no user credited); otherwise prefer the
+  // anchored author, falling back to agentAtTime → live for rows with no anchor.
+  var getAg=function(l){ if(l&&l.legacyAgentName) return l.legacyAgentName; var live=liveAg(l);return dealAuthorAg(l)||agentAtTime(l,live);};
+  // Subtle "(legacy)" tag next to a former-agent name.
+  var legacyTag=function(l){ return (l&&l.legacyAgentName) ? <span style={{ fontSize:10, fontStyle:"italic", color:C.textLight, marginLeft:4 }}>(legacy)</span> : null; };
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   // Closing Company (Feature B) — closingCompanyId may arrive populated ({_id,name})
   // from the list/deals endpoints or as a raw id from a PUT response; resolve the
@@ -13728,7 +13752,7 @@ var DealsPage = function(p) {
           {l:"Down Payment Date", v:saleType==="Resale" ? "" : (dpDateStr||"—"), icon:"📅"},
           {l:(saleType==="Resale" ? "Deal Date" : "Contract Date"), v:(saleType==="Resale" ? (dealDateStr||"—") : (contrDateStr||"—")), icon:"📅"},
           {l:"Installments", v:saleType==="Resale" ? "" : (instYears?instYears+" yrs":"—"), icon:"📆"},
-          {l:"Agent", v:saleType==="Resale" ? "" : getAg(selectedDeal), icon:"👤"},
+          {l:"Agent", v:saleType==="Resale" ? "" : <span>{getAg(selectedDeal)}{legacyTag(selectedDeal)}</span>, icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
           {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
         ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
@@ -14260,7 +14284,7 @@ var DealsPage = function(p) {
             </button>
           </div>
           {isAdmin&&<div style={{ display:"flex", justifyContent:"space-between", gap:8, marginBottom:4, fontSize:11 }}>
-            <span style={{ color:C.accent }}>👤 {getAg(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
+            <span style={{ color:C.accent }}>👤 {getAg(d)}{legacyTag(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
             <span style={{ color:C.textLight }}>📢 {d.source||"-"}</span>
           </div>}
           {canSeeClosingCompany(p.cu)&&<div style={{ fontSize:11, color:C.textLight, marginBottom:4 }}>🏢 Closed via: <span style={{ fontWeight:600, color:C.text }}>{ccNameOf(d)||"—"}</span></div>}
@@ -14392,7 +14416,7 @@ var DealsPage = function(p) {
             {canSeeClosingCompany(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{ccNameOf(d)||"—"}</td>}
             {canSeeDeveloper(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{devNameOf(d)||"—"}</td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
-              <div>{getAg(d)}</div>
+              <div>{getAg(d)}{legacyTag(d)}</div>
               {(function(){var sp=getDealSplitFromObj(d);return sp?<div style={{ fontSize:10, color:"#8B5CF6", marginTop:2 }}>🤝 +{sp.agent2Name}</div>:null;})()}
             </td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.source}</td>}
