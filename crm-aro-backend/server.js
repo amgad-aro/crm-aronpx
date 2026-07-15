@@ -146,6 +146,17 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // the earliest non-removed assignments[] slice (backfill-eoi-agent.js).
   eoiAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   eoiSplitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  // DEAL AUTHOR anchoring — the sibling of eoiAgentId for the DoneDeal lifecycle.
+  // Stamped from the ACTING agent at every deal-creation path (eoi-to-deal,
+  // direct DoneDeal, DR mirror). Independent of eoiAgentId so an EOI made by
+  // agent A and a deal closed by agent B on the SAME lead each keep their own
+  // author (per-action attribution). The commission snapshot's salesAgent is
+  // built from this (falls back to agentId). Deals page display + sales scope
+  // read it (fall back to current agentId for legacy unanchored rows). Resale
+  // still credits per-party agents on the commission; dealAgentId is only the
+  // Deals-page display/scope anchor there.
+  dealAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  dealSplitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   preDealStatus:{type:String,default:""},
   dealStatus:{type:String,default:""}, // "" | "Deal Cancelled"
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
@@ -533,10 +544,12 @@ function artifactB2Key(entry) {
 User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1, createdAt: -1 }).catch(function(){});
-// EOI-author scope (cancelled-tab visibility in GET /api/eois) — mirrors the
-// splitAgent2Id pair above.
+// EOI-author scope (GET /api/eois — all tabs) — mirrors the splitAgent2Id pair.
 Lead.collection.createIndex({ eoiAgentId: 1 }).catch(function(){});
 Lead.collection.createIndex({ eoiSplitAgent2Id: 1 }).catch(function(){});
+// Deal-author scope (GET /api/deals — all tabs).
+Lead.collection.createIndex({ dealAgentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ dealSplitAgent2Id: 1 }).catch(function(){});
 
 // Rotation sweep — sweepAutoRotation sorts up-to-1000 candidates by
 // lastRotationAt asc; without a covering index the in-memory sort blew the
@@ -3569,9 +3582,15 @@ async function buildSnapshotForLead(leadDoc, party) {
   var isAmbassadorDeal = leadDoc.dealType === "ambassador";
   var externalToggleOn = isExternalDeal && !!leadDoc.externalSalesAgentEnabled;
 
+  // Per-action attribution: the commission's primary sales agent is the DEAL
+  // author (whoever performed the DoneDeal action, stamped at close), NOT the
+  // lead's live top-level holder — those differ when the lead was reassigned
+  // to a co-agent before/after close. Falls back to agentId for legacy deals
+  // closed before dealAgentId existed (backfill-attribution-v2.js fills those).
+  var primaryAgentId = (leadDoc.dealAgentId && (leadDoc.dealAgentId._id || leadDoc.dealAgentId)) || leadDoc.agentId;
   var primaryAgent = null;
-  if (leadDoc.agentId) {
-    try { primaryAgent = await User.findById(leadDoc.agentId).lean(); } catch(e){}
+  if (primaryAgentId) {
+    try { primaryAgent = await User.findById(primaryAgentId).lean(); } catch(e){}
   }
   // Phase R-13.1 — External deals legitimately may have no Lead.agentId:
   //   - toggle ON  → external sales agent fills the salesAgent slot.
@@ -3620,13 +3639,15 @@ async function buildSnapshotForLead(leadDoc, party) {
   }
 
   // External and ambassador deals never run the split-chain mechanic either.
-  var isSplit = !isExternalDeal && !isAmbassadorDeal && !!leadDoc.splitAgent2Id;
+  // Deal-author split (falls back to the lead-level split for legacy deals).
+  var splitAgent2AtClose = (leadDoc.dealSplitAgent2Id && (leadDoc.dealSplitAgent2Id._id || leadDoc.dealSplitAgent2Id)) || leadDoc.splitAgent2Id;
+  var isSplit = !isExternalDeal && !isAmbassadorDeal && !!splitAgent2AtClose;
   var splitChainOut = {
     salesAgent2: null, teamLeader2: null, manager2: null, director2: null
   };
   if (isSplit) {
     var secondAgent = null;
-    try { secondAgent = await User.findById(leadDoc.splitAgent2Id).lean(); } catch(e){}
+    try { secondAgent = await User.findById(splitAgent2AtClose).lean(); } catch(e){}
     if (secondAgent) {
       splitChainOut.salesAgent2 = recipientFromUser(secondAgent, "sales");
       var secondChain = await walkReportsToChain(secondAgent._id);
@@ -3739,9 +3760,11 @@ async function buildAmbassadorSplitForLead(leadDoc) {
   var cfg = leadDoc.ambassadorConfig || {};
   var taxEnabled = !!cfg.developerTaxEnabled;
   var recipients = [];
-  if (leadDoc.agentId) {
+  // Deal author (whoever closed it), falling back to the live holder for legacy.
+  var ambAgentId = (leadDoc.dealAgentId && (leadDoc.dealAgentId._id || leadDoc.dealAgentId)) || leadDoc.agentId;
+  if (ambAgentId) {
     var agentDoc = null;
-    try { agentDoc = await User.findById(leadDoc.agentId._id || leadDoc.agentId).lean(); } catch(e){}
+    try { agentDoc = await User.findById(ambAgentId._id || ambAgentId).lean(); } catch(e){}
     if (agentDoc) {
       recipients.push({
         userId:     agentDoc._id || null,
@@ -4767,14 +4790,37 @@ function leadUploadImageValidation(req, res, next) {
 // ===== LEAD HISTORY HELPERS =====
 // Single write-path for the admin audit timeline. Every caller pushes one
 // entry via $push so concurrent updates never overwrite each other.
-function historyEntry(event, description, byUser, toAgent) {
-  return {
+function historyEntry(event, description, byUser, toAgent, opts) {
+  var e = {
     event: String(event || "event"),
     description: String(description || ""),
     byUser: String(byUser || ""),
     toAgent: String(toAgent || ""),
     timestamp: new Date()
   };
+  // Optional machine-readable actor id. history[] is a Mixed array so this is
+  // additive (no schema migration). Stamped on EOI/Deal action entries so a
+  // past action's author survives a later overwrite of the lead-level anchor
+  // (e.g. re-EOI on the same lead) — the durable per-action audit trail.
+  if (opts && opts.byUserId) e.byUserId = String(opts.byUserId);
+  if (opts && opts.toAgentId) e.toAgentId = String(opts.toAgentId);
+  return e;
+}
+
+// actionAuthorId — resolve WHO an EOI/Deal action is attributed to, per the
+// owner's rule: "whoever performs the action gets it." When the actor is a
+// sales user, that's the actor themselves (even if they're only a co-assignee
+// and NOT the current top-level holder — the #50016 case). When an admin /
+// sales_admin / manager / team_leader / director performs the action on the
+// agent's behalf, fall back to the lead's current top-level agentId. Returns an
+// ObjectId (or null). leadDoc may be a full doc or a { agentId } shape.
+function actionAuthorId(reqUser, leadDoc) {
+  if (reqUser && reqUser.role === "sales" && reqUser.id) {
+    try { return new mongoose.Types.ObjectId(String(reqUser.id)); } catch(e){ /* fall through */ }
+  }
+  var aid = leadDoc && leadDoc.agentId ? (leadDoc.agentId._id || leadDoc.agentId) : null;
+  if (!aid) return null;
+  try { return new mongoose.Types.ObjectId(String(aid)); } catch(e){ return null; }
 }
 async function pushHistory(leadId, entries) {
   if (!leadId || !entries) return;
@@ -10943,36 +10989,18 @@ app.get("/api/eois", auth, async function(req, res) {
     // ?page=... so the cap is a sanity guard, not a silent truncation point.
     var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
-    // Sales scope (per-document). ACTIVE/pending/approved EOIs are frozen — the
-    // current owner IS the agent who made the EOI — so scope those by current
-    // ownership (agentId / splitAgent2Id), and a prior agent's historical
-    // assignments[] slice must NOT grant visibility. A CANCELLED EOI, however,
-    // un-freezes the lead (status→HotCase, globalStatus→active), which then keeps
-    // auto-rotating; top-level agentId drifts to whoever holds the lead now. So
-    // cancelled rows are scoped by the anchored EOI author (eoiAgentId /
-    // eoiSplitAgent2Id) instead — a cancelled EOI always shows for the agent who
-    // made it, regardless of where the lead rotated after. Every other role keeps
-    // buildLeadSearchScopeQuery unchanged (byte-for-byte).
-    //
-    // The distinction is per-DOCUMENT, not per-tab: the FE fetches ?status=all
-    // ONCE and splits into tabs client-side (App.js EOIPage L12186 / L12241), so
-    // `status` here is almost always "all" and cannot drive the branch.
+    // Sales scope — per-action attribution, ALL tabs. Every EOI (active, pending,
+    // approved, or cancelled) is scoped by the agent who MADE it (eoiAgentId /
+    // eoiSplitAgent2Id), never by the lead's live top-level holder — those differ
+    // whenever a co-assignee makes the EOI or the lead is reassigned. Legacy rows
+    // created before the anchor existed (eoiAgentId null) fall back to current
+    // ownership so nothing disappears pre-backfill. Other roles unchanged.
     var scope;
     if (req.user.role === "sales") {
       var meScopeId = new mongoose.Types.ObjectId(req.user.id);
-      var ownedNow    = { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] };
       var authoredEoi = { $or: [ { eoiAgentId: meScopeId }, { eoiSplitAgent2Id: meScopeId } ] };
-      // "cancelled" here mirrors the cancelled tab's own classification
-      // (eoiScope / tabFilter below).
-      var cancelledRow = { $or: [
-        { eoiStatus: "EOI Cancelled" },
-        { eoiStatus: "Deal Cancelled" },
-        { status:    "Deal Cancelled" }
-      ]};
-      scope = { $or: [
-        { $and: [ { $nor: [ cancelledRow ] }, ownedNow ] },   // frozen EOI → current owner
-        { $and: [ cancelledRow, authoredEoi ] }                // cancelled EOI → author
-      ]};
+      var legacyOwnedEoi = { $and: [ { eoiAgentId: null }, { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] } ] };
+      scope = { $or: [ authoredEoi, legacyOwnedEoi ] };
     } else {
       scope = await buildLeadSearchScopeQuery(req);
     }
@@ -11083,7 +11111,7 @@ app.get("/api/eois", auth, async function(req, res) {
 //
 // Field projection same as EOI list (heavy fields stripped; panel hydrates
 // via /api/leads/:id). Role-scoped via buildLeadSearchScopeQuery.
-var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
+var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages dealAgentId dealSplitAgent2Id"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
 
 app.get("/api/deals", auth, async function(req, res) {
   try {
@@ -11093,14 +11121,17 @@ app.get("/api/deals", auth, async function(req, res) {
     // truncation). Default 100/page; FE paginates via ?page=...
     var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
-    // Sales: the Deals list only ever returns frozen (EOI/DoneDeal) leads, so a
-    // prior agent's historical assignments[] slice must NOT grant visibility —
-    // scope strictly to CURRENT ownership (agentId / splitAgent2Id). Every other
-    // role keeps buildLeadSearchScopeQuery unchanged (byte-for-byte).
+    // Sales scope — per-action attribution, ALL tabs. Every deal is scoped by the
+    // agent who CLOSED it (dealAgentId / dealSplitAgent2Id), not the lead's live
+    // holder — those differ when the lead is reassigned around the close. Legacy
+    // deals closed before the anchor existed (dealAgentId null) fall back to
+    // current ownership. Other roles unchanged.
     var scope;
     if (req.user.role === "sales") {
       var meScopeId = new mongoose.Types.ObjectId(req.user.id);
-      scope = { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] };
+      var authoredDeal = { $or: [ { dealAgentId: meScopeId }, { dealSplitAgent2Id: meScopeId } ] };
+      var legacyOwnedDeal = { $and: [ { dealAgentId: null }, { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] } ] };
+      scope = { $or: [ authoredDeal, legacyOwnedDeal ] };
     } else {
       scope = await buildLeadSearchScopeQuery(req);
     }
@@ -11126,6 +11157,9 @@ app.get("/api/deals", auth, async function(req, res) {
     var rows = await Lead.find(q)
       .select(listFieldsFor(req.user.role, DEAL_LIST_FIELDS))            // + agentHistory for non-sales (cancelled-agent resolver); excludes base64 image/doc fields
       .populate("agentId", "name title")
+      // Deal-author anchor so the Deals page labels each row with WHO closed it.
+      .populate("dealAgentId", "name title")
+      .populate("dealSplitAgent2Id", "name title")
       .populate("closingCompanyId", "name")   // Feature B — for the "Closed via" display
       .populate("developerId", "name")        // Developer (D4) — for the developer tag/column
       // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
@@ -12634,6 +12668,11 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       // Clear eoiStatus so the record no longer shows in any EOI tab — it belongs to Deals now.
       eoiStatus: "",
       globalStatus: "donedeal",
+      // Anchor the DEAL author = the ACTING agent converting the EOI (falls back
+      // to the holder for admin/owner). Separate from eoiAgentId so the deal
+      // credits whoever closed it, even if a different agent made the EOI.
+      dealAgentId: actionAuthorId(req.user, existing),
+      dealSplitAgent2Id: existing.splitAgent2Id || null,
       lastActivityTime: new Date()
     };
     if (preserveName  !== undefined) update.eoiOriginalName  = preserveName;
@@ -13202,12 +13241,14 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
       update.preEoiStatus = oldLead.status;
       update.eoiStatus = "Pending";
-      // Anchor the EOI author at creation time = the lead's owner right now. This
-      // is what the cancelled-tab scope reads later; it must NOT move when the
-      // (post-cancel, un-frozen) lead rotates on. Re-entering EOI after a prior
-      // cancel legitimately re-anchors to the new owner (this block only fires on
-      // status!=="EOI" → "EOI"). Preserved untouched by eoi-cancel and eoi-to-deal.
-      update.eoiAgentId = oldLead.agentId || null;
+      // Anchor the EOI author = the ACTING agent (whoever performed this EOI
+      // transition), not the lead's top-level holder — those differ when a
+      // co-assignee makes the EOI on a reassigned lead (the #50016 case). Admin/
+      // owner acting on behalf falls back to the lead's agentId. Never moves when
+      // the (post-cancel, un-frozen) lead rotates on. Re-entering EOI after a
+      // prior cancel re-anchors (this block fires only on status!=="EOI" → "EOI");
+      // the prior EOI's author survives in history[] (byUserId, below).
+      update.eoiAgentId = actionAuthorId(req.user, oldLead);
       update.eoiSplitAgent2Id = oldLead.splitAgent2Id || null;
       // Mirror the DoneDeal write pattern at L5783. Without this, the
       // rotation hard-stops at server.js:6125 / 6254 and the bulk-redistribute
@@ -13235,6 +13276,12 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       update.dealStatus = "";
       update.eoiStatus = "";
       update.globalStatus = "donedeal";
+      // Anchor the DEAL author = the ACTING agent (whoever closed the deal),
+      // falling back to the holder for admin/owner-on-behalf. Independent of
+      // eoiAgentId so a deal closed by a different agent than the EOI keeps its
+      // own attribution. Read by buildSnapshotForLead → commission salesAgent.
+      update.dealAgentId = actionAuthorId(req.user, oldLead);
+      update.dealSplitAgent2Id = oldLead.splitAgent2Id || null;
       // Phase R-13.2 — same window-expiry kill as the EOI transition above.
       update.manualWindowExpiresAt = null;
       // Stamp the real occurrence date on first close so it is persisted
@@ -13568,7 +13615,10 @@ app.put("/api/leads/:id", auth, async function(req, res) {
           "status_changed",
           "Status changed " + (oldLead.status || "—") + " → " + req.body.status + " by " + byName,
           byName,
-          ""
+          "",
+          // Durable actor id so a past EOI/Deal action's author survives a later
+          // overwrite of the lead-level anchor (re-EOI / re-deal on the same lead).
+          { byUserId: req.user && req.user.id }
         ));
       }
       var fb = req.body.lastFeedback;
@@ -19128,16 +19178,17 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           // and reports filters that key on globalStatus === "eoi" fire for
           // them just like for EOI leads created via the Leads page.
           mirrorExtra.globalStatus = "eoi";
-          // Anchor the EOI author (see Lead.eoiAgentId) = the DR's current agent,
-          // captured only when the mirror is FRESHLY entering EOI (new create, or
-          // an existing mirror that isn't already an active EOI — e.g. re-EOI after
-          // a prior cancel). Skip when it's already an active EOI so plain re-saves
+          // Anchor the EOI author = the ACTING agent (whoever updated the DR into
+          // EOI; admin/owner-on-behalf falls back to the DR's agent), captured
+          // only when the mirror is FRESHLY entering EOI (new create, or an
+          // existing mirror that isn't already an active EOI — e.g. re-EOI after a
+          // prior cancel). Skip when it's already an active EOI so plain re-saves
           // don't rewrite the anchor. DR mirrors have no split co-agent.
-          var drAuthorId = (r.agentId && r.agentId._id) ? r.agentId._id : (r.agentId || null);
+          var drEoiAuthorId = actionAuthorId(req.user, { agentId: r.agentId });
           var mirrorActiveEoi = existingLead && (existingLead.status === "EOI" ||
               existingLead.eoiStatus === "Pending" || existingLead.eoiStatus === "Approved");
           if (!mirrorActiveEoi) {
-            mirrorExtra.eoiAgentId = drAuthorId;
+            mirrorExtra.eoiAgentId = drEoiAuthorId;
             mirrorExtra.eoiSplitAgent2Id = null;
           }
           // Only stamp eoiDate on the FIRST transition into EOI — preserve the original
@@ -19151,6 +19202,14 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
         }
         if (req.body.status === "DoneDeal") {
           mirrorExtra.globalStatus = "donedeal";
+          // Anchor the DEAL author = the ACTING agent (admin/owner-on-behalf falls
+          // back to the DR's agent), stamped only on a FRESH close so a plain
+          // re-save can't move it. Drives the commission salesAgent + Deals scope.
+          var drDealActiveAlready = existingLead && (existingLead.status === "DoneDeal" || existingLead.globalStatus === "donedeal");
+          if (!drDealActiveAlready) {
+            mirrorExtra.dealAgentId = actionAuthorId(req.user, { agentId: r.agentId });
+            mirrorExtra.dealSplitAgent2Id = null;
+          }
           // Only stamp dealDate on the FIRST transition into DoneDeal — preserve the
           // original closure date on every subsequent edit, so old deals don't re-surface
           // as "just closed" in the notifications panel.

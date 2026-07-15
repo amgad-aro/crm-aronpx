@@ -12245,11 +12245,11 @@ var EOIPage = function(p) {
   // MADE the EOI, stamped at creation and never moved by rotation). Server sends
   // it as a populated {name} on the EOI list; fall back to a users[] lookup.
   var authorAg=function(l){var a=l&&l.eoiAgentId;if(!a)return null;if(a.name)return a.name;var u=p.users.find(function(x){return gid(x)===a;});return u?u.name:null;};
-  // Cancelled tab shows WHO MADE the EOI (historical truth): prefer the anchored
-  // author, since the live agentId was overwritten by the rotation that fired when
-  // the (un-frozen) lead re-entered the pool. Fall back to agentAtTime → live for
-  // legacy rows with no anchor. Active rows keep the live agent unchanged.
-  var getAg=function(l){var live=liveAg(l);return eoiTab==="cancelled"?(authorAg(l)||agentAtTime(l,live)):live;};
+  // ALL tabs show WHO MADE the EOI (per-action attribution): prefer the anchored
+  // author (eoiAgentId) regardless of tab, since the live agentId can differ from
+  // the actual author whenever a co-assignee makes the EOI or the lead is
+  // reassigned. Fall back to agentAtTime → live for legacy rows with no anchor.
+  var getAg=function(l){var live=liveAg(l);return authorAg(l)||agentAtTime(l,live);};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var [editLead,setEditLead]=useState(null);
@@ -13342,10 +13342,14 @@ var DealsPage = function(p) {
   var isDealCancelledRow = function(l){ return l.dealStatus==="Deal Cancelled" || l.status==="Deal Cancelled"; };
   // Live-agent resolver (used directly for active rows, and as the fallback).
   var liveAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
-  // Cancelled tab shows WHO CLOSED the deal at cancellation (historical truth)
-  // via agentAtTime — the live agentId was overwritten by the rotation that
-  // fired when the lead re-entered the pool. Active rows keep the live agent.
-  var getAg=function(l){var live=liveAg(l);return dealTab==="cancelled"?agentAtTime(l,live):live;};
+  // Anchored deal-author resolver — reads the populated dealAgentId (the agent
+  // who CLOSED the deal, stamped at close and never moved by rotation). Server
+  // sends it as a populated {name}; fall back to a users[] lookup.
+  var dealAuthorAg=function(l){var a=l&&l.dealAgentId;if(!a)return null;if(a.name)return a.name;var u=p.users.find(function(x){return gid(x)===a;});return u?u.name:null;};
+  // ALL tabs show WHO CLOSED the deal (per-action attribution): prefer the
+  // anchored author regardless of tab; fall back to agentAtTime → live for legacy
+  // rows with no anchor.
+  var getAg=function(l){var live=liveAg(l);return dealAuthorAg(l)||agentAtTime(l,live);};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   // Closing Company (Feature B) — closingCompanyId may arrive populated ({_id,name})
   // from the list/deals endpoints or as a raw id from a PUT response; resolve the
