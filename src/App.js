@@ -3293,7 +3293,7 @@ var LeadForm = function(p) {
       // legacyAgentName and force agentId empty. Otherwise send the picked agentId
       // and an empty legacyAgentName (so switching back to a real agent clears it).
       var legacyNm = (legacyAgentOpen ? String(form.legacyAgentName||"").trim() : "");
-      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: legacyNm ? "" : (form.agentId||""), legacyAgentName: legacyNm, status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
+      var payload = Object.assign({}, form, { source: isReq?"Daily Request":form.source, agentId: legacyNm ? null : (form.agentId||""), legacyAgentName: legacyNm, status: p.editId ? (form.status||"Potential") : (p.initialStatus||form.status||"NewLead"), phone2: form.phone2||"" });
       // Field unification (Yosra): Deal Date ≡ Contraction Date. The Contraction
       // Date input is the single source — mirror it into dealDate (the backbone
       // read by quarter filters / TargetPeriods / leaderboard / commission
@@ -3380,6 +3380,11 @@ var LeadForm = function(p) {
       if (!isDoneDealForm) {
         ["saleType","downPayment","downPaymentPct","downPaymentDate","reservationDate","contractionDate","installmentYears"].forEach(function(k){ delete payload[k]; });
       }
+      // resaleParties is a Resale-only structure. The form always seeds a skeleton
+      // (agentId:"") for controlled inputs; sending it on a Primary/plain lead makes
+      // the backend CastError on the empty agentId (BSONError). Only send it for an
+      // actual Resale deal — the backend also sanitizes as defense-in-depth.
+      if (!(isDoneDealForm && form.saleType === "Resale")) delete payload.resaleParties;
       // Managerial roles editing an existing lead: strip notes/lastFeedback
       // — the backend now hard-rejects those fields via PUT for these roles
       // (admin/sales_admin/manager). They use the dedicated feedback flow on

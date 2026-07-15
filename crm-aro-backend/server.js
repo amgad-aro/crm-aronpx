@@ -2649,6 +2649,23 @@ function validateResaleParties(rp, budgetNum) {
   return { value: { seller: s.value, buyer: b.value } };
 }
 
+// sanitizeResaleParties — coerce the nested seller/buyer agentId refs through
+// normId (empty-string / populated-object / invalid → null) so a raw resaleParties
+// payload never CastErrors on Lead.create / findByIdAndUpdate. The Add Deal form
+// always ships a resaleParties skeleton (App.js ~2926) with agentId:"" for BOTH
+// parties even on a Primary/plain lead; validateResaleParties only runs on the
+// Resale path, so every other write-point must sanitize the raw body itself. Same
+// guard as the top-level agentId/splitAgent2Id normId calls. Mutates in place +
+// returns rp. (Extends 09e7572, which fixed only PUT.)
+function sanitizeResaleParties(rp) {
+  if (!rp || typeof rp !== "object") return rp;
+  ["seller", "buyer"].forEach(function(side) {
+    var pty = rp[side];
+    if (pty && typeof pty === "object") pty.agentId = normId(pty.agentId);
+  });
+  return rp;
+}
+
 // Phase R-12 Part 3 — Write-site validation for the external-deal fields on
 // Lead. Schema-level required/min validators were intentionally NOT added
 // (Part 2 judgment #1) so the hundreds of partial PUTs that never touch
@@ -11648,8 +11665,11 @@ app.post("/api/leads", auth, async function(req, res) {
       contractionDate:  req.body.contractionDate || "",
       installmentYears: req.body.installmentYears || "",
       // Two-party Resale — normalized above by validateResaleParties (only set for
-      // saleType==="Resale"; Primary create leaves it undefined → schema default).
-      resaleParties:    req.body.resaleParties || undefined,
+      // saleType==="Resale"). Sanitize the nested agent refs (defense-in-depth) and
+      // store resaleParties ONLY for a Resale deal — a Primary/plain create must NOT
+      // persist the FE's resaleParties skeleton (agentId:"") or Lead.create
+      // CastErrors on it ("Cast to ObjectId failed for value \"\"").
+      resaleParties:    (String(req.body.saleType || "") === "Resale") ? sanitizeResaleParties(req.body.resaleParties) : undefined,
       lastActivityTime: new Date(),
       archived:         false,
       isVIP:            false,
@@ -12652,7 +12672,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       // Two-party validation (>=1 with-us; per-party name/phone/agent/commission).
       var rpNormConv = validateResaleParties(b.resaleParties, e2dBudgetNum);
       if (rpNormConv.error) return res.status(400).json({ error: rpNormConv.error, message: rpNormConv.message });
-      e2dResaleParties = rpNormConv.value;
+      e2dResaleParties = sanitizeResaleParties(rpNormConv.value);   // already clean; defensive parity with POST/PUT
     } else {
       if (!(parseDealTotalFromBudget(e2dDownPayment) > 0)) return res.status(400).json({ error: "down_payment_required", message: "Down Payment (EGP) is required and must be greater than 0." });
       if (!e2dDownPaymentDate) return res.status(400).json({ error: "down_payment_date_required", message: "Down Payment Date is required." });
@@ -12876,16 +12896,10 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // split; an explicit null/"" from the split modal still normalizes and clears.
     if (req.body.splitAgent2Id !== undefined) req.body.splitAgent2Id = normId(req.body.splitAgent2Id);
     // Nested resale-party agent refs — same empty-string / populated-object
-    // CastError guard as the top-level agentId above. validateResaleParties
-    // sanitizes these on create + convert, but the edit PUT applies
+    // CastError guard as the top-level agentId above. The edit PUT applies
     // req.body.resaleParties directly, so a not-with-us party's "" agentId would
-    // CastError on findByIdAndUpdate ("Cast to ObjectId failed for value \"\"").
-    if (req.body.resaleParties && typeof req.body.resaleParties === "object") {
-      ["seller", "buyer"].forEach(function(side){
-        var pty = req.body.resaleParties[side];
-        if (pty && typeof pty === "object") pty.agentId = normId(pty.agentId);
-      });
-    }
+    // CastError on findByIdAndUpdate. Shared helper (also used by POST + convert).
+    sanitizeResaleParties(req.body.resaleParties);
     // The 🔒 lock is restricted to admin / sales_admin / team_leader / manager.
     // Silently drop the field from other roles so a sales client can't bypass
     // the UI gate — the rest of the PUT still applies.
