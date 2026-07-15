@@ -135,6 +135,17 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   eoiDocuments:[{type:mongoose.Schema.Types.Mixed}],
   preEoiStatus:{type:String,default:""},
   eoiStatus:{type:String,default:""}, // "" | "Pending" | "Approved" | "EOI Cancelled"
+  // EOI AUTHOR anchoring. Captured from the lead's owner (agentId / splitAgent2Id)
+  // at the MOMENT the EOI is created, and never moved by rotation afterwards.
+  // A cancelled EOI un-freezes the lead (status→HotCase, globalStatus→active) so it
+  // keeps auto-rotating; top-level agentId then drifts to whoever currently holds
+  // the lead. The EOI page's cancelled tab scopes sales visibility by these fields
+  // so a cancelled EOI always shows for the agent who actually made it — regardless
+  // of where the lead rotated later. Active/pending/approved EOIs are frozen (owner
+  // == author) and keep scoping by current agentId. Legacy rows are backfilled from
+  // the earliest non-removed assignments[] slice (backfill-eoi-agent.js).
+  eoiAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  eoiSplitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   preDealStatus:{type:String,default:""},
   dealStatus:{type:String,default:""}, // "" | "Deal Cancelled"
   stages:{type:mongoose.Schema.Types.Mixed,default:{}},
@@ -522,6 +533,10 @@ function artifactB2Key(entry) {
 User.collection.createIndex({ reportsTo: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1 }).catch(function(){});
 Lead.collection.createIndex({ splitAgent2Id: 1, createdAt: -1 }).catch(function(){});
+// EOI-author scope (cancelled-tab visibility in GET /api/eois) — mirrors the
+// splitAgent2Id pair above.
+Lead.collection.createIndex({ eoiAgentId: 1 }).catch(function(){});
+Lead.collection.createIndex({ eoiSplitAgent2Id: 1 }).catch(function(){});
 
 // Rotation sweep — sweepAutoRotation sorts up-to-1000 candidates by
 // lastRotationAt asc; without a covering index the in-memory sort blew the
@@ -10911,7 +10926,7 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
 // Field projection — same heavy-strip as the bootstrap (eoiImage,
 // eoiDocuments, dealImages); the side-panel hydrates the full doc via
 // /api/leads/:id (existing endpoint) when a row opens.
-var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId developerId leadId";
+var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name eoiAgentId eoiSplitAgent2Id budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId developerId leadId";
 // agentHistory carries the rotation chain the cancelled-record resolver
 // (agentAtTime on the FE) reads to show WHO held a cancelled deal/EOI at
 // cancellation time (the live agentId was overwritten by post-cancel rotation).
@@ -10928,14 +10943,36 @@ app.get("/api/eois", auth, async function(req, res) {
     // ?page=... so the cap is a sanity guard, not a silent truncation point.
     var limit  = Math.min(Math.max(1, parseInt(req.query.limit) || 100), 5000);
     var skip   = (page - 1) * limit;
-    // Sales: the EOI list only ever returns frozen (EOI/DoneDeal) leads, so a
-    // prior agent's historical assignments[] slice must NOT grant visibility —
-    // scope strictly to CURRENT ownership (agentId / splitAgent2Id). Every other
-    // role keeps buildLeadSearchScopeQuery unchanged (byte-for-byte).
+    // Sales scope (per-document). ACTIVE/pending/approved EOIs are frozen — the
+    // current owner IS the agent who made the EOI — so scope those by current
+    // ownership (agentId / splitAgent2Id), and a prior agent's historical
+    // assignments[] slice must NOT grant visibility. A CANCELLED EOI, however,
+    // un-freezes the lead (status→HotCase, globalStatus→active), which then keeps
+    // auto-rotating; top-level agentId drifts to whoever holds the lead now. So
+    // cancelled rows are scoped by the anchored EOI author (eoiAgentId /
+    // eoiSplitAgent2Id) instead — a cancelled EOI always shows for the agent who
+    // made it, regardless of where the lead rotated after. Every other role keeps
+    // buildLeadSearchScopeQuery unchanged (byte-for-byte).
+    //
+    // The distinction is per-DOCUMENT, not per-tab: the FE fetches ?status=all
+    // ONCE and splits into tabs client-side (App.js EOIPage L12186 / L12241), so
+    // `status` here is almost always "all" and cannot drive the branch.
     var scope;
     if (req.user.role === "sales") {
       var meScopeId = new mongoose.Types.ObjectId(req.user.id);
-      scope = { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] };
+      var ownedNow    = { $or: [ { agentId: meScopeId }, { splitAgent2Id: meScopeId } ] };
+      var authoredEoi = { $or: [ { eoiAgentId: meScopeId }, { eoiSplitAgent2Id: meScopeId } ] };
+      // "cancelled" here mirrors the cancelled tab's own classification
+      // (eoiScope / tabFilter below).
+      var cancelledRow = { $or: [
+        { eoiStatus: "EOI Cancelled" },
+        { eoiStatus: "Deal Cancelled" },
+        { status:    "Deal Cancelled" }
+      ]};
+      scope = { $or: [
+        { $and: [ { $nor: [ cancelledRow ] }, ownedNow ] },   // frozen EOI → current owner
+        { $and: [ cancelledRow, authoredEoi ] }                // cancelled EOI → author
+      ]};
     } else {
       scope = await buildLeadSearchScopeQuery(req);
     }
@@ -11000,6 +11037,10 @@ app.get("/api/eois", auth, async function(req, res) {
     var rows = await Lead.find(q)
       .select(listFieldsFor(req.user.role, EOI_LIST_FIELDS))
       .populate("agentId", "name title")
+      // EOI-author anchor (see Lead.eoiAgentId) so the cancelled tab can label the
+      // row with WHO MADE the EOI rather than the lead's current (rotated) holder.
+      .populate("eoiAgentId", "name title")
+      .populate("eoiSplitAgent2Id", "name title")
       // Non-blocking sort: served by the { updatedAt:-1, createdAt:-1 } index
       // (server.js index block). EOI docs embed base64 — must never block-sort.
       .sort({ updatedAt: -1, createdAt: -1 })
@@ -13161,6 +13202,13 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     if (req.body.status === "EOI" && oldLead && oldLead.status && oldLead.status !== "EOI") {
       update.preEoiStatus = oldLead.status;
       update.eoiStatus = "Pending";
+      // Anchor the EOI author at creation time = the lead's owner right now. This
+      // is what the cancelled-tab scope reads later; it must NOT move when the
+      // (post-cancel, un-frozen) lead rotates on. Re-entering EOI after a prior
+      // cancel legitimately re-anchors to the new owner (this block only fires on
+      // status!=="EOI" → "EOI"). Preserved untouched by eoi-cancel and eoi-to-deal.
+      update.eoiAgentId = oldLead.agentId || null;
+      update.eoiSplitAgent2Id = oldLead.splitAgent2Id || null;
       // Mirror the DoneDeal write pattern at L5783. Without this, the
       // rotation hard-stops at server.js:6125 / 6254 and the bulk-redistribute
       // filter at server.js:6758 — all keyed on globalStatus === "eoi" — never
@@ -19080,6 +19128,18 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           // and reports filters that key on globalStatus === "eoi" fire for
           // them just like for EOI leads created via the Leads page.
           mirrorExtra.globalStatus = "eoi";
+          // Anchor the EOI author (see Lead.eoiAgentId) = the DR's current agent,
+          // captured only when the mirror is FRESHLY entering EOI (new create, or
+          // an existing mirror that isn't already an active EOI — e.g. re-EOI after
+          // a prior cancel). Skip when it's already an active EOI so plain re-saves
+          // don't rewrite the anchor. DR mirrors have no split co-agent.
+          var drAuthorId = (r.agentId && r.agentId._id) ? r.agentId._id : (r.agentId || null);
+          var mirrorActiveEoi = existingLead && (existingLead.status === "EOI" ||
+              existingLead.eoiStatus === "Pending" || existingLead.eoiStatus === "Approved");
+          if (!mirrorActiveEoi) {
+            mirrorExtra.eoiAgentId = drAuthorId;
+            mirrorExtra.eoiSplitAgent2Id = null;
+          }
           // Only stamp eoiDate on the FIRST transition into EOI — preserve the original
           // closure date on every subsequent edit, so the deal-notifications panel doesn't
           // bump old EOIs back to "just now".

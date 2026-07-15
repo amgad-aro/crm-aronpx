@@ -12241,10 +12241,15 @@ var EOIPage = function(p) {
   var eoiLeads = eoiTab==="cancelled" ? eoiCancelled : eoiActive;
   // Live-agent resolver (used directly for active rows, and as the fallback).
   var liveAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
-  // Cancelled tab shows WHO HELD the EOI at cancellation (historical truth) via
-  // agentAtTime — the live agentId was overwritten by the rotation that fired
-  // when the lead re-entered the pool. Active rows keep the live agent.
-  var getAg=function(l){var live=liveAg(l);return eoiTab==="cancelled"?agentAtTime(l,live):live;};
+  // Anchored EOI-author resolver — reads the populated eoiAgentId (the agent who
+  // MADE the EOI, stamped at creation and never moved by rotation). Server sends
+  // it as a populated {name} on the EOI list; fall back to a users[] lookup.
+  var authorAg=function(l){var a=l&&l.eoiAgentId;if(!a)return null;if(a.name)return a.name;var u=p.users.find(function(x){return gid(x)===a;});return u?u.name:null;};
+  // Cancelled tab shows WHO MADE the EOI (historical truth): prefer the anchored
+  // author, since the live agentId was overwritten by the rotation that fired when
+  // the (un-frozen) lead re-entered the pool. Fall back to agentAtTime → live for
+  // legacy rows with no anchor. Active rows keep the live agent unchanged.
+  var getAg=function(l){var live=liveAg(l);return eoiTab==="cancelled"?(authorAg(l)||agentAtTime(l,live)):live;};
   var parseBudget=function(b){return parseFloat((b||"0").toString().replace(/,/g,""))||0;};
   var total=eoiLeads.reduce(function(s,d){return s+parseBudget(d.budget);},0);
   var [editLead,setEditLead]=useState(null);
