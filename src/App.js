@@ -12202,27 +12202,40 @@ var DashboardPage = function(p) {
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [eoiTab,setEoiTab]=useState("active");
-  // STEP 4-4 — paginated EOI fetch from /api/eois?status=all. Replaces the
-  // in-memory p.leads.filter scan which would silently miss EOIs once
-  // STEP 4-5 shrinks the bootstrap. Falls back to the in-memory filter
-  // while the fetch is in flight so first paint shows the legacy data.
+  // STEP 4-4 — paginated EOI fetch from /api/eois?status=all. This is the ONLY
+  // source for the EOI list: it is scoped to the EOIs this agent AUTHORED
+  // (eoiAgentId). It deliberately does NOT fall back to the in-memory
+  // p.leads.filter scan while in flight — that bootstrap is scoped by current
+  // lead OWNERSHIP, not EOI authorship, and rendering it first leaked another
+  // agent's EOI for a frame (the cross-agent data flash). Null until resolved;
+  // the loading / error banner owns the UI until then.
   var [eoiAllData, setEoiAllData] = useState(null);
+  var [eoiLoadErr, setEoiLoadErr] = useState(null);
+  var [eoiReloadKey, setEoiReloadKey] = useState(0);
   useEffect(function(){
     if (!p.token) return;
     var cancelled = false;
+    setEoiLoadErr(null);
     apiFetch("/api/eois?status=all&limit=1000","GET",null,p.token)
-      .then(function(r){ if (!cancelled && r && Array.isArray(r.data)) setEoiAllData(r.data); })
-      .catch(function(){});
+      .then(function(r){
+        if (cancelled) return;
+        if (r && Array.isArray(r.data)) { setEoiAllData(r.data); }
+        // 200 but wrong shape (backend/FE version skew) must NOT pass silently.
+        // It would leave eoiAllData null and — pre-fix — fall back to the broad
+        // p.leads bootstrap, which scopes sales users by CURRENT lead ownership
+        // (a rotated lead's live holder), not by EOI AUTHOR. That surfaced EOIs
+        // authored by OTHER agents for a frame (the cross-agent data flash).
+        else { setEoiLoadErr("Unexpected response from /api/eois (missing data[] array)."); }
+      })
+      .catch(function(err){
+        if (cancelled) return;
+        // No silent swallow: surface the failure instead of rendering another
+        // agent's rows from the broader bootstrap.
+        setEoiLoadErr((err && err.message) ? err.message : "Failed to load EOIs.");
+      });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust]);
-  // Scope: anything that has an eoiStatus (Pending / Approved / Deal Cancelled)
-  // OR is currently status=EOI (legacy rows without eoiStatus set yet).
-  // Hybrid: works before AND after the backend strips eoiImage/eoiDocuments
-  // from the /api/leads bootstrap. After the strip, l.hasEoiArtifacts (server-
-  // computed) covers the doc-only-no-eoiDate case; before the strip, the raw
-  // fields are still truthy. Either way, correct.
-  var wasEOI = function(l){return l.eoiDate || l.eoiApproved || l.hasEoiArtifacts || l.eoiImage || (l.eoiDocuments||[]).length>0;};
+  },[p.token, p.cbBust, eoiReloadKey]);
   // Overlay p.leads onto eoiAllData so inline mutations (archiveLead /
   // toggleApproved / cancelEOI etc.) — which update p.leads instantly via
   // setLeads — show up before the WS-bumped refetch lands. Each eoiAllData
@@ -12232,9 +12245,19 @@ var EOIPage = function(p) {
     var m = {}; (p.leads||[]).forEach(function(l){ m[gid(l)] = l; }); return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.leads]);
-  var eoiScope = eoiAllData
+  // Server-fetched ONLY — scoped to the EOIs THIS agent AUTHORED (/api/eois
+  // sales scope keys on eoiAgentId, the maker of the EOI). The previous
+  // `: p.leads.filter(...)` fallback rendered the broader /api/leads bootstrap
+  // while this fetch was in flight; but /api/leads scopes sales users by the
+  // lead's CURRENT owner (a rotated lead's live holder), not by EOI author, so
+  // it surfaced another agent's EOI — customer name / phone / budget — for a
+  // frame before the scoped response replaced it (the data-isolation flash).
+  // Render nothing until the author-scoped response lands; the loading / error
+  // banner below owns the UI meanwhile. Same shape as DealsPage's dealsSource.
+  var eoisLoaded = Array.isArray(eoiAllData);
+  var eoiScope = eoisLoaded
     ? eoiAllData.map(function(l){return pLeadsMap[gid(l)]||l;}).filter(function(l){return l && !l.archived;})
-    : p.leads.filter(function(l){return !l.archived && ((l.eoiStatus && l.eoiStatus.length>0) || l.status==="EOI" || (l.status==="Deal Cancelled" && wasEOI(l)));});
+    : [];
   // Defensive guard — once a lead has been converted to a Done Deal it must
   // not appear in EOI Pending/Approved tabs, regardless of any stale
   // eoiStatus value. Today the conversion handlers (POST /api/leads/:id/
@@ -12822,6 +12845,18 @@ var EOIPage = function(p) {
       </div>
       {isOnlyAdmin&&<Btn onClick={function(){setShowAdd(true);}} style={{ padding:"7px 14px", fontSize:12 }}><Plus size={13}/> Add EOI</Btn>}
     </div>
+
+    {/* EOI load state \u2014 never render another agent's rows from the broad
+        bootstrap while the author-scoped /api/eois fetch is in flight.
+        Error \u2192 loud banner + Retry; loading \u2192 spinner text. */}
+    {eoiLoadErr
+      ? <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", background:"#FEE2E2", border:"1px solid #FCA5A5", color:"#B91C1C", borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>
+          <span>\u26a0\ufe0f Couldn\u2019t load EOIs: {eoiLoadErr} Please retry.</span>
+          <button onClick={function(){ setEoiReloadKey(function(k){ return k+1; }); }} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid #B91C1C", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>\u21bb Retry</button>
+        </div>
+      : (!eoisLoaded && <div style={{ background:"#F1F5F9", border:"1px solid #E2E8F0", color:C.textLight, borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>\u23f3 Loading EOIs\u2026</div>)
+    }
+
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
       {[["active","\ud83d\udccb Active",eoiActive.length,"#1D4ED8","#DBEAFE"],["cancelled","\u274c Cancelled",eoiCancelled.length,"#B91C1C","#FEE2E2"]].map(function(tab){
         var active = eoiTab===tab[0];
@@ -12952,7 +12987,7 @@ var EOIPage = function(p) {
       })()}
     </Modal>}
 
-    {eoiLeads.length===0&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
+    {eoisLoaded&&eoiLeads.length===0&&!eoiLoadErr&&<div style={{ textAlign:"center", padding:"60px 20px", color:C.textLight }}>
       <div style={{ fontSize:48, marginBottom:12 }}>🎯</div>
       <div style={{ fontSize:16, fontWeight:700 }}>No EOI clients yet</div>
       <div style={{ fontSize:13, marginTop:8 }}>Clients with EOI status will appear here automatically</div>
@@ -31867,6 +31902,15 @@ export default function CRMApp() {
   }, []);
 
   var handleLogin=function(user,tok,csrfTok,persistent){
+    // SECURITY — a user switch invalidates every cached list. Wipe any list
+    // state still in memory from a previous user BEFORE the new scoped fetch,
+    // and force the initial-load spinner (isInitialLoadRef) so the full-screen
+    // loader — not another agent's rows — covers the repopulation. Normally
+    // handleLogout / the 401-reload already cleared these, but re-login within
+    // the same mount (or any future account-switch path) would otherwise leave
+    // the prior user's leads/EOIs/deals visible until loadData resolves.
+    setLeads([]); setUsers([]); setActivities([]); setDailyReqs([]); setSidebarLeadsTotal(null);
+    isInitialLoadRef.current = true;
     setCurrentUser(user); setToken(tok); setCsrfToken(csrfTok); loadData(tok, user); loadNotifications(tok);
     // Honour a pending QR deep-link instead of forcing dashboard. Only admins
     // and the Owner can actually see the assets page; non-admins fall through
@@ -31924,7 +31968,7 @@ export default function CRMApp() {
       var _sid = sidFromToken(token);
       if (_sid && token) { fetch(API + "/api/sessions/" + encodeURIComponent(_sid) + "/revoke", { method:"POST", headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+token, "X-CSRF-Token": csrfToken||"" } }).catch(function(){}); }
     } catch(e){}
-    try{removeTokenFromBackend();}catch(e){}try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);sessionStoreClear();
+    try{removeTokenFromBackend();}catch(e){}try{disposePushNotifications();}catch(e){}setCurrentUser(null);setToken(null);setCsrfToken(null);setLeads([]);setUsers([]);setActivities([]);setDailyReqs([]);setPage("dashboard");setSidebarOpen(false);setSidebarLeadsTotal(null);sessionStoreClear();
   };
   var nav=function(pg,initLead){var p2=pg||"dashboard";setPage(p2);if(initLead){setInitSelected(initLead);}else{setInitSelected(null);}try{localStorage.setItem("crm_page",p2);}catch(e){}};
 
