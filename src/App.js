@@ -12740,7 +12740,7 @@ var EOIPage = function(p) {
           {l:"Budget",v:selectedEOI.budget?selectedEOI.budget+" EGP":"-",icon:"💰"},
           {l:"Deposit",v:selectedEOI.eoiDeposit||"-",icon:"💵"},
           {l:"Agent",v:getAg(selectedEOI),icon:"👤"},
-          {l:"Notes",v:selectedEOI.notes||"-",icon:"📝"},
+          {l:"Notes",v:selectedEOI.eoiNotes||"-",icon:"📝"},
         ].map(function(f){return <div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
           <div style={{ fontSize:11, color:C.textLight, marginBottom:2 }}>{f.icon} {f.l}</div>
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
@@ -13039,7 +13039,7 @@ var EOIPage = function(p) {
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>{d.name}{canSeeLeadIds(p.cu) && <div style={{ fontSize:10, fontWeight:400, color:C.textLight }}>{formatLeadId(d.leadId)}</div>}</td>
             {p.cu.role!=="sales_admin"&&<td style={{ padding:"11px 12px", fontSize:12, direction:"ltr", textAlign:"left" }}><PhoneCell phone={d.phone}/></td>}
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.project||"-"}</td>
-            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.unitType||d.notes||"-"}</td>
+            <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.unitType||d.eoiNotes||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:700, color:C.success, textAlign:"left" }}>{bv>0?bv.toLocaleString():d.budget||"-"}</td>
             <td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{d.eoiDeposit||"-"}</td>
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>{getAg(d)}</td>}
@@ -13794,7 +13794,7 @@ var DealsPage = function(p) {
           {l:"Installments", v:saleType==="Resale" ? "" : (instYears?instYears+" yrs":"—"), icon:"📆"},
           {l:"Agent", v:saleType==="Resale" ? "" : <span>{getAg(selectedDeal)}{legacyTag(selectedDeal)}</span>, icon:"👤"},
           {l:"Source", v:selectedDeal.source||"-", icon:"📢"},
-          {l:"Notes", v:selectedDeal.notes||"-", icon:"📝"},
+          {l:"Notes", v:selectedDeal.dealNotes||"-", icon:"📝"},
         ].map(function(f){return f.v&&f.v!=="-"?<div key={f.l} style={{ background:"#fff", borderRadius:8, padding:"8px 10px", alignSelf:"start" }}>
           <div style={{ fontSize:11, color:C.textLight, marginBottom:2 }}>{f.icon} {f.l}</div>
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>

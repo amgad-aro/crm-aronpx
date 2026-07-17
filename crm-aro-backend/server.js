@@ -146,6 +146,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // the earliest non-removed assignments[] slice (backfill-eoi-agent.js).
   eoiAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   eoiSplitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  // Frozen EOI-notes snapshot — the EOI AUTHOR's (eoiAgentId) OWN words captured
+  // at the moment the EOI was created, and attributed to that author. The EOI
+  // card reads THIS, never the shared top-level `notes` (a prior/other agent's
+  // handoff text can sit there — the cross-agent notes leak, #50016). Written
+  // only by the server at EOI-creation paths; never accepted from the client.
+  eoiNotes:{type:String,default:""},
   // DEAL AUTHOR anchoring — the sibling of eoiAgentId for the DoneDeal lifecycle.
   // Stamped from the ACTING agent at every deal-creation path (eoi-to-deal,
   // direct DoneDeal, DR mirror). Independent of eoiAgentId so an EOI made by
@@ -157,6 +163,12 @@ var Lead = mongoose.model("Lead", new mongoose.Schema({
   // Deals-page display/scope anchor there.
   dealAgentId:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
   dealSplitAgent2Id:{type:mongoose.Schema.Types.ObjectId,ref:"User",default:null},
+  // Frozen Deal-notes snapshot — sibling of eoiNotes for the DoneDeal lifecycle.
+  // The DEAL AUTHOR's (dealAgentId) own words at close, captured at every deal-
+  // creation path (eoi-to-deal, direct DoneDeal, DR mirror). The Deal card reads
+  // THIS, never the shared top-level `notes`. Server-written only; independent of
+  // eoiNotes so a deal closed by a different agent keeps its own note attribution.
+  dealNotes:{type:String,default:""},
   // LEGACY / former-agent name for historical deals (pre-CRM) whose agent has NO
   // user account. When set: agentId AND dealAgentId stay null so the deal credits
   // NO real user (excluded from every per-agent target/stat/leaderboard/rotation
@@ -4860,6 +4872,24 @@ function actionAuthorId(reqUser, leadDoc) {
   var aid = leadDoc && leadDoc.agentId ? (leadDoc.agentId._id || leadDoc.agentId) : null;
   if (!aid) return null;
   try { return new mongoose.Types.ObjectId(String(aid)); } catch(e){ return null; }
+}
+// Frozen notes snapshot for an EOI/Deal at creation. Returns the AUTHOR's OWN
+// words: the notes submitted in THIS action if present, else the author's own
+// active-slice notes/lastFeedback. NEVER the shared top-level lead.notes — a
+// prior/other agent's handoff text can live there (the #50016 cross-agent
+// leak). `authorId` is the eoiAgentId / dealAgentId just stamped for the action.
+function snapshotAuthorNotes(submittedNotes, leadDoc, authorId) {
+  var s = (submittedNotes != null) ? String(submittedNotes).trim() : "";
+  if (s) return s;
+  var aid = authorId ? String(authorId._id || authorId) : "";
+  if (!aid || !leadDoc || !Array.isArray(leadDoc.assignments)) return "";
+  var slice = leadDoc.assignments.find(function(a){
+    if (!a || a.removedAt) return false;
+    var sid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
+    return String(sid || "") === aid;
+  });
+  if (!slice) return "";
+  return String(slice.notes || slice.lastFeedback || "").trim();
 }
 async function pushHistory(leadId, entries) {
   if (!leadId || !entries) return;
@@ -11011,7 +11041,7 @@ app.get("/api/leads/no-contact", auth, async function(req, res) {
 // Field projection — same heavy-strip as the bootstrap (eoiImage,
 // eoiDocuments, dealImages); the side-panel hydrates the full doc via
 // /api/leads/:id (existing endpoint) when a row opens.
-var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name eoiAgentId eoiSplitAgent2Id budget project source campaign notes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId developerId leadId";
+var EOI_LIST_FIELDS = "_id name phone phone2 email status eoiStatus eoiDate eoiApproved eoiDeposit dealStatus dealApproved dealDate dealType externalBrokerId externalDealConfig agentId splitAgent2Id splitAgent2Name eoiAgentId eoiSplitAgent2Id budget project source campaign notes eoiNotes archived createdAt updatedAt lastActivityTime callbackTime commissionRate commissionAmount commissionClaimDate commissionClaimed closingCompanyId developerId leadId";
 // agentHistory carries the rotation chain the cancelled-record resolver
 // (agentAtTime on the FE) reads to show WHO held a cancelled deal/EOI at
 // cancellation time (the live agentId was overwritten by post-cancel rotation).
@@ -11150,7 +11180,7 @@ app.get("/api/eois", auth, async function(req, res) {
 //
 // Field projection same as EOI list (heavy fields stripped; panel hydrates
 // via /api/leads/:id). Role-scoped via buildLeadSearchScopeQuery.
-var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages dealAgentId dealSplitAgent2Id legacyAgentName"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
+var DEAL_LIST_FIELDS = EOI_LIST_FIELDS + " stages dealAgentId dealSplitAgent2Id dealNotes legacyAgentName"; // + Lead.stages so the Deals list renders stage progress from the server (consistent across roles) instead of per-browser localStorage. Deal-specific — NOT added to EOI_LIST_FIELDS to avoid bloating the EOI payload.
 
 app.get("/api/deals", auth, async function(req, res) {
   try {
@@ -11652,6 +11682,11 @@ app.post("/api/leads", auth, async function(req, res) {
       legacyAgentName:  isLegacyAgentCreate ? String(req.body.legacyAgentName).trim() : "",
       budget:           req.body.budget || "",
       notes:            req.body.notes || "",
+      // Frozen author-notes snapshots for a DIRECT EOI/Deal create (admin Add
+      // EOI / Add Deal) — the creator's typed notes, captured once at creation.
+      // Empty on a plain lead create; the EOI/Deal cards read these, not `notes`.
+      eoiNotes:         initialStatus === "EOI"      ? String(req.body.notes || "").trim() : "",
+      dealNotes:        initialStatus === "DoneDeal" ? String(req.body.notes || "").trim() : "",
       callbackTime:     req.body.callbackTime || "",
       dealDate:         req.body.dealDate || "",
       // Full sale form (2026-07-05). downPayment is the typed EGP amount;
@@ -12726,6 +12761,10 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
       // credits whoever closed it, even if a different agent made the EOI.
       dealAgentId: actionAuthorId(req.user, existing),
       dealSplitAgent2Id: existing.splitAgent2Id || null,
+      // Frozen Deal-notes snapshot — the converting agent's OWN words (notes
+      // submitted in the convert form, else their slice notes). Not carried from
+      // eoiNotes (a different agent may have authored the EOI). Never top-level.
+      dealNotes: snapshotAuthorNotes(req.body.notes, existing, actionAuthorId(req.user, existing)),
       lastActivityTime: new Date()
     };
     if (preserveName  !== undefined) update.eoiOriginalName  = preserveName;
@@ -13184,6 +13223,11 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // to the agent who wrote it).
     delete update.notes;
     delete update.lastFeedback;
+    // Frozen author-notes snapshots are server-written ONLY (at the EOI/Deal
+    // creation transitions below). Strip any client-supplied value so a crafted
+    // PUT can't forge or overwrite them.
+    delete update.eoiNotes;
+    delete update.dealNotes;
     // Control flag — never persist on the lead doc.
     delete update.force;
     // Closing Company default (Feature B) — every closed deal must carry a
@@ -13310,6 +13354,9 @@ app.put("/api/leads/:id", auth, async function(req, res) {
       // the prior EOI's author survives in history[] (byUserId, below).
       update.eoiAgentId = actionAuthorId(req.user, oldLead);
       update.eoiSplitAgent2Id = oldLead.splitAgent2Id || null;
+      // Frozen EOI-notes snapshot — the author's OWN words at creation (notes
+      // submitted in this action, else their slice notes). Never top-level notes.
+      update.eoiNotes = snapshotAuthorNotes(req.body.notes, oldLead, update.eoiAgentId);
       // Mirror the DoneDeal write pattern at L5783. Without this, the
       // rotation hard-stops at server.js:6125 / 6254 and the bulk-redistribute
       // filter at server.js:6758 — all keyed on globalStatus === "eoi" — never
@@ -13346,6 +13393,10 @@ app.put("/api/leads/:id", auth, async function(req, res) {
         update.dealAgentId = actionAuthorId(req.user, oldLead);
         update.dealSplitAgent2Id = oldLead.splitAgent2Id || null;
       }
+      // Frozen Deal-notes snapshot — the closer's OWN words (submitted notes,
+      // else their slice notes). Legacy deals (no dealAgentId) still capture any
+      // admin-typed note via the submitted-notes branch. Never top-level notes.
+      update.dealNotes = snapshotAuthorNotes(req.body.notes, oldLead, update.dealAgentId);
       // Phase R-13.2 — same window-expiry kill as the EOI transition above.
       update.manualWindowExpiresAt = null;
       // Stamp the real occurrence date on first close so it is persisted
@@ -19254,6 +19305,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           if (!mirrorActiveEoi) {
             mirrorExtra.eoiAgentId = drEoiAuthorId;
             mirrorExtra.eoiSplitAgent2Id = null;
+            // Frozen EOI-notes snapshot from the DR author's own input (the DR's
+            // notes / submitted notes), else the mirror author's slice notes.
+            mirrorExtra.eoiNotes = snapshotAuthorNotes(req.body.notes || r.notes, existingLead, drEoiAuthorId);
           }
           // Only stamp eoiDate on the FIRST transition into EOI — preserve the original
           // closure date on every subsequent edit, so the deal-notifications panel doesn't
@@ -19273,6 +19327,9 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
           if (!drDealActiveAlready) {
             mirrorExtra.dealAgentId = actionAuthorId(req.user, { agentId: r.agentId });
             mirrorExtra.dealSplitAgent2Id = null;
+            // Frozen Deal-notes snapshot from the DR author's own input (DR notes
+            // / submitted notes), else the mirror author's slice notes.
+            mirrorExtra.dealNotes = snapshotAuthorNotes(req.body.notes || r.notes, existingLead, mirrorExtra.dealAgentId);
           }
           // Only stamp dealDate on the FIRST transition into DoneDeal — preserve the
           // original closure date on every subsequent edit, so old deals don't re-surface
