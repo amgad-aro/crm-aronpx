@@ -12851,10 +12851,10 @@ var EOIPage = function(p) {
         Error \u2192 loud banner + Retry; loading \u2192 spinner text. */}
     {eoiLoadErr
       ? <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", background:"#FEE2E2", border:"1px solid #FCA5A5", color:"#B91C1C", borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>
-          <span>\u26a0\ufe0f Couldn\u2019t load EOIs: {eoiLoadErr} Please retry.</span>
-          <button onClick={function(){ setEoiReloadKey(function(k){ return k+1; }); }} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid #B91C1C", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>\u21bb Retry</button>
+          <span>⚠️ Couldn’t load EOIs: {eoiLoadErr} Please retry.</span>
+          <button onClick={function(){ setEoiReloadKey(function(k){ return k+1; }); }} style={{ padding:"6px 14px", borderRadius:8, border:"1px solid #B91C1C", background:"#fff", color:"#B91C1C", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>↻ Retry</button>
         </div>
-      : (!eoisLoaded && <div style={{ background:"#F1F5F9", border:"1px solid #E2E8F0", color:C.textLight, borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>\u23f3 Loading EOIs\u2026</div>)
+      : (!eoisLoaded && <div style={{ background:"#F1F5F9", border:"1px solid #E2E8F0", color:C.textLight, borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:13, fontWeight:600 }}>⏳ Loading EOIs…</div>)
     }
 
     <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
