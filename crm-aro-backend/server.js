@@ -9166,6 +9166,12 @@ app.post("/api/users", auth, adminOnly, async function(req, res) {
     if (!req.body.password || !String(req.body.password).trim()) {
       return res.status(400).json({ error: "password_required", message: "Password is required" });
     }
+    // Phone required on create (new saves only). Mirrors the FE Add-User
+    // validation so the rule holds regardless of client. Existing phone-less
+    // users are unaffected — this only gates the create path.
+    if (!req.body.phone || !String(req.body.phone).trim()) {
+      return res.status(400).json({ error: "phone_required", message: "Phone number is required" });
+    }
     // Starting Date required + not in the future (Cairo business day). Mirrors the
     // FE Add-User validation so the rule holds regardless of client.
     var startingDateRaw = req.body.startingDate ? String(req.body.startingDate).slice(0, 10) : "";
@@ -9248,6 +9254,14 @@ app.put("/api/users/:id", auth, adminOnly, async function(req, res) {
     }
     if (req.body.active !== undefined && isOwnerUser(target)) {
       return res.status(403).json({ error: "Owner cannot be deactivated" });
+    }
+
+    // Phone required for consistency with create: if the caller explicitly
+    // sends a phone field, it may not be blanked. Callers that don't touch
+    // phone (role/title/team/target edits) are unaffected, so existing
+    // phone-less users keep saving fine — the rule bites only on real edits.
+    if (req.body.phone !== undefined && !String(req.body.phone).trim()) {
+      return res.status(400).json({ error: "phone_required", message: "Phone number is required" });
     }
 
     var update = {};
