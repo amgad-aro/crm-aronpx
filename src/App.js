@@ -1156,6 +1156,7 @@ var StatusModal = function(p) {
     if (isReject && !comment.trim())     { setErr("Please select a rejection reason"); return; }
     if (isReject && !rejectNote.trim())  { setErr("Feedback is required"); return; }
     if ((isDoneDeal||isEOI) && !dealBudget.trim()){ setErr("Please enter the amount"); return; }
+    if ((isDoneDeal||isEOI) && !dealProject.trim()){ setErr("Please enter the Project"); return; }
     // Unit Code required on the DoneDeal status-transition door (gated to isDoneDeal).
     if (isDoneDeal && !dealUnitCode.trim()){ setErr("Please enter the Unit Code (e.g. B1-204)"); return; }
     if ((isDoneDeal||isEOI) && p.requireDeveloper && !devSelId && !devPendName.trim()){ setErr("Please pick a developer or enter a new name"); return; }   // N2
@@ -1268,7 +1269,7 @@ var StatusModal = function(p) {
     {/* DoneDeal / EOI: project + unit type + budget */}
     {(isDoneDeal||isEOI)&&<div>
       <div style={{ marginBottom:11 }}>
-        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 Project</label>
+        <label style={{ display:"block", fontSize:13, fontWeight:600, color:C.text, marginBottom:5 }}>🏠 Project <span style={{color:C.danger}}>*</span></label>
         <input type="text" placeholder="" value={dealProject} onChange={function(e){setDealProject(e.target.value);}}
           style={{ width:"100%", padding:"9px 12px", borderRadius:10, border:"1px solid #E2E8F0", fontSize:14, boxSizing:"border-box" }}/>
       </div>
@@ -3178,7 +3179,7 @@ var LeadForm = function(p) {
     if (!form.name||!form.phone) return;
     if (!isReq && !form.source) { alert("Please select a source"); return; }
     if (isEOIForm && !form.budget) { alert("Please enter the Amount (EGP)"); return; }
-    if (isEOIForm && !form.project) { alert("Please enter the Project"); return; }
+    if (isEOIForm && !String(form.project||"").trim()) { alert("Please enter the Project"); return; }
     if (isEOIForm && !form.eoiDeposit) { alert("Please enter the Deposit (EGP)"); return; }
     if (isEOIForm && !String(form.eoiDate || "").trim()) { alert("EOI Date is required"); return; }
     if (!p.editId && (isEOIForm || isDoneDealForm) && !devSelId && !devPendName.trim()) { alert("Please pick a developer or enter a new name"); return; }   // N3
@@ -3228,7 +3229,7 @@ var LeadForm = function(p) {
       if (!(unitPriceNum > 0)) { alert("Please enter a valid Unit Price (EGP) greater than 0"); return; }
       if (!String(form.unitCode || "").trim()) { alert("Please enter the Unit Code (e.g. B1-204)"); return; }
       // Full sale form — ALL REQUIRED on create (Yosra). Mirrors the backend guards.
-      if (!String(form.project || "").trim()) { alert("Please enter the Project / Compound"); return; }
+      if (!String(form.project || "").trim()) { alert("Please enter the Project"); return; }
       if (!String(form.unitType || "").trim()) { alert("Please select a Unit Type"); return; }
       if (form.saleType !== "Primary" && form.saleType !== "Resale") { alert("Please select a Sale Type"); return; }
       if (form.saleType === "Resale") {
@@ -3568,7 +3569,7 @@ var LeadForm = function(p) {
         };
         return <div>
           {hdr("🏠 Property")}
-          <Inp label={"🏢 " + t.project + " / Development"} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+          <Inp label={"🏢 " + t.project} req={!p.editId} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
           <div style={g2}>
             <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
             <Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>
@@ -3595,7 +3596,7 @@ var LeadForm = function(p) {
         </div>
 
         {hdr("🏠 Property")}
-        <Inp label={"🏢 " + t.project + " / Development"} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+        <Inp label={"🏢 " + t.project} req={!p.editId} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
         <div style={g2}>
           <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
           <Inp label="🔖 Unit Code" req={!p.editId} value={form.unitCode||""} onChange={function(e){upd("unitCode",e.target.value);}} placeholder="e.g. B1-204"/>
@@ -3641,7 +3642,7 @@ var LeadForm = function(p) {
         {value:"EOI",label:"EOI"},
         {value:"DoneDeal",label:"Done Deal"}
       ]}/>}
-      <Inp label={"🏢 " + t.project + " / Development"} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
+      <Inp label={"🏢 " + t.project} req={isEOIForm} value={form.project||""} onChange={function(e){upd("project",e.target.value);}} placeholder="e.g. Cali Coast"/>
       <Inp label="🏷️ Unit Type" type="select" value={form.unitType||""} onChange={function(e){upd("unitType",e.target.value);}} options={UNIT_TYPES.map(function(x){return {value:x, label:x||"- Select -"};})}/>
       {developerBlock}
       {sourceField}
@@ -12494,7 +12495,7 @@ var EOIPage = function(p) {
     var num = function(v){ var s=String(v||"").replace(/,/g,"").replace(/[^0-9.]/g,""); var n=parseFloat(s); return isFinite(n)?n:0; };
     if(!String(f.name||"").trim()) { alert("Client Name is required"); return; }
     if(!String(f.phone||"").trim()) { alert("Client Phone is required"); return; }
-    if(!String(f.project||"").trim()) { alert("Project / Compound is required"); return; }
+    if(!String(f.project||"").trim()) { alert("Project is required"); return; }
     if(!String(f.unitType||"").trim()) { alert("Please select a Unit Type"); return; }
     var code = String(f.unitCode||"").trim();
     if(!code) { alert("Please enter the Unit Code (e.g. B1-204)"); return; }
@@ -12936,7 +12937,7 @@ var EOIPage = function(p) {
           </>}
 
           {sectionHdr("🏠 Property")}
-          {cField("🏢 Project / Compound","project")}
+          {cField("🏢 Project","project")}
           <div style={g2}>
             {cField("🏷️ Unit Type","unitType",{type:"select",options:UNIT_TYPES.map(function(x){return {value:x,label:x||"- Select -"};})})}
             {cField("🔖 Unit Code","unitCode",{placeholder:"e.g. B1-204"})}

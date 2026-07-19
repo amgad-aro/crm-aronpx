@@ -11547,6 +11547,14 @@ app.post("/api/leads", auth, async function(req, res) {
     var normalizedSource = normalizeSource(req.body.source);
     if (!normalizedSource) return res.status(400).json({ error: "source is required", code: "source_required" });
     var initialStatus = req.body.status || "NewLead";
+    // Project is REQUIRED for any EOI / Done Deal CREATE, all roles / all callers
+    // into POST /api/leads (Add Deal, Add EOI, direct API). Plain leads
+    // (NewLead / Potential / …) keep project optional. The admin/SA full-sale-form
+    // block below re-validates project too; this general guard is what covers EOI
+    // creation and any non-admin deal creation the admin-only block misses.
+    if ((initialStatus === "EOI" || initialStatus === "DoneDeal") && !String((req.body && req.body.project) || "").trim()) {
+      return res.status(400).json({ error: "project_required", message: "Project is required for a Deal or EOI." });
+    }
     var stampsMeeting = initialStatus === "MeetingDone";
     // Phase R-12 Part 3 — external-deal field validation. Strips for non-admin
     // callers (sales/TL/manager have no UI control here; refuse silently to
@@ -12706,7 +12714,7 @@ app.post("/api/leads/:id/eoi-to-deal", auth, async function(req, res) {
     // deals are never affected: this validation lives on the convert path only.
     if (!e2dName)     return res.status(400).json({ error: "name_required",    message: "Client name is required." });
     if (!e2dPhone)    return res.status(400).json({ error: "phone_required",   message: "Client phone is required." });
-    if (!e2dProject)  return res.status(400).json({ error: "project_required", message: "Project / Compound is required." });
+    if (!e2dProject)  return res.status(400).json({ error: "project_required", message: "Project is required." });
     if (!e2dUnitType) return res.status(400).json({ error: "unit_type_required", message: "Unit Type is required." });
     if (!e2dUnitCode) return res.status(400).json({ error: "unit_code_required", message: "Unit Code is required to convert to a Done Deal." });
     if (!(e2dBudgetNum > 0)) return res.status(400).json({ error: "budget_required_for_deal", message: "Unit Price (EGP) must be present and greater than 0 before converting to a Done Deal." });
@@ -13002,6 +13010,21 @@ app.put("/api/leads/:id", auth, async function(req, res) {
     // developer write when this PUT is that transition. apiFetch surfaces `error`
     // to the FE alert; `code` is the machine tag.
     var isDevConversionPut = req.body.status === "EOI" || req.body.status === "DoneDeal";
+    // Project REQUIRED on any transition INTO EOI / DoneDeal (StatusModal quick-
+    // close, Edit-Deal / Edit-EOI save, direct API). Existing records unaffected:
+    // when the PUT omits project we fall back to the stored value, so only a
+    // genuinely project-less deal/EOI is blocked — an unrelated edit to one that
+    // already carries a project passes through untouched.
+    if (isDevConversionPut) {
+      var effProjectPut;
+      if (req.body.project !== undefined) {
+        effProjectPut = String(req.body.project || "").trim();
+      } else {
+        var pLeadPut = await Lead.findById(req.params.id).select("project").lean();
+        effProjectPut = pLeadPut ? String(pLeadPut.project || "").trim() : "";
+      }
+      if (!effProjectPut) return res.status(400).json({ error: "project_required", message: "Project is required for a Deal or EOI." });
+    }
     if (req.body.developerId !== undefined || req.body.developerPending !== undefined) {
       if (!isDevConversionPut && req.user.role !== "admin" && req.user.role !== "sales_admin") {
         return res.status(403).json({ error: "Only the owner, an admin, or a sales admin can change the developer.", code: "developer_forbidden" });
