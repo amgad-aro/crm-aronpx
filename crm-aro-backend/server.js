@@ -19276,6 +19276,20 @@ app.put("/api/daily-requests/:id", auth, async function(req, res) {
     if (req.body.status === "EOI" || req.body.status === "DoneDeal" || req.body.status === "MeetingDone") {
       prevDr = await DailyRequest.findById(req.params.id).lean();
     }
+    // Project REQUIRED when a Daily Request lands as EOI / DoneDeal — its mirror
+    // becomes a deal/EOI Lead, so it must carry a project like the direct deal/EOI
+    // paths. Check the SAME effective project the mirror will use below
+    // (req.body.project → DR propertyType → the existing mirror's project) and
+    // block BEFORE the DR is mutated, so a project-less transition can't leave an
+    // orphaned DR in EOI/DoneDeal with no mirror. Plain DR statuses are unaffected.
+    if (req.body.status === "EOI" || req.body.status === "DoneDeal") {
+      var drEffProject = String((req.body && req.body.project) || (prevDr && prevDr.propertyType) || "").trim();
+      if (!drEffProject && prevDr) {
+        var drExistingMirror = await resolveMirrorForDR(prevDr);
+        if (drExistingMirror && String(drExistingMirror.project || "").trim()) drEffProject = String(drExistingMirror.project).trim();
+      }
+      if (!drEffProject) return res.status(400).json({ error: "project_required", message: "Project is required for a Deal or EOI." });
+    }
     // CallbackBell auto-clear (2026-05-18 rebuild) — DR variant of the same
     // hygiene applied in PUT /api/leads/:id. When this PUT logs new
     // status/feedback activity AND there's a stale callbackTime in the past,

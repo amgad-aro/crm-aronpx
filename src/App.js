@@ -15061,6 +15061,7 @@ var DailyRequestsPage = function(p) {
       if(!form.budget.trim()){alert("Budget is required");return;}
     } else {
       if(!(form.dealBudget||"").trim()){alert("Amount is required");return;}
+      if(!(form.dealProject||"").trim()){alert("Please enter the Project");return;}
     }
     setSaving(true);
     try{
@@ -15581,7 +15582,7 @@ var DailyRequestsPage = function(p) {
       {isAdmin&&<Inp label={t.agent} searchable type="select" value={form.agentId} onChange={function(e){setForm(function(f){return Object.assign({},f,{agentId:e.target.value});})}} options={[{value:"",label:"- Select -"}].concat(salesUsers.map(function(u){return{value:gid(u),label:u.name};}))}/>}
       <Inp label={t.status+" *"} req type="select" value={form.status||"NewLead"} onChange={function(e){setForm(function(f){return Object.assign({},f,{status:e.target.value});})}} options={sc.map(function(s){return{value:s.value,label:s.label};})}/>
       {(form.status==="EOI"||form.status==="DoneDeal")&&<div>
-        <Inp label={"🏠 Project"} value={form.dealProject} onChange={function(e){setForm(function(f){return Object.assign({},f,{dealProject:e.target.value});})}}/>
+        <Inp label={"🏠 Project"} req value={form.dealProject} onChange={function(e){setForm(function(f){return Object.assign({},f,{dealProject:e.target.value});})}}/>
         <Inp label={"🏷️ Unit Type"} type="select" value={form.dealUnitType} onChange={function(e){setForm(function(f){return Object.assign({},f,{dealUnitType:e.target.value});})}} options={["","Apartment","Duplex","Townhouse","Twinhouse","Standalone","Commercial","Admin","Clinic","Service Apartment","Chalet"].map(function(x){return{value:x,label:x||"- Select -"};})}/>
         <Inp label={"💰 Amount (EGP) *"} req value={form.dealBudget} onChange={function(e){setForm(function(f){return Object.assign({},f,{dealBudget:(function(){var r=e.target.value.replace(/,/g,"").replace(/[^0-9]/g,"");return r?Number(r).toLocaleString():"";})()});})}}/>
         {form.status==="EOI"&&<Inp label={"📅 EOI Date"} type="date" value={form.eoiDateInput} onChange={function(e){setForm(function(f){return Object.assign({},f,{eoiDateInput:e.target.value});})}}/>}
