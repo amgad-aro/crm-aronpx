@@ -13652,6 +13652,13 @@ var DealsPage = function(p) {
     }catch(e){alert(e.message);}
   };
 
+  // DEAD CODE (dormant, intentional): the whole deal-stages editor subsystem —
+  // openStages, stagesProgress, saveStages, getStages, resolveStages,
+  // stagesProgressFrom, the stagesModal/stagesForm state, and the stagesModal
+  // <Modal> (~L14109) — has NO entry point anymore. The owner removed deal
+  // stages from the Deals UI entirely (list columns + detail-panel control).
+  // Kept intact this pass per request; safe to delete in a future cleanup since
+  // Lead.stages is purely visual (no commission/report/payout logic reads it).
   var openStages=function(d){
     var s=resolveStages(d)||{};
     setStagesForm({
@@ -13834,29 +13841,6 @@ var DealsPage = function(p) {
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>:null;})}
         </div>
-
-        {/* Deal Stages — relocated here from the deals list (the list column
-            was removed; this is where the stage progress + editor now live).
-            Opens the shared stagesModal via openStages; ungated so every role
-            that can open a deal keeps the prior list-cell access. */}
-        {(function(){
-          var stages=resolveStages(selectedDeal)||{};
-          var prog=stagesProgressFrom(stages);
-          return <div style={{ marginTop:12 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Deal Stages</div>
-            <button onClick={function(e){e.stopPropagation();openStages(selectedDeal);}}
-              style={{ width:"100%", textAlign:"left", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"10px 12px", cursor:"pointer" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
-                {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:20, height:20, borderRadius:6, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:10, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
-                <span style={{ fontSize:11, color:C.textLight, marginLeft:2 }}>{prog}/3 stages</span>
-                <span style={{ marginLeft:"auto", fontSize:11, color:C.info, fontWeight:600 }}>Edit ›</span>
-              </div>
-              <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
-                <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
-              </div>
-            </button>
-          </div>;
-        })()}
 
         {/* Two-party Resale — seller + buyer blocks (name, phone, agent, commission,
             with-us badge). Each with-us party is its own tax-free, direct-collected
