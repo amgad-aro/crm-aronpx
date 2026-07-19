@@ -13441,12 +13441,6 @@ var DealsPage = function(p) {
   var devNameOf=function(d){ var dv=d&&d.developerId; if(dv&&typeof dv==="object"&&dv.name) return dv.name; var id=devIdOf(d); if(!id) return ""; var hit=(dealDevelopers||[]).find(function(x){return String(x._id)===id;}); return hit?hit.name:""; };
   // Developer (D5) — options for the filter dropdown (managed developers list).
   var dealDeveloperOpts=(dealDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; });
-  // Project filter — options are DISTINCT free-text project strings from the
-  // loaded deals. Unlike Developer (a managed /api/developers entity resolved by
-  // id), `project` is a plain string on the lead/deal, so options are derived
-  // client-side here (case-insensitive de-dupe, alpha sort) — mirrors the
-  // distinct-project builder in the project-weight modal.
-  var dealProjectOpts=(function(){ var seen={}, out=[]; (deals||[]).forEach(function(d){ var pr=(d.project||"").trim(); if(pr&&!seen[pr.toLowerCase()]){ seen[pr.toLowerCase()]=1; out.push(pr); } }); out.sort(function(a,b){ return a.localeCompare(b); }); return out.map(function(pr){ return { value:pr, label:pr }; }); })();
   // Split-deal credit rule mirrors the backend my-stats reducer: for any
   // non-admin caller, a split deal counts as FULL (1.0) when both agents are
   // visible in p.users (server-scoped subtree), else 0.5. Sales p.users is
@@ -13530,6 +13524,23 @@ var DealsPage = function(p) {
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
   var [dealDeveloperFilter,setDealDeveloperFilter]=useState(""); // Developer (D5) — "" = all
   var [dealProjectFilter,setDealProjectFilter]=useState(""); // Project (free-text) — "" = all
+  // Project filter options — DISTINCT free-text project strings from the loaded
+  // deals (case-insensitive de-dupe, alpha sort). CASCADE (P0): when a developer
+  // is selected, the option list is scoped to that developer's deals only, so it
+  // no longer offers projects that belong to other developers. `project` is a
+  // plain string with no entity link yet, so the developer→project relationship
+  // is derived here from the deals' own developerId (deals carry it ~always).
+  // Declared after the filter states so it can read dealDeveloperFilter.
+  var dealProjectOpts=(function(){
+    var seen={}, out=[];
+    (deals||[]).forEach(function(d){
+      if(dealDeveloperFilter && devIdOf(d)!==dealDeveloperFilter) return; // cascade
+      var pr=(d.project||"").trim();
+      if(pr&&!seen[pr.toLowerCase()]){ seen[pr.toLowerCase()]=1; out.push(pr); }
+    });
+    out.sort(function(a,b){ return a.localeCompare(b); });
+    return out.map(function(pr){ return { value:pr, label:pr }; });
+  })();
   // Phase R-12 Part 4 — All / Internal / External filter pill state. Scoped
   // to the current Active|Cancelled tab (counts and filter both). Default
   // "all". Pre-Part-2 leads default to dealType "internal" so the External
@@ -14049,7 +14060,7 @@ var DealsPage = function(p) {
           options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width="100%" maxWidth={9999} fontSize={12}/></div>}
       </div>
       {canSeeDeveloper(p.cu)&&<div style={{ marginBottom:8 }}>
-        <SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width="100%" maxWidth={9999} fontSize={12}/>
+        <SearchableSelect value={dealDeveloperFilter} onChange={function(v){setDealDeveloperFilter(v);setDealProjectFilter("");}} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width="100%" maxWidth={9999} fontSize={12}/>
       </div>}
       <div style={{ marginBottom:8 }}>
         <SearchableSelect value={dealProjectFilter} onChange={setDealProjectFilter} options={dealProjectOpts} emptyLabel="🏠 All projects" placeholder="Search projects…" width="100%" maxWidth={9999} fontSize={12}/>
@@ -14069,7 +14080,7 @@ var DealsPage = function(p) {
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<SearchableSelect value={dealAgent} onChange={setDealAgent}
         options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width={200} maxWidth={200} fontSize={12}/>}
-      {canSeeDeveloper(p.cu)&&<SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width={200} maxWidth={200} fontSize={12}/>}
+      {canSeeDeveloper(p.cu)&&<SearchableSelect value={dealDeveloperFilter} onChange={function(v){setDealDeveloperFilter(v);setDealProjectFilter("");}} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width={200} maxWidth={200} fontSize={12}/>}
       <SearchableSelect value={dealProjectFilter} onChange={setDealProjectFilter} options={dealProjectOpts} emptyLabel="🏠 All projects" placeholder="Search projects…" width={200} maxWidth={200} fontSize={12}/>
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
