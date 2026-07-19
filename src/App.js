@@ -12202,6 +12202,7 @@ var DashboardPage = function(p) {
 var EOIPage = function(p) {
   var t=p.t; var isAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin"||p.cu.role==="director"||p.cu.role==="manager"||p.cu.role==="team_leader"; var isOnlyAdmin=p.cu.role==="admin"||p.cu.role==="sales_admin";
   var [eoiTab,setEoiTab]=useState("active");
+  var [eoiProjectFilter,setEoiProjectFilter]=useState(""); // Project (free-text) — "" = all
   // STEP 4-4 — paginated EOI fetch from /api/eois?status=all. This is the ONLY
   // source for the EOI list: it is scoped to the EOIs this agent AUTHORED
   // (eoiAgentId). It deliberately does NOT fall back to the in-memory
@@ -12289,6 +12290,11 @@ var EOIPage = function(p) {
   // tab. Array.sort is stable (ES2019+), so each group keeps its eoiScope order.
   var eoiActive = eoiPending.concat(eoiApprovedList).sort(function(a,b){ return (a.eoiApproved?1:0)-(b.eoiApproved?1:0); });
   var eoiLeads = eoiTab==="cancelled" ? eoiCancelled : eoiActive;
+  // Project filter (parity with DealsPage) — `project` is a free-text string on
+  // the lead, so options are distinct values derived client-side from all EOI
+  // rows (both tabs), then the active tab bucket is filtered by the selection.
+  var eoiProjectOpts=(function(){ var seen={}, out=[]; eoiScope.forEach(function(l){ var pr=(l.project||"").trim(); if(pr&&!seen[pr.toLowerCase()]){ seen[pr.toLowerCase()]=1; out.push(pr); } }); out.sort(function(a,b){ return a.localeCompare(b); }); return out.map(function(pr){ return { value:pr, label:pr }; }); })();
+  if(eoiProjectFilter){ eoiLeads = eoiLeads.filter(function(l){ return String(l.project||"")===eoiProjectFilter; }); }
   // Live-agent resolver (used directly for active rows, and as the fallback).
   var liveAg=function(l){if(!l.agentId)return"-";if(l.agentId.name)return l.agentId.name;var u=p.users.find(function(x){return gid(x)===l.agentId;});return u?u.name:"-";};
   // Anchored EOI-author resolver — reads the populated eoiAgentId (the agent who
@@ -12864,6 +12870,14 @@ var EOIPage = function(p) {
       })}
     </div>
 
+    {/* Project filter — added for parity with the Deals page (the EOI list had
+        no filter bar before). Client-side over the free-text `project` string;
+        AND-combines with the active/cancelled tab. Hidden when no projects. */}
+    {eoiProjectOpts.length>0&&<div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+      <SearchableSelect value={eoiProjectFilter} onChange={setEoiProjectFilter} options={eoiProjectOpts} emptyLabel="🏠 All projects" placeholder="Search projects…" width={p.isMobile?"100%":220} maxWidth={p.isMobile?9999:220} fontSize={12}/>
+      {eoiProjectFilter&&<button onClick={function(){setEoiProjectFilter("");}} style={{ padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", cursor:"pointer", fontSize:12, color:C.danger }}>✕ Clear</button>}
+    </div>}
+
     {showAdd&&<Modal show={true} onClose={function(){setShowAdd(false);}} title={"➕ Add EOI"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false}
         initialStatus="EOI"
@@ -13427,6 +13441,12 @@ var DealsPage = function(p) {
   var devNameOf=function(d){ var dv=d&&d.developerId; if(dv&&typeof dv==="object"&&dv.name) return dv.name; var id=devIdOf(d); if(!id) return ""; var hit=(dealDevelopers||[]).find(function(x){return String(x._id)===id;}); return hit?hit.name:""; };
   // Developer (D5) — options for the filter dropdown (managed developers list).
   var dealDeveloperOpts=(dealDevelopers||[]).map(function(dv){ return { value:String(dv._id), label:dv.name }; });
+  // Project filter — options are DISTINCT free-text project strings from the
+  // loaded deals. Unlike Developer (a managed /api/developers entity resolved by
+  // id), `project` is a plain string on the lead/deal, so options are derived
+  // client-side here (case-insensitive de-dupe, alpha sort) — mirrors the
+  // distinct-project builder in the project-weight modal.
+  var dealProjectOpts=(function(){ var seen={}, out=[]; (deals||[]).forEach(function(d){ var pr=(d.project||"").trim(); if(pr&&!seen[pr.toLowerCase()]){ seen[pr.toLowerCase()]=1; out.push(pr); } }); out.sort(function(a,b){ return a.localeCompare(b); }); return out.map(function(pr){ return { value:pr, label:pr }; }); })();
   // Split-deal credit rule mirrors the backend my-stats reducer: for any
   // non-admin caller, a split deal counts as FULL (1.0) when both agents are
   // visible in p.users (server-scoped subtree), else 0.5. Sales p.users is
@@ -13509,6 +13529,7 @@ var DealsPage = function(p) {
   });
   var [dateFrom,setDateFrom]=useState(""); var [dateTo,setDateTo]=useState(""); var [dealSearch,setDealSearch]=useState(""); var [dealAgent,setDealAgent]=useState("");
   var [dealDeveloperFilter,setDealDeveloperFilter]=useState(""); // Developer (D5) — "" = all
+  var [dealProjectFilter,setDealProjectFilter]=useState(""); // Project (free-text) — "" = all
   // Phase R-12 Part 4 — All / Internal / External filter pill state. Scoped
   // to the current Active|Cancelled tab (counts and filter both). Default
   // "all". Pre-Part-2 leads default to dealType "internal" so the External
@@ -13571,6 +13592,7 @@ var DealsPage = function(p) {
     if(dealTypeFilter==="external" && d.dealType!=="external") return false;
     if(dealTypeFilter==="ambassador" && d.dealType!=="ambassador") return false; // Phase R-14
     if(dealDeveloperFilter && devIdOf(d)!==dealDeveloperFilter) return false; // Developer (D5)
+    if(dealProjectFilter && String(d.project||"")!==dealProjectFilter) return false; // Project
     return true;
   });
   var filteredTotal=filteredDeals.reduce(function(s,d){
@@ -14029,6 +14051,9 @@ var DealsPage = function(p) {
       {canSeeDeveloper(p.cu)&&<div style={{ marginBottom:8 }}>
         <SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width="100%" maxWidth={9999} fontSize={12}/>
       </div>}
+      <div style={{ marginBottom:8 }}>
+        <SearchableSelect value={dealProjectFilter} onChange={setDealProjectFilter} options={dealProjectOpts} emptyLabel="🏠 All projects" placeholder="Search projects…" width="100%" maxWidth={9999} fontSize={12}/>
+      </div>
       <div style={{ display:"flex", gap:12, marginBottom:8 }}>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-start", gap:4, flex:1, minWidth:0 }}>
           <span style={{ fontSize:11, color:C.textLight, fontWeight:600 }}>📅 From</span>
@@ -14039,12 +14064,13 @@ var DealsPage = function(p) {
           <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 8px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:11, width:"100%", minWidth:0, boxSizing:"border-box" }}/>
         </div>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter||dealProjectFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealProjectFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ width:"100%", padding:"7px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>:<div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14, flexWrap:"wrap" }}>
       <input placeholder="🔍 Search by name, project or phone..." value={dealSearch} onChange={function(e){setDealSearch(e.target.value);}} style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12, minWidth:220 }}/>
       {isAdmin&&<SearchableSelect value={dealAgent} onChange={setDealAgent}
         options={agentFilterOpts} emptyLabel="👤 All Agents" placeholder="Search agent…" width={200} maxWidth={200} fontSize={12}/>}
       {canSeeDeveloper(p.cu)&&<SearchableSelect value={dealDeveloperFilter} onChange={setDealDeveloperFilter} options={dealDeveloperOpts} emptyLabel="🏗️ All developers" placeholder="Search developers…" width={200} maxWidth={200} fontSize={12}/>}
+      <SearchableSelect value={dealProjectFilter} onChange={setDealProjectFilter} options={dealProjectOpts} emptyLabel="🏠 All projects" placeholder="Search projects…" width={200} maxWidth={200} fontSize={12}/>
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>📅 From:</span>
         <input type="date" value={dateFrom} onChange={function(e){setDateFrom(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
@@ -14053,7 +14079,7 @@ var DealsPage = function(p) {
         <span style={{ fontSize:12, color:C.textLight, fontWeight:600 }}>To:</span>
         <input type="date" value={dateTo} onChange={function(e){setDateTo(e.target.value);}} style={{ padding:"5px 10px", borderRadius:8, border:"1px solid #E2E8F0", fontSize:12 }}/>
       </div>
-      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
+      {(dateFrom||dateTo||dealSearch||dealAgent||dealTypeFilter!=="all"||dealDeveloperFilter||dealProjectFilter)&&<button onClick={function(){setDateFrom("");setDateTo("");setDealSearch("");setDealAgent("");setDealTypeFilter("all");setDealDeveloperFilter("");setDealProjectFilter("");setDealQ(curQ);setDealYear(curYear);}} style={{ padding:"5px 12px", borderRadius:8, border:"1px solid #E2E8F0", background:"#fff", fontSize:12, cursor:"pointer", color:C.danger }}>✕ Clear All</button>}
     </div>}
     <Modal show={showAdd} onClose={function(){setShowAdd(false);}} title={t.addLead+" (Done Deal)"}>
       <LeadForm t={t} cu={p.cu} users={p.users} token={p.token} isReq={false} initialStatus="DoneDeal" isMobile={p.isMobile}
