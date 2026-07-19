@@ -13672,10 +13672,10 @@ var DealsPage = function(p) {
   // both the <th> render and the inline-panel row's colSpan (dealColCount), so
   // the accordion row always spans the full table width per role and never
   // drifts. After Feature B's "Closing Company" column (admin/sales_admin only)
-  // and D4's "Developer" column (all roles): admin=14, sales_admin=12,
-  // director/manager/team_leader=10, sales=8. (dealColCount is derived, so these
+  // and D4's "Developer" column (all roles): admin=12, sales_admin=10,
+  // director/manager/team_leader=9, sales=7. (dealColCount is derived, so these
   // are documentation only — the colSpan always tracks dealHeaderCols.length.)
-  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date","Deal Stages",isOnlyAdmin?"Commission":null,canSeeClosingCompany(p.cu)?"Closing Company":null,canSeeDeveloper(p.cu)?"Developer":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
+  var dealHeaderCols=[t.name,p.cu.role==="admin"?t.phone:null,p.cu.role==="admin"?t.phone2:null,t.project,t.budget,"Deal Date",canSeeClosingCompany(p.cu)?"Closing Company":null,canSeeDeveloper(p.cu)?"Developer":null,isAdmin?t.agent:null,isAdmin?t.source:null,"Approved",""].filter(function(h){return h!==null;});
   var dealColCount=dealHeaderCols.length;
 
   // Deal Documents (images + PDFs) — mirrors EOIPage handleDocUpload/deleteDoc,
@@ -13834,6 +13834,29 @@ var DealsPage = function(p) {
           <div style={{ fontSize:13, color:C.text, wordBreak:"break-word" }}>{f.v}</div>
         </div>:null;})}
         </div>
+
+        {/* Deal Stages — relocated here from the deals list (the list column
+            was removed; this is where the stage progress + editor now live).
+            Opens the shared stagesModal via openStages; ungated so every role
+            that can open a deal keeps the prior list-cell access. */}
+        {(function(){
+          var stages=resolveStages(selectedDeal)||{};
+          var prog=stagesProgressFrom(stages);
+          return <div style={{ marginTop:12 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.textLight, marginBottom:6 }}>📋 Deal Stages</div>
+            <button onClick={function(e){e.stopPropagation();openStages(selectedDeal);}}
+              style={{ width:"100%", textAlign:"left", background:"#fff", border:"1px solid #E8ECF1", borderRadius:10, padding:"10px 12px", cursor:"pointer" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
+                {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:20, height:20, borderRadius:6, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:10, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
+                <span style={{ fontSize:11, color:C.textLight, marginLeft:2 }}>{prog}/3 stages</span>
+                <span style={{ marginLeft:"auto", fontSize:11, color:C.info, fontWeight:600 }}>Edit ›</span>
+              </div>
+              <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
+                <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
+              </div>
+            </button>
+          </div>;
+        })()}
 
         {/* Two-party Resale — seller + buyer blocks (name, phone, agent, commission,
             with-us badge). Each with-us party is its own tax-free, direct-collected
@@ -14301,8 +14324,6 @@ var DealsPage = function(p) {
       {filteredDeals.length===0&&<div style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</div>}
       {filteredDeals.map(function(d){
         var bv=parseBudget(d.budget);
-        var stages=resolveStages(d)||{};
-        var prog=stagesProgressFrom(stages);
         var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
         return <div key={gid(d)} data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ background:isSel?"#EFF6FF":"#fff", border:"2px solid "+(isSel?"#3B82F6":"#E8ECF1"), borderRadius:14, padding:14, cursor:"pointer" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, gap:8 }}>
@@ -14351,15 +14372,6 @@ var DealsPage = function(p) {
           </div>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, marginBottom:6 }}>
             <span style={{ fontSize:11, color:C.textLight }}>🗓 {(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</span>
-            <button onClick={function(e){e.stopPropagation();openStages(d);}} style={{ background:"none", border:"none", cursor:"pointer", width:"auto", padding:0 }}>
-            <div style={{ display:"flex", gap:4, marginBottom:3 }}>
-              {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:18, height:18, borderRadius:5, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:9, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
-              <span style={{ fontSize:10, color:C.textLight, marginLeft:4 }}>{prog}/3</span>
-            </div>
-            <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
-              <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
-            </div>
-            </button>
           </div>
           {isAdmin&&<div style={{ display:"flex", justifyContent:"space-between", gap:8, marginBottom:4, fontSize:11 }}>
             <span style={{ color:C.accent }}>👤 {getAg(d)}{legacyTag(d)}{(function(){var sp=getDealSplitFromObj(d);return sp?" 🤝 +"+sp.agent2Name:"";})()}</span>
@@ -14386,8 +14398,6 @@ var DealsPage = function(p) {
         {filteredDeals.length===0&&<tr><td colSpan={dealColCount} style={{ padding:40, textAlign:"center", color:C.textLight }}>No deals yet</td></tr>}
         {filteredDeals.map(function(d){
           var bv=parseBudget(d.budget);
-          var stages=resolveStages(d)||{};
-          var prog=stagesProgressFrom(stages);
           var isSel=selectedDeal&&gid(selectedDeal)===gid(d);
           return <Fragment key={gid(d)}><tr data-deal-row="1" onClick={function(){setSelectedDeal(isSel?null:d);}} style={{ borderBottom:"1px solid #F1F5F9", cursor:"pointer", background:isSel?"#EFF6FF":"transparent", transition:"background 0.1s" }}>
             <td style={{ padding:"11px 12px", fontSize:13, fontWeight:600, textAlign:"left" }}>
@@ -14434,63 +14444,6 @@ var DealsPage = function(p) {
               })()}
             </td>
             <td style={{ padding:"11px 12px", fontSize:11, color:C.textLight, whiteSpace:"nowrap", textAlign:"left" }}>{(function(){var dd=getDealDate(d);return dd?new Date(dd).toLocaleDateString("en-GB")+" "+new Date(dd).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}):"-";})()}</td>
-            <td style={{ padding:"11px 12px", minWidth:130, textAlign:"left" }}>
-              <button onClick={function(){openStages(d);}}
-                style={{ background:"none", border:"none", cursor:"pointer", width:"100%", textAlign:"right", padding:0 }}>
-                <div style={{ display:"flex", gap:4, marginBottom:3 }}>
-                  {["contract","payment1","payment2"].map(function(k){return <span key={k} style={{ width:18, height:18, borderRadius:5, background:stages[k]?C.success:"#E2E8F0", display:"inline-flex", alignItems:"center", justifyContent:"center", fontSize:9, color:stages[k]?"#fff":"#94A3B8" }}>{stages[k]?"✓":"·"}</span>;})}
-                  <span style={{ fontSize:10, color:C.textLight, marginRight:4 }}>{prog}/3</span>
-                </div>
-                <div style={{ height:4, background:"#F1F5F9", borderRadius:2 }}>
-                  <div style={{ height:"100%", width:(prog/3*100)+"%", background:prog===3?C.success:C.accent, borderRadius:2 }}/>
-                </div>
-              </button>
-            </td>
-            {isOnlyAdmin&&<td style={{ padding:"11px 12px" }}>
-              {(function(){
-                var raw=parseBudget(d.budget);
-                var weight=getProjectWeight(d.project,d);
-                var split=getDealSplitFromObj(d);
-                var splitFactor=split?0.5:1;
-                var effRev=raw*weight*splitFactor;
-                var ag=d.agentId&&d.agentId._id?d.agentId._id:d.agentId;
-                // For manager: show their own commission (2000/M), not agent's
-                if(!isOnlyAdmin){
-                  var managerComm=(effRev/1000000)*2000;
-                  return <div><div style={{ fontSize:12, fontWeight:700, color:C.success }}>{managerComm>0?Math.round(managerComm).toLocaleString()+" EGP":"—"}</div><div style={{ fontSize:10, color:C.textLight }}>2,000/M</div></div>;
-                }
-                var agUser=p.users.find(function(u){return gid(u)===ag;});
-                var agRole=agUser?agUser.role:"sales";
-                var commRate=agRole==="manager"?2000:(function(){
-                  if(!agUser) return 5000;
-                  var agU=p.users.find(function(u){return gid(u)===ag;});var qt=(agU&&agU.qTargets&&Object.keys(agU.qTargets).length>0)?agU.qTargets:(function(){try{return JSON.parse(localStorage.getItem("crm_qt_"+ag)||"{}");}catch(e){return {};}})();
-                  var curQNow=(function(){var m=new Date().getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";})();
-                  var qNumNow=parseInt(curQNow.replace("Q",""))||1;
-                  var qTarget=readQTargetClient(qt, new Date().getFullYear(), qNumNow);
-                  if(!qTarget) return 5000;
-                  // calc total effective revenue for this agent in current Q
-                  var allDealsNow=p.leads.filter(function(l){return l.status==="DoneDeal"&&!l.archived;});
-                  var getQNow=function(date){var m=new Date(date).getMonth();return m<3?"Q1":m<6?"Q2":m<9?"Q3":"Q4";};
-                  var agentRev=allDealsNow.reduce(function(s,dd){
-                    var aid=dd.agentId&&dd.agentId._id?dd.agentId._id:dd.agentId;
-                    if(aid!==ag) return s;
-                    var ddate=getDealDate(dd);
-                    if(!ddate||getQNow(ddate)!==curQNow) return s;
-                    var w=getProjectWeight(dd.project);
-                    var sp=getDealSplit(gid(dd));
-                    return s+(parseBudget(dd.budget)*w*(sp?0.5:1));
-                  },0);
-                  var mult=agentRev/qTarget;
-                  return mult>=3?7000:mult>=2?6000:5000;
-                })();
-                var comm=(effRev/1000000)*commRate;
-                return <div>
-                  <div style={{ fontSize:12, fontWeight:700, color:C.success }}>{comm>0?comm.toLocaleString()+" EGP":"—"}</div>
-                  {weight<1&&<div style={{ fontSize:9, color:"#B45309" }}>⚠️ 50%</div>}
-                  {split&&<div style={{ fontSize:9, color:"#8B5CF6" }}>🤝 Split</div>}
-                </div>;
-              })()}
-            </td>}
             {canSeeClosingCompany(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{ccNameOf(d)||"—"}</td>}
             {canSeeDeveloper(p.cu)&&<td style={{ padding:"11px 12px", fontSize:12, color:C.textLight, textAlign:"left" }}>{devNameOf(d)||"—"}</td>}
             {isAdmin&&<td style={{ padding:"11px 12px", fontSize:12, textAlign:"left" }}>
