@@ -12612,9 +12612,13 @@ var EOIPage = function(p) {
   };
   // Open the Convert-to-Deal modal for an EOI lead — prefill the full sale form
   // from the lead (Client + Property + Sales info); every field stays editable.
+  // EXCEPTION: Project starts EMPTY (not inherited from lead.project) so the
+  // agent must type the actual development the customer paid for — matching the
+  // Add EOI / EOI-transition forms. Still required (guard in convertToDeal), so
+  // it can't be skipped.
   var openConvert=function(lead){ if(!lead) return; setConvertForm({
     name: lead.name||"", phone: lead.phone||"",
-    project: lead.project||"", unitType: lead.unitType||"", unitCode: lead.unitCode||"",
+    project: "", unitType: lead.unitType||"", unitCode: lead.unitCode||"",
     budget: lead.budget||"", saleType: lead.saleType||"Primary",
     downPayment: lead.downPayment||"", downPaymentDate: lead.downPaymentDate||"",
     reservationDate: lead.reservationDate||"", contractionDate: lead.contractionDate||"",
