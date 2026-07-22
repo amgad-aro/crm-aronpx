@@ -10629,6 +10629,17 @@ var DashboardPage = function(p) {
 
   var card=function(children,extra){return <div className="crm-dash-card" style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px 14px":"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
+  // Uniform 2-up grid for every admin card row. Explicitly 2 columns rather
+  // than repeat(auto-fit,…): auto-fit promotes wide screens to 3 columns and
+  // leaves the last cell orphaned, which is what made the old rows look
+  // ragged. Grid items stretch by default, so paired cards are equal height.
+  var row2 = {display:"grid",gridTemplateColumns:isMobile?"minmax(0,1fr)":"repeat(2, minmax(0,1fr))",gap:isMobile?10:14,marginBottom:14,alignItems:"stretch"};
+  // One scroll height for every in-card list, so paired cards can't disagree
+  // on how tall they want to be.
+  var LIST_H = isMobile ? 260 : 320;
+  // Single empty/loading treatment: centred, fixed vertical rhythm, never a
+  // blank region. Defaults to an em dash when there's nothing to say.
+  var emptyState=function(text){return <div style={{fontSize:12,color:"#94A3B8",padding:"22px 0",textAlign:"center"}}>{text||"—"}</div>;};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
   // Shared period labels used by both the Today's Activities card (Change 1
@@ -11764,7 +11775,7 @@ var DashboardPage = function(p) {
           </div>
         </div>
         {(!loading && total === 0)
-          ? <div style={{fontSize:13,color:"#94A3B8",padding:"18px 0",textAlign:"center"}}>{statusErr ? "—" : "No leads in this period"}</div>
+          ? emptyState(statusErr ? "—" : "No leads in this period")
           : <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?"10px 0":"10px 28px"}}>
             {rows.map(function(r){
               var pct = (!loading && total > 0) ? Math.round(r.count / total * 100) : 0;
@@ -11820,7 +11831,9 @@ var DashboardPage = function(p) {
       var s_int    = loadingKpi ? "" : ((as_int.pct || 0) + "%");
       var s_meet   = loadingKpi ? "" : ((as_meet.pct || 0) + "%");
       var s_deals  = loadingKpi ? "" : ((as_deals.pct || 0) + "%");
-      return <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,1fr)":"repeat(auto-fit,minmax(160px,1fr))",gap:isMobile?10:14,marginBottom:0}}>
+      // Explicit 3-up on desktop (2 even rows of 3) rather than auto-fit,
+      // which at mid widths fits 5 and orphans the 6th tile.
+      return <div className="crm-dash-kpi" style={{display:"grid",gridTemplateColumns:isMobile?"repeat(2,minmax(0,1fr))":"repeat(3, minmax(0,1fr))",gap:isMobile?10:14,marginBottom:0}}>
         {kpiCard("Leads",v_leads,"in period","linear-gradient(135deg, #43c6db, #3b5cb8)","#ffffff",function(){p.nav("leads");},_spark)}
         {kpiCard("Daily Requests",v_dr,"in period","linear-gradient(135deg, #56ab2f, #a8e063)","#ffffff",function(){p.nav("dailyReq");},_spark)}
         {kpiCard("Interested",v_int,s_int,"linear-gradient(135deg, #f46b45, #eea849)","#ffffff",function(){p.nav("leads");p.setFilter&&p.setFilter("HotCase");},_spark)}
@@ -11830,8 +11843,107 @@ var DashboardPage = function(p) {
       </div>;
     })()}
 
-    {sec("Campaigns & Pipeline")}
-    <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit, minmax(300px, 1fr))",gap:isMobile?10:14,marginBottom:14}}>
+    {sec("Follow-up")}
+    <div className="crm-dash-row" style={row2}>
+      {card(<>
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Callback Compliance</div>
+        {(function(){
+          // STEP 4-2 — aggregation moved to /api/reports/callback-compliance
+          // (fetched in the useEffect above into cbCompliance). The previous
+          // in-memory loop scanned every assignment of every lead in p.leads
+          // plus every DR in p.dailyReqs — once STEP 4-5 shrinks the bootstrap
+          // those scans would silently miss most rows. Server-side aggregation
+          // owns the current-assignment-only rule (see server.js
+          // /api/reports/callback-compliance handler).
+          if (!cbCompliance) return emptyState("Loading\u2026");
+          var sumScheduled = cbCompliance.sumScheduled || 0;
+          var sumDoneOnTime = cbCompliance.sumDoneOnTime || 0;
+          var sumMissed = cbCompliance.sumMissed || 0;
+          var complianceRate = cbCompliance.complianceRate || 0;
+          var leaderboard = cbCompliance.leaderboard || [];
+          var rateColor = function(rate){ return rate>=80?"#10B981":rate>=60?"#F59E0B":"#DC2626"; };
+          var initialsOfName = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
+          var filterLabel = filter==="today" ? "Scheduled Today" : filter==="yesterday" ? "Scheduled Yesterday" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
+          return <>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{sumScheduled}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{filterLabel}</div></div>
+              <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{complianceRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>On Time</div></div>
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:12,fontSize:11}}>
+              <div style={{flex:1,padding:"6px 8px",background:"#F0FDF4",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#15803D"}}>Done on time</span><span style={{fontWeight:700,color:"#15803D"}}>{sumDoneOnTime}</span></div>
+              <div style={{flex:1,padding:"6px 8px",background:"#FEF2F2",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#991B1B"}}>Missed</span><span style={{fontWeight:700,color:"#DC2626"}}>{sumMissed}</span></div>
+            </div>
+            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Leaderboard — worst first</div>
+            {leaderboard.length===0 ? emptyState("No agents to show") : <div style={{maxHeight:220,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+              {leaderboard.map(function(x,i){
+                var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
+                var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
+                var rc = rateColor(x.rate);
+                var isWorst = i===0 && x.missed>0;
+                return <div key={x.uid||i} onClick={function(){ if(p.setInitAgentFilter) p.setInitAgentFilter(x.uid); if(p.setFilter) p.setFilter("CallBack"); if(p.nav) p.nav("leads"); }} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:i<leaderboard.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+                  <div style={{fontSize:11,color:"#888",width:16,textAlign:"center",fontWeight:600,flexShrink:0}}>{i+1}</div>
+                  <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initialsOfName(x.name)}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.name}{isWorst?<span style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#DC2626"}}>⚠ Highest risk</span>:null}</div>
+                    <div style={{height:3,borderRadius:2,background:"#F1F5F9",marginTop:3}}><div style={{height:"100%",width:Math.min(100,x.rate)+"%",background:rc,borderRadius:2}}/></div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:rc}}>{x.rate}%</div>
+                    <div style={{fontSize:10,color:"#94A3B8"}}>{x.doneOnTime}/{x.total} on time{x.missed>0?" · "+x.missed+" missed":""}</div>
+                  </div>
+                </div>;
+              })}
+            </div>}
+          </>;
+        })()}
+      </>)}
+      {rankWidget({ mode: "admin", rangeLabel: periodLabelForFilter(filter) })}
+    </div>
+
+    {sec("Alerts")}
+    <div className="crm-dash-row" style={row2}>
+      {card(<>
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
+        {(function(){
+          var gotoSpecial = function(type){
+            if (p.setFilter) p.setFilter("all");
+            if (p.setSpecialFilter) p.setSpecialFilter({type:type});
+            if (p.nav) p.nav("leads");
+          };
+          // Every row is now a full-collection server count from
+          // /api/dashboard/alerts. `null` means the fetch hasn't resolved (or
+          // failed) — render an em dash rather than 0, so "loading" and
+          // "genuinely zero" never look the same.
+          var A = alertsData;
+          var loading = A === null;
+          var n = function(v){ return (loading || v === null || v === undefined) ? "—" : v; };
+          // Overdue: adminStats.overdue is status="CallBack" AND callbackTime
+          // < now. This row previously counted EVERY lead with a past
+          // callbackTime regardless of status, so closed and dead leads
+          // carrying an uncleared callbackTime inflated it.
+          var overdueN = (adminStats && typeof adminStats.overdue === "number") ? adminStats.overdue : null;
+          var agentsSub = (loading || !A.activeAgentCount) ? "active sales staff"
+                        : "of " + A.activeAgentCount + " active sales staff";
+          var rotSub = loading ? "auto vs manual"
+                     : (A.rotationsAuto || 0) + " auto · " + (A.rotationsManual || 0) + " manual";
+          var rows=[
+            {dot:"#F97316",n:n(overdueN),t:"overdue callbacks",s:"past scheduled, still Call Back",onClick:function(){gotoFilter("CallBack");}},
+            {dot:"#EF4444",n:n(untouchedTotal),t:"untouched leads",s:"no activity in 24h+",onClick:function(){gotoSpecial("untouched");}},
+            {dot:"#DC2626",n:n(loading?null:A.stale48h),t:"untouched 48h+",s:"no activity in 48h",onClick:function(){gotoSpecial("stale48h");}},
+            {dot:"#6366F1",n:n(loading?null:A.heavyRotNoDeal),t:"rotated > 3× no deal",s:"churning without closing",onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#0EA5E9",n:n(loading?null:A.inactiveAgentsToday),t:"agents no activity today",s:agentsSub,onClick:function(){if(p.nav) p.nav("team");}},
+            {dot:"#F59E0B",n:n(loading?null:A.missingFeedback),t:"missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
+            {dot:"#6366F1",n:n(loading?null:A.rotationsMonth),t:"rotations this month",s:rotSub,onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#7C3AED",n:n(loading?null:A.lockedNoRotation),t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
+          ];
+          return rows.map(function(a,i){
+            return <div key={i} onClick={a.onClick} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}><span style={{fontSize:18,fontWeight:800,color:a.dot,marginRight:6}}>{a.n}</span>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
+            </div>;
+          });
+        })()}
+      </>)}
       {card(<>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:8,flexWrap:"wrap"}}>
           <div style={{minWidth:0}}>
@@ -11847,13 +11959,13 @@ var DashboardPage = function(p) {
           // (" - Copy", trailing numbers, month suffixes) that would otherwise
           // fragment one campaign across several low-count rows.
           if (campaignPerf === null) {
-            return <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>Loading…</div>;
+            return emptyState("Loading\u2026");
           }
           if (campaignErr) {
-            return <div style={{fontSize:12,color:"#B45309",padding:"10px 0"}}>Couldn't load campaign data</div>;
+            return <div style={{fontSize:12,color:"#B45309",padding:"22px 0",textAlign:"center"}}>Couldn't load campaign data</div>;
           }
           if (!campaignPerf.length) {
-            return <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No campaign data in this period</div>;
+            return emptyState("No campaign data in this period");
           }
           var top = campaignPerf.slice(0, 5);
           var cols = isMobile ? "minmax(0,1fr) 44px 44px 44px" : "minmax(140px,1fr) 60px 60px 60px 64px";
@@ -11883,15 +11995,24 @@ var DashboardPage = function(p) {
           </div>;
         })()}
       </>)}
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+    </div>
+
+    {sec("Needs Attention")}
+    <div className="crm-dash-row" style={row2}>
         {card(<>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Untouched Leads</div>
-            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedData===null?"\u2026":untouchedData.length}</span>
+            {/* Badge shows the TRUE total from ?count_only=true, not the
+                list length \u2014 the list below is capped at 50 by the server, so
+                rows.length would read "50" forever and silently disagree with
+                the Management Alerts "untouched leads" row. */}
+            <span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:6,background:"#FEE2E2",color:"#991B1B"}}>{untouchedTotal!==null?untouchedTotal:(untouchedData===null?"\u2026":untouchedData.length)}</span>
           </div>
-          {untouchedData===null ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>Loading\u2026</div>
-           : untouchedData.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{"\u2705"} All leads have activity</div>
-           : <div style={{maxHeight:360,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+          {untouchedTotal!==null && untouchedData!==null && untouchedData.length < untouchedTotal &&
+            <div style={{fontSize:10,color:"#94A3B8",marginTop:-6,marginBottom:8}}>showing oldest {untouchedData.length}</div>}
+          {untouchedData===null ? emptyState("Loading\u2026")
+           : untouchedData.length===0 ? emptyState("\u2705 All leads have activity")
+           : <div style={{maxHeight:LIST_H,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
              {/* Fixed height = ~8 rows (each row ~45px with padding + borders); rest scrolls inside the card. */}
              {untouchedData.map(function(u,i){
             // Server returns the computed view; we resolve the full Lead from
@@ -11918,7 +12039,7 @@ var DashboardPage = function(p) {
             <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>{activitiesTitleForFilter(filter)}</div>
             <span style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer"}} onClick={function(){setSeeAllOpen(true);}}>View All ({todayActsAll.length})</span>
           </div>
-          <div style={{maxHeight:420,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+          <div style={{maxHeight:LIST_H,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
           {/* Cap the inline card at the 30 most-recent rows. todayActsAll can
               hold ~1000 entries on Quarter filter; rendering them all (5 nested
               styled divs each) was the dominant Layout + getHostSibling cost on
@@ -11926,7 +12047,7 @@ var DashboardPage = function(p) {
               so only ~8 rows are ever visible at once; the rest were behind a
               scroll inside the card. The full list is still reachable via the
               "View All (N)" button — N still reflects the true count. */}
-          {todayActsAll.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No activity in {periodLabelForFilter(filter)}</div> : todayActsAll.slice(0,30).map(function(a,i,arr){
+          {todayActsAll.length===0 ? emptyState("No activity in "+periodLabelForFilter(filter)) : todayActsAll.slice(0,30).map(function(a,i,arr){
             var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
             var aName = a.userId&&a.userId.name?a.userId.name:agentName(aid);
             var lName = resolveClientName(a);
@@ -12005,115 +12126,11 @@ var DashboardPage = function(p) {
           })}
           </div>
         </>)}
-      </div>
     </div>
 
     {sec("Team Performance")}
     <div style={{marginBottom:14}}>
       {renderAgentPerformanceCard(rangeStart, rangeEnd)}
-    </div>
-
-    <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14}}>
-      {card(<>
-        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
-        {(function(){
-          var gotoSpecial = function(type){
-            if (p.setFilter) p.setFilter("all");
-            if (p.setSpecialFilter) p.setSpecialFilter({type:type});
-            if (p.nav) p.nav("leads");
-          };
-          // Every row is now a full-collection server count from
-          // /api/dashboard/alerts. `null` means the fetch hasn't resolved (or
-          // failed) — render an em dash rather than 0, so "loading" and
-          // "genuinely zero" never look the same.
-          var A = alertsData;
-          var loading = A === null;
-          var n = function(v){ return (loading || v === null || v === undefined) ? "—" : v; };
-          // Overdue: adminStats.overdue is status="CallBack" AND callbackTime
-          // < now. This row previously counted EVERY lead with a past
-          // callbackTime regardless of status, so closed and dead leads
-          // carrying an uncleared callbackTime inflated it.
-          var overdueN = (adminStats && typeof adminStats.overdue === "number") ? adminStats.overdue : null;
-          var agentsSub = (loading || !A.activeAgentCount) ? "active sales staff"
-                        : "of " + A.activeAgentCount + " active sales staff";
-          var rotSub = loading ? "auto vs manual"
-                     : (A.rotationsAuto || 0) + " auto · " + (A.rotationsManual || 0) + " manual";
-          var rows=[
-            {dot:"#F97316",n:n(overdueN),t:"overdue callbacks",s:"past scheduled, still Call Back",onClick:function(){gotoFilter("CallBack");}},
-            {dot:"#EF4444",n:n(untouchedTotal),t:"untouched leads",s:"no activity in 24h+",onClick:function(){gotoSpecial("untouched");}},
-            {dot:"#DC2626",n:n(loading?null:A.stale48h),t:"untouched 48h+",s:"no activity in 48h",onClick:function(){gotoSpecial("stale48h");}},
-            {dot:"#6366F1",n:n(loading?null:A.heavyRotNoDeal),t:"rotated > 3× no deal",s:"churning without closing",onClick:function(){gotoSpecial("rotatedThisMonth");}},
-            {dot:"#0EA5E9",n:n(loading?null:A.inactiveAgentsToday),t:"agents no activity today",s:agentsSub,onClick:function(){if(p.nav) p.nav("team");}},
-            {dot:"#F59E0B",n:n(loading?null:A.missingFeedback),t:"missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
-            {dot:"#6366F1",n:n(loading?null:A.rotationsMonth),t:"rotations this month",s:rotSub,onClick:function(){gotoSpecial("rotatedThisMonth");}},
-            {dot:"#7C3AED",n:n(loading?null:A.lockedNoRotation),t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
-          ];
-          return rows.map(function(a,i){
-            return <div key={i} onClick={a.onClick} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0}}/>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,color:"#0F172A"}}><span style={{fontSize:18,fontWeight:800,color:a.dot,marginRight:6}}>{a.n}</span>{a.t}</div><div style={{fontSize:11,color:"#94A3B8"}}>{a.s}</div></div>
-            </div>;
-          });
-        })()}
-      </>)}
-      {card(<>
-        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Callback Compliance</div>
-        {(function(){
-          // STEP 4-2 — aggregation moved to /api/reports/callback-compliance
-          // (fetched in the useEffect above into cbCompliance). The previous
-          // in-memory loop scanned every assignment of every lead in p.leads
-          // plus every DR in p.dailyReqs — once STEP 4-5 shrinks the bootstrap
-          // those scans would silently miss most rows. Server-side aggregation
-          // owns the current-assignment-only rule (see server.js
-          // /api/reports/callback-compliance handler).
-          if (!cbCompliance) return <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center"}}>Loading…</div>;
-          var sumScheduled = cbCompliance.sumScheduled || 0;
-          var sumDoneOnTime = cbCompliance.sumDoneOnTime || 0;
-          var sumMissed = cbCompliance.sumMissed || 0;
-          var complianceRate = cbCompliance.complianceRate || 0;
-          var leaderboard = cbCompliance.leaderboard || [];
-          var rateColor = function(rate){ return rate>=80?"#10B981":rate>=60?"#F59E0B":"#DC2626"; };
-          var initialsOfName = function(n){return (n||"?").split(" ").slice(0,2).map(function(x){return x[0];}).join("").toUpperCase();};
-          var filterLabel = filter==="today" ? "Scheduled Today" : filter==="yesterday" ? "Scheduled Yesterday" : filter==="week" ? "Scheduled this Week" : filter==="month" ? "Scheduled this Month" : "Scheduled in Period";
-          return <>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-              <div style={{background:"#EFF6FF",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#1D4ED8"}}>{sumScheduled}</div><div style={{fontSize:10,fontWeight:600,color:"#3B82F6"}}>{filterLabel}</div></div>
-              <div style={{background:"#F0FDF4",borderRadius:10,padding:10,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:"#15803D"}}>{complianceRate}%</div><div style={{fontSize:10,fontWeight:600,color:"#22C55E"}}>On Time</div></div>
-            </div>
-            <div style={{display:"flex",gap:8,marginBottom:12,fontSize:11}}>
-              <div style={{flex:1,padding:"6px 8px",background:"#F0FDF4",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#15803D"}}>Done on time</span><span style={{fontWeight:700,color:"#15803D"}}>{sumDoneOnTime}</span></div>
-              <div style={{flex:1,padding:"6px 8px",background:"#FEF2F2",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#991B1B"}}>Missed</span><span style={{fontWeight:700,color:"#DC2626"}}>{sumMissed}</span></div>
-            </div>
-            <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Leaderboard — worst first</div>
-            {leaderboard.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center"}}>No agents to show</div> : <div style={{maxHeight:220,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
-              {leaderboard.map(function(x,i){
-                var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
-                var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
-                var rc = rateColor(x.rate);
-                var isWorst = i===0 && x.missed>0;
-                return <div key={x.uid||i} onClick={function(){ if(p.setInitAgentFilter) p.setInitAgentFilter(x.uid); if(p.setFilter) p.setFilter("CallBack"); if(p.nav) p.nav("leads"); }} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:i<leaderboard.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
-                  <div style={{fontSize:11,color:"#888",width:16,textAlign:"center",fontWeight:600,flexShrink:0}}>{i+1}</div>
-                  <div style={{width:28,height:28,borderRadius:"50%",background:avBg,color:avC,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,flexShrink:0}}>{initialsOfName(x.name)}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.name}{isWorst?<span style={{marginLeft:6,fontSize:10,fontWeight:700,color:"#DC2626"}}>⚠ Highest risk</span>:null}</div>
-                    <div style={{height:3,borderRadius:2,background:"#F1F5F9",marginTop:3}}><div style={{height:"100%",width:Math.min(100,x.rate)+"%",background:rc,borderRadius:2}}/></div>
-                  </div>
-                  <div style={{textAlign:"right",flexShrink:0}}>
-                    <div style={{fontSize:13,fontWeight:700,color:rc}}>{x.rate}%</div>
-                    <div style={{fontSize:10,color:"#94A3B8"}}>{x.doneOnTime}/{x.total} on time{x.missed>0?" · "+x.missed+" missed":""}</div>
-                  </div>
-                </div>;
-              })}
-            </div>}
-          </>;
-        })()}
-      </>)}
-      {/* Change 2 — Call Outcomes widget replaced with the same Rank Team
-          widget the sales view uses. Admin mode hides the personal rank /
-          score blocks; data feed (salesRanking) is already re-fetched when
-          the global filter changes, so the ranking reflects the selected
-          period. */}
-      {rankWidget({ mode: "admin", rangeLabel: periodLabelForFilter(filter) })}
     </div>
     {seeAllOpen && <div data-overlay-above="true" onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"calc(40px + env(safe-area-inset-top, 0px)) 16px",overflowY:"auto"}}>
       <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
