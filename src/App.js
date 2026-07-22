@@ -10653,18 +10653,26 @@ var DashboardPage = function(p) {
 
   var card=function(children,extra){return <div className="crm-dash-card" style={Object.assign({background:"#fff",border:"1px solid #E2E8F0",borderRadius:16,padding:isMobile?"14px 14px":"20px 22px",boxShadow:"0 1px 4px rgba(0,0,0,0.06)",minWidth:0},extra||{})}>{children}</div>;};
   var sec=function(label){return <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",letterSpacing:"0.1em",textTransform:"uppercase",margin:"24px 0 12px"}}>{label}</div>;};
-  // Inner-content height budget for the bottom 4-card row (Management Alerts /
-  // Callback Compliance / Rank Team / Leads by Status). CSS Grid already
-  // stretches all four cards to the tallest sibling — the dead space under the
-  // shorter cards came from the two cards that had no inner scroll and so drove
-  // the row height up: Management Alerts (8 un-capped rows, ~390px) and
-  // Callback Compliance (fixed chrome + a 220px leaderboard). Capping their
-  // lists pulls the row down toward Leads by Status's fixed ~200px of bars.
-  // Rank Team is deliberately NOT capped: it already runs in `stretch` mode
-  // (flex:1 + minHeight:0 + overflow-y:auto, see rankWidget) so it absorbs the
-  // row height rather than driving it. Capping it would make it end SHORT of
-  // the row and reintroduce the gap this is removing.
-  var ROW4_H = isMobile ? 300 : 320;
+  // OUTER height of the bottom 4-card row (Management Alerts / Callback
+  // Compliance / Rank Team / Leads by Status), applied via grid-auto-rows.
+  //
+  // Why a fixed row height is REQUIRED, not just inner max-heights: the row is
+  // auto-sized, so each card's grid area is indefinite. A card whose list is
+  // `flex:1; min-height:0; overflow-y:auto` (Rank Team) still contributes its
+  // FULL content height to intrinsic row sizing — `min-height:0` only permits
+  // shrinking into a DEFINITE height, and `height:100%` against an indefinite
+  // grid area resolves as `auto`. So Rank Team's 19 agents defined the row and
+  // its scrollbar never engaged, while cards whose inner lists WERE capped
+  // ended short and opened a white gap underneath. Giving the row a definite
+  // height makes every grid area definite, which is what finally lets each
+  // card's list shrink and scroll.
+  var ROW4_H = isMobile ? 380 : 420;
+  // Cards in that row: flex columns so the list child can take the slack.
+  // No explicit height — grid stretch sizes the border box to the row exactly,
+  // which stays correct regardless of box-sizing.
+  var fillCard = {display:"flex",flexDirection:"column",minHeight:0,boxSizing:"border-box"};
+  // The one scrollable region inside each of those cards.
+  var fillList = {flex:1,minHeight:0,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6};
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
   // Shared period labels used by both the Today's Activities card (Change 1
@@ -12024,7 +12032,7 @@ var DashboardPage = function(p) {
       {renderAgentPerformanceCard(rangeStart, rangeEnd)}
     </div>
 
-    <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14}}>
+    <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?10:14,gridAutoRows:ROW4_H+"px"}}>
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Management Alerts</div>
         {(function(){
@@ -12058,9 +12066,8 @@ var DashboardPage = function(p) {
             {dot:"#6366F1",n:n(loadingA?null:A.rotationsMonth),t:"rotations this month",s:loadingA?"auto \u00b7 manual":((A.rotationsAuto||0)+" auto \u00b7 "+(A.rotationsManual||0)+" manual"),onClick:function(){gotoSpecial("rotatedThisMonth");}},
             {dot:"#7C3AED",n:n(loadingA?null:A.lockedNoRotation),t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
           ];
-          // Capped + inner-scrolled so these 8 rows stop dictating the row
-          // height (title block ~30px is outside the list).
-          return <div style={{maxHeight:ROW4_H-30,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+          // Takes whatever height is left under the title and scrolls inside it.
+          return <div style={fillList}>
             {rows.map(function(a,i){
             return <div key={i} onClick={a.onClick} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
               <div style={{width:8,height:8,borderRadius:"50%",background:a.dot,flexShrink:0}}/>
@@ -12069,7 +12076,7 @@ var DashboardPage = function(p) {
           })}
           </div>;
         })()}
-      </>)}
+      </>, fillCard)}
       {card(<>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Callback Compliance</div>
         {(function(){
@@ -12099,7 +12106,7 @@ var DashboardPage = function(p) {
               <div style={{flex:1,padding:"6px 8px",background:"#FEF2F2",borderRadius:8,display:"flex",justifyContent:"space-between"}}><span style={{color:"#991B1B"}}>Missed</span><span style={{fontWeight:700,color:"#DC2626"}}>{sumMissed}</span></div>
             </div>
             <div style={{fontSize:11,fontWeight:700,color:"#94A3B8",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>Leaderboard — worst first</div>
-            {leaderboard.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center"}}>No agents to show</div> : <div style={{maxHeight:Math.max(120,ROW4_H-170),overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6}}>
+            {leaderboard.length===0 ? <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",textAlign:"center",flex:1,minHeight:0}}>No agents to show</div> : <div style={fillList}>
               {leaderboard.map(function(x,i){
                 var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
                 var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
@@ -12121,7 +12128,7 @@ var DashboardPage = function(p) {
             </div>}
           </>;
         })()}
-      </>)}
+      </>, fillCard)}
       {/* Change 2 — Call Outcomes widget replaced with the same Rank Team
           widget the sales view uses. Admin mode hides the personal rank /
           score blocks; data feed (salesRanking) is already re-fetched when
@@ -12158,10 +12165,17 @@ var DashboardPage = function(p) {
           });
           var denom = Math.max(1,assignTotal);
           var rows=[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"],["EOI","EOI","#0EA5E9"],["Done Deal","DoneDeal","#065F46"]];
-          if (loadingS) return rows.map(function(s){return bRow(s[0],"\u2014",0,s[2],null);});
-          return rows.map(function(s){return bRow(s[0],sc[s[1]]||0,denom,s[2],function(){ if(p.setFilter) p.setFilter(s[1]); if(p.nav) p.nav("leads"); });});
+          // Nine fixed-height bars can't fill a fixed-height card on their own,
+          // so distribute them down the available space instead of leaving the
+          // remainder as white space under the last bar. marginBottom:-7 cancels
+          // the trailing bRow margin so the last bar sits flush with the bottom.
+          // This is the only card in the row with no scrollable list.
+          var bars = loadingS
+            ? rows.map(function(s){return bRow(s[0],"\u2014",0,s[2],null);})
+            : rows.map(function(s){return bRow(s[0],sc[s[1]]||0,denom,s[2],function(){ if(p.setFilter) p.setFilter(s[1]); if(p.nav) p.nav("leads"); });});
+          return <div style={{flex:1,minHeight:0,display:"flex",flexDirection:"column",justifyContent:"space-between",marginBottom:-7}}>{bars}</div>;
         })()}
-      </>)}
+      </>, fillCard)}
     </div>
     {seeAllOpen && <div data-overlay-above="true" onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"calc(40px + env(safe-area-inset-top, 0px)) 16px",overflowY:"auto"}}>
       <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
