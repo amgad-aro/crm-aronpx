@@ -10025,33 +10025,18 @@ var DashboardPage = function(p) {
   // shrink under STEP 4-5.
   var [cbSalesState, setCbSalesState] = useState({ overdue: [], scheduled: [], overdueCount: 0 });
   var [cbCompliance, setCbCompliance] = useState(null);
-  // ── Leads by Status (hero card) ────────────────────────────────────────
-  // Full-collection distribution from /api/leads/counts?...&fields byStatus.
-  // Carries its OWN range toggle, independent of the page filter, defaulting
-  // to "all" so the card is never empty on load. The card this replaces
-  // scanned p.leads (100 rows post-bootstrap-shrink) and then range-filtered
-  // by assignment date, which is why it read as mostly zeros.
-  var [statusDist, setStatusDist] = useState(null);
-  var [statusRange, setStatusRange] = useState("all");
-  // Explicit error flags. A failed fetch must NOT render as "no leads" /
-  // "no campaigns" — that is the exact class of bug this rebuild removes
-  // (loading and error states that are indistinguishable from a real zero).
-  var [statusErr, setStatusErr] = useState(false);
-  var [campaignErr, setCampaignErr] = useState(false);
-  // ── Management Alerts (server-side) ────────────────────────────────────
-  // /api/dashboard/alerts — current-state counts over the full collection.
-  // Replaces six in-memory p.leads scans. The "overdue callbacks" row now
-  // reads adminStats.overdue (status="CallBack" AND callbackTime<now), the
-  // honest definition already fetched for the Key Metrics tile — NOT the
-  // any-status count that inflated this row.
-  var [alertsData, setAlertsData] = useState(null);
-  // True untouched total. The Untouched Leads card's list is capped at 50, so
-  // its length can't serve as a count; both surfaces now read one definition.
-  var [untouchedTotal, setUntouchedTotal] = useState(null);
-  // Vintage-aware, name-normalised campaign rows from
-  // /api/reports/campaigns/performance (resolves development/unit per lead
-  // vintage and merges " - Copy" / trailing-number / month variants).
-  var [campaignPerf, setCampaignPerf] = useState(null);
+  // STEP 4-3 — admin dashboard tile counts. null until first fetch resolves;
+  // the destructuring at the render site falls back to the in-memory
+  // adminMetrics values while loading, so existing numbers stay visible
+  // through the first paint. Once STEP 4-5 shrinks the bootstrap, the
+  // in-memory fallback becomes wrong but this state stays authoritative.
+  var [statsCounts, setStatsCounts] = useState(null);
+  // STEP 4-5 X1 — admin Management Alerts "overdue callbacks" row. Caller #3
+  // from the STEP 4-2 migration list (deferred at the time). Counts every
+  // lead with callbackTime < now, regardless of status, to match the legacy
+  // in-memory derivation at the overdueUntouched useMemo below. Bound by
+  // cbBust so any callback update refreshes the badge in real time.
+  var [adminOverdueCount, setAdminOverdueCount] = useState(null);
   // STEP 4-5 X2 — server-side AgentPerf table from /api/dashboard/agent-perf.
   // Replaces the in-memory agentPerfMemo scan once resolved. Falls back to
   // the in-memory computation while loading and during sales role render
@@ -10168,62 +10153,57 @@ var DashboardPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, filter, isOnlyAdmin]);
 
-  // Leads by Status (hero) — full-collection distribution. Keyed on the card's
-  // OWN statusRange, not the page filter, so the two controls stay independent.
-  // "all" sends no from/to at all, which is what makes the default view whole-
-  // collection rather than today-only. excludeSource drops the Daily Request
-  // mirror rows, matching the lead pool the rest of the admin page counts.
+  // STEP 4-3 — Dashboard admin tile counts. Mirrors the same range derivation
+  // as adminMetrics (admin path only) and pulls aggregated counts from
+  // /api/leads/counts + /api/daily-requests/counts. The render below uses
+  // these values whenever statsCounts is non-null (overriding adminMetrics'
+  // in-memory derivations). Fetch is keyed on cbBust so lead/DR WS events
+  // refresh the tiles in real time.
   useEffect(function(){
+    if (p.cu.role === "hr") return; // redundant with !isOnlyAdmin below; explicit HR guard for consistency
     if (!p.token) return;
     if (!isOnlyAdmin) return;
     var cancelled = false;
-    setStatusDist(null);
-    setStatusErr(false);
-    var qs = "excludeSource=" + encodeURIComponent("Daily Request");
-    if (statusRange !== "all") {
-      var nd = new Date();
-      var cY = nd.getFullYear(), cM = nd.getMonth(), cD = nd.getDate();
-      var daysSinceSat = (nd.getDay() - 6 + 7) % 7;
-      var rs, re;
-      if (statusRange === "today") {
-        rs = new Date(cY, cM, cD, 0,0,0,0).getTime();
-        re = new Date(cY, cM, cD, 23,59,59,999).getTime();
-      } else if (statusRange === "week") {
-        rs = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0).getTime();
-        re = Date.now();
-      } else { // month
-        rs = new Date(cY, cM, 1, 0,0,0,0).getTime();
-        re = Math.min(Date.now(), new Date(cY, cM+1, 0, 23,59,59,999).getTime());
-      }
-      qs += "&from=" + encodeURIComponent(new Date(rs).toISOString()) +
-            "&to="   + encodeURIComponent(new Date(re).toISOString());
-    }
-    apiFetch("/api/leads/counts?" + qs, "GET", null, p.token)
-      .then(function(r){ if (!cancelled) setStatusDist((r && r.byStatus) ? r.byStatus : {}); })
-      .catch(function(){ if (!cancelled) { setStatusErr(true); setStatusDist({}); } });
-    return function(){ cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust, statusRange, isOnlyAdmin]);
-
-  // Management Alerts + the true untouched total. Both are current-state, so
-  // neither depends on `filter` — only on cbBust, so lead/DR mutations refresh
-  // the badges in real time.
-  useEffect(function(){
-    if (!p.token) return;
-    if (!isOnlyAdmin) return;
-    var cancelled = false;
+    var nd = new Date();
+    var cY = nd.getFullYear(), cM = nd.getMonth(), cD = nd.getDate();
+    var jsDay = nd.getDay();
+    var daysSinceSat = (jsDay - 6 + 7) % 7;
+    var todayStart = new Date(cY, cM, cD, 0,0,0,0);
+    var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
+    var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
+    var yestEnd    = new Date(cY, cM, cD-1, 23,59,59,999);
+    var weekStart  = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
+    var weekEnd    = new Date(weekStart.getTime() + 7*86400000 - 1);
+    var monthStart = new Date(cY, cM, 1, 0,0,0,0);
+    var monthEnd   = new Date(cY, cM+1, 0, 23,59,59,999);
+    var rs, re;
+    if (filter==="today") { rs = todayStart.getTime(); re = todayEnd.getTime(); }
+    else if (filter==="yesterday") { rs = yestStart.getTime(); re = yestEnd.getTime(); }
+    else if (filter==="week") { rs = weekStart.getTime(); re = weekEnd.getTime(); }
+    else if (filter==="month") { rs = monthStart.getTime(); re = monthEnd.getTime(); }
+    else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
+      var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
+      var qn = parseInt(mm[1]), qy = parseInt(mm[2]);
+      rs = new Date(qy, (qn-1)*3, 1).getTime();
+      re = new Date(qy, qn*3, 0, 23,59,59,999).getTime();
+    } else { rs = monthStart.getTime(); re = monthEnd.getTime(); }
+    var fromIso = new Date(rs).toISOString();
+    var toIso   = new Date(re).toISOString();
     Promise.all([
-      apiFetch("/api/dashboard/alerts","GET",null,p.token).catch(function(){return null;}),
-      apiFetch("/api/leads/untouched?count_only=true","GET",null,p.token).catch(function(){return null;})
+      apiFetch("/api/leads/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;}),
+      apiFetch("/api/daily-requests/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;}),
+      // STEP 4-5 X1 — admin overdue alert. ?to=<nowIso>&count_only=true with
+      // excludeStatuses=none gets "all leads with callbackTime < now",
+      // matching the legacy overdueUntouched.overdue derivation.
+      apiFetch("/api/leads/callbacks?to="+encodeURIComponent(new Date().toISOString())+"&count_only=true&excludeStatuses=none","GET",null,p.token).catch(function(){return {count:null};})
     ]).then(function(r){
       if (cancelled) return;
-      setAlertsData(r[0] || {});
-      setUntouchedTotal(r[1] && typeof r[1].count === "number" ? r[1].count : null);
+      if (r[0] && r[1]) setStatsCounts({ leads: r[0], drs: r[1] });
+      if (r[2] && typeof r[2].count === "number") setAdminOverdueCount(r[2].count);
     });
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust, isOnlyAdmin]);
-
+  },[p.token, p.cbBust, filter, isOnlyAdmin]);
   // Fetch activities since the active period's start (not just today's 00:00)
   // — so Today's Activities / This Week's Activities / etc all have enough
   // data to render without another round-trip. Refreshes every 30s, and
@@ -10381,24 +10361,6 @@ var DashboardPage = function(p) {
     } else { rsA = todayStart.getTime(); reA = todayEnd.getTime(); }
     return { rsA: rsA, reA: reA };
   },[filter]);
-
-  // Campaign performance — vintage-aware (resolves development/unit per lead
-  // vintage via LEAD_DEV_EXPR/LEAD_UNIT_EXPR) and variant-merged. Follows the
-  // page filter: campaign performance is a period question, unlike the
-  // current-state alerts above. Declared here, after agentPerfRange, because
-  // it reads that memo's resolved range.
-  useEffect(function(){
-    if (!p.token) return;
-    if (!isOnlyAdmin) return;
-    var cancelled = false;
-    setCampaignPerf(null);
-    setCampaignErr(false);
-    apiFetch("/api/reports/campaigns/performance?from=" + agentPerfRange.rsA + "&to=" + agentPerfRange.reA, "GET", null, p.token)
-      .then(function(r){ if (!cancelled) setCampaignPerf((r && Array.isArray(r.campaigns)) ? r.campaigns : []); })
-      .catch(function(){ if (!cancelled) { setCampaignErr(true); setCampaignPerf([]); } });
-    return function(){ cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust, agentPerfRange.rsA, agentPerfRange.reA, isOnlyAdmin]);
 
   // STEP 4-5 X2 — server-driven AgentPerf rows. Replaces the agentPerfMemo
   // in-memory scans (which would silently undercount post-X3 bootstrap
@@ -10582,10 +10544,30 @@ var DashboardPage = function(p) {
   var hourNow = new Date().getHours();
   var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
 
-  // `overdue` / `untouched` used to be derived here by scanning `leads`. Both
-  // are now server-sourced: overdue from adminStats.overdue (status="CallBack"
-  // AND callbackTime<now — the honest definition), untouched from
-  // /api/leads/untouched?count_only=true. See the Management Alerts card.
+  // Only `overdue` and `untouched` from this block are read downstream (admin
+  // Management Alerts at lines ~7747/7751). Memoized on `leads` so the click
+  // handler / 1 Hz clock rerender / fetch resolutions don't re-scan the list.
+  // `now` is captured at memo-compute time, which is fine for thresholds that
+  // shift in minutes, not milliseconds.
+  var overdueUntouched = useMemo(function(){
+    var nowMs = Date.now();
+    var overdueCount = 0, untouchedCount = 0;
+    for (var i=0;i<leads.length;i++) {
+      var l = leads[i];
+      if (l.callbackTime && new Date(l.callbackTime).getTime() < nowMs) overdueCount++;
+      if (l.status==="NewLead" && l.createdAt && (nowMs - new Date(l.createdAt).getTime()) > 2*DAY) untouchedCount++;
+    }
+    return { overdue: overdueCount, untouched: untouchedCount };
+  },[leads]);
+  var overdue = overdueUntouched.overdue;
+  var untouched = overdueUntouched.untouched;
+  // STEP 4-5 X1 — once /api/leads/callbacks?to=<now>&count_only resolves,
+  // prefer the server-aggregated overdue count over the in-memory scan.
+  // Bootstrap-time fallback keeps numbers visible during the first paint
+  // and survives the X3 bootstrap shrink (the in-memory derivation will
+  // undercount once p.leads has only 100 rows; the server count stays
+  // correct).
+  if (adminOverdueCount !== null) overdue = adminOverdueCount;
 
   var dayNames=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
   var todayIdx=new Date().getDay();
@@ -11369,21 +11351,53 @@ var DashboardPage = function(p) {
   var dealsFromLeads = adminMetrics.dealsFromLeads, dealsFromDR = adminMetrics.dealsFromDR, dealsFiltered = adminMetrics.dealsFiltered;
   var overdueLeads = adminMetrics.overdueLeads, overdueDR = adminMetrics.overdueDR, overdueFiltered = adminMetrics.overdueFiltered;
   var callbacksFiltered = adminMetrics.callbacksFiltered, drFiltered = adminMetrics.drFiltered;
-  // (The /api/leads/counts + /api/daily-requests/counts override that used to
-  // sit here has been removed. None of these values are rendered on this page
-  // — the Key Metrics tiles read adminStats from /api/dashboard/admin-stats —
-  // so it cost 13 countDocuments + 3 aggregations per filter click for data
-  // that was computed and thrown away.)
+  // STEP 4-3 — once /api/leads/counts + /api/daily-requests/counts have
+  // resolved, prefer the server-aggregated numbers over the in-memory
+  // adminMetrics derivations. Same shape; identical semantics. Once STEP 4-5
+  // shrinks p.leads / p.dailyReqs the in-memory derivation becomes wrong but
+  // statsCounts stays correct.
+  if (statsCounts) {
+    meetingsFromLeads = statsCounts.leads.meetings;
+    meetingsFromDR    = statsCounts.drs.meetings;
+    meetingsFiltered  = meetingsFromLeads + meetingsFromDR;
+    interestedFiltered = statsCounts.leads.interested;
+    dealsFromLeads = statsCounts.leads.deals;
+    dealsFromDR    = statsCounts.drs.deals;
+    dealsFiltered  = dealsFromLeads + dealsFromDR;
+    overdueLeads = statsCounts.leads.overdueCallbacks;
+    overdueDR    = statsCounts.drs.overdueCallbacks;
+    overdueFiltered = overdueLeads + overdueDR;
+    callbacksFiltered = statsCounts.leads.callbacksInRange;
+    drFiltered = statsCounts.drs.total;
+  }
 
-  // Campaign performance now comes from /api/reports/campaigns/performance
-  // (campaignPerf state). The fCamps derivation that lived here grouped raw
-  // campaign|project|source, which is wrong across the fieldsV2 migration:
-  // legacy leads carry the DEVELOPMENT in `campaign` and the unit in
-  // `project`, while v2 leads carry the development in `project` and a real
-  // ad-campaign name in `campaign` \u2014 so one development fragmented into
-  // several rows with two different column meanings. The reports endpoint
-  // resolves both per-vintage (LEAD_DEV_EXPR / LEAD_UNIT_EXPR) and merges
-  // name variants (" - Copy", trailing numbers, month suffixes).
+  // Campaign performance (filtered). STEP 4-5 X2 \u2014 prefers
+  // statsCounts.leads.byCampaign when resolved (server aggregates top 12
+  // campaign|project|source buckets in range). Falls back to the in-memory
+  // fLeads scan during the first paint so existing numbers stay visible.
+  var fCamps;
+  if (statsCounts && statsCounts.leads && Array.isArray(statsCounts.leads.byCampaign)) {
+    fCamps = statsCounts.leads.byCampaign.slice(0, 8).map(function(c){
+      var ip = c.leads > 0 ? Math.round(c.interested / c.leads * 100) : 0;
+      var mp = c.leads > 0 ? Math.round(c.meet / c.leads * 100) : 0;
+      return Object.assign({}, c, { int: c.interested || 0, ip: ip, mp: mp, quality: ip > 30 ? "High" : ip > 15 ? "Medium" : "Low" });
+    });
+  } else {
+    var fCampMap={};
+    fLeads.forEach(function(l){
+      var k=(l.campaign||"\u2014")+"|"+(l.project||"\u2014")+"|"+(l.source||"\u2014");
+      if(!fCampMap[k]) fCampMap[k]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,int:0,meet:0,deals:0};
+      fCampMap[k].leads++;
+      if((l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status)) fCampMap[k].int++;
+      if((l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone"||l.status==="DoneDeal") fCampMap[k].meet++;
+      if(l.status==="DoneDeal") fCampMap[k].deals++;
+    });
+    fCamps=Object.values(fCampMap).sort(function(a,b){return b.leads-a.leads;}).slice(0,8).map(function(c){
+      var ip=c.leads>0?Math.round(c.int/c.leads*100):0;
+      var mp=c.leads>0?Math.round(c.meet/c.leads*100):0;
+      return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
+    });
+  }
 
   // Agent Performance compute moved to renderAgentPerformanceCard() helper
   // above so it can be shared between the admin and team-scoped dashboards.
@@ -11653,13 +11667,31 @@ var DashboardPage = function(p) {
   // module-scope cached Intl.DateTimeFormat (see _dashboardExactTime above).
   var exactTime = _dashboardExactTime;
 
-  // Management Alerts counts (locked / missing feedback / stale 48h+ /
-  // rotations this month / heavy-rotation / agents idle today) used to be
-  // derived here by scanning `leads`. Since the STEP 4-5 X3 bootstrap shrink
-  // that array holds only the 100 newest-created leads, so every one of those
-  // numbers undercounted by orders of magnitude and drifted as the user
-  // scrolled the Leads page. They now come from /api/dashboard/alerts, which
-  // counts over the full collection. See the Management Alerts card below.
+  // Locked leads: any assignment with noRotation === true
+  var lockedCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return a.noRotation===true;});}).length;
+  // Missing feedback: any assignment whose notes is empty/null
+  var missingFBCount = leads.filter(function(l){return (l.assignments||[]).some(function(a){return !a.notes||String(a.notes).trim()===""})||(!l.lastFeedback&&l.status!=="NewLead"&&l.status!=="DoneDeal");}).length;
+  // Stale 48h+: any assignment's lastActionAt older than 48h (fallback lead.lastActivityTime)
+  var stale48Count = leads.filter(function(l){
+    var latest = 0;
+    (l.assignments||[]).forEach(function(a){ if(a.lastActionAt){ var t=new Date(a.lastActionAt).getTime(); if(t>latest) latest=t; } });
+    if (!latest && l.lastActivityTime) latest = new Date(l.lastActivityTime).getTime();
+    if (!latest && l.createdAt) latest = new Date(l.createdAt).getTime();
+    return latest>0 && latest<(now-2*DAY) && l.status!=="DoneDeal" && l.status!=="NotInterested";
+  }).length;
+  // Rotations this month from agentHistory entries, split auto vs manual
+  var monthStartMs = new Date(nowD.getFullYear(),nowD.getMonth(),1,0,0,0,0).getTime();
+  var rotMonthAuto=0, rotMonthManual=0;
+  leads.forEach(function(l){
+    (l.agentHistory||[]).forEach(function(h){
+      if (!h||h.action!=="Rotation") return;
+      var ht = h.date?new Date(h.date).getTime():0;
+      if (ht<monthStartMs) return;
+      if ((h.reason||"").toString().toLowerCase()==="manual") rotMonthManual++; else rotMonthAuto++;
+    });
+  });
+  var rotationsMonth = rotMonthAuto + rotMonthManual;
+  var rotationsTotal = leads.reduce(function(s,l){return s+(l.rotationCount||0);},0);
 
   // Action label for activities
   var actLabel = function(a){
@@ -11704,87 +11736,6 @@ var DashboardPage = function(p) {
       </div>
     </div>
 
-    {/* ── HERO: Leads by Status ────────────────────────────────────────────
-        Full-collection distribution from /api/leads/counts (byStatus), which
-        the page already fetched and discarded before this rewire. Carries its
-        OWN range toggle defaulting to "All" — the card this replaces scanned
-        the 100-lead bootstrap slice AND range-filtered by assignment date on
-        a Today default, which is why it read as mostly zeros. */}
-    {card((function(){
-      var RANGES = [["today","Today"],["week","Week"],["month","Month"],["all","All"]];
-      // Fold the server's raw status keys onto the nine display buckets. Any
-      // status outside the set (e.g. "Deal Cancelled") lands in Other rather
-      // than being dropped, so the percentages always sum to 100.
-      var BUCKETS = [
-        ["NewLead",       "New Lead",   "#3B82F6", ["NewLead","New Lead"]],
-        ["Potential",     "Potential",  "#10B981", ["Potential"]],
-        ["HotCase",       "Hot Case",   "#F59E0B", ["HotCase","Hot Case"]],
-        ["CallBack",      "Call Back",  "#EF4444", ["CallBack","Call Back"]],
-        ["MeetingDone",   "Meeting",    "#8B5CF6", ["MeetingDone","Meeting Done"]],
-        ["NotInterested", "Not Int.",   "#94A3B8", ["NotInterested","Not Interested"]],
-        ["NoAnswer",      "No Answer",  "#CBD5E1", ["NoAnswer","No Answer"]],
-        ["EOI",           "EOI",        "#0EA5E9", ["EOI"]],
-        ["DoneDeal",      "Done Deal",  "#065F46", ["DoneDeal","Done Deal"]]
-      ];
-      var loading = statusDist === null;
-      var dist = statusDist || {};
-      var claimed = {};
-      var rows = BUCKETS.map(function(b){
-        var n = 0;
-        b[3].forEach(function(k){ if (dist[k]) { n += dist[k]; } claimed[k] = true; });
-        return { key: b[0], label: b[1], color: b[2], count: n };
-      });
-      var total = 0;
-      Object.keys(dist).forEach(function(k){ total += (dist[k] || 0); });
-      var otherCount = 0;
-      Object.keys(dist).forEach(function(k){ if (!claimed[k]) otherCount += (dist[k] || 0); });
-      if (otherCount > 0) rows.push({ key: null, label: "Other", color: "#E2E8F0", count: otherCount });
-
-      var openStatus = function(key){
-        if (!key) return;
-        if (p.setFilter) p.setFilter(key);
-        if (p.nav) p.nav("leads");
-      };
-
-      return <>
-        <div style={{display:"flex",alignItems:isMobile?"flex-start":"center",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:16,flexDirection:isMobile?"column":"row"}}>
-          <div style={{minWidth:0}}>
-            <div style={{fontSize:isMobile?16:18,fontWeight:700,color:"#0F172A"}}>Leads by Status</div>
-            <div style={{fontSize:12,color:statusErr?"#B45309":"#94A3B8",marginTop:3}}>
-              {loading ? "Loading…"
-                : statusErr ? "Couldn't load status counts"
-                : total.toLocaleString() + " leads" + (statusRange==="all" ? " · all time" : " · created in period")}
-            </div>
-          </div>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",flexShrink:0}}>
-            {RANGES.map(function(r){
-              var on = statusRange === r[0];
-              return <button key={r[0]} onClick={function(){setStatusRange(r[0]);}} style={{fontSize:12,padding:isMobile?"7px 12px":"6px 14px",minHeight:isMobile?34:undefined,border:on?"1px solid #3B82F6":"1px solid #E2E8F0",borderRadius:8,background:on?"#EFF6FF":"#fff",color:on?"#1D4ED8":"#64748B",cursor:"pointer",fontWeight:on?600:500}}>{r[1]}</button>;
-            })}
-          </div>
-        </div>
-        {(!loading && total === 0)
-          ? <div style={{fontSize:13,color:"#94A3B8",padding:"18px 0",textAlign:"center"}}>{statusErr ? "—" : "No leads in this period"}</div>
-          : <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit,minmax(260px,1fr))",gap:isMobile?"10px 0":"10px 28px"}}>
-            {rows.map(function(r){
-              var pct = (!loading && total > 0) ? Math.round(r.count / total * 100) : 0;
-              // Bar floor of 2% keeps a non-zero slice visible; a true zero
-              // stays a true zero so an empty status never fakes a sliver.
-              var barW = (!loading && total > 0 && r.count > 0) ? Math.max(2, pct) : 0;
-              var clickable = !!r.key && !loading;
-              return <div key={r.label} onClick={clickable ? function(){openStatus(r.key);} : null} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",cursor:clickable?"pointer":"default"}}>
-                <span style={{width:8,height:8,borderRadius:"50%",background:r.color,flexShrink:0}}/>
-                <div style={{fontSize:13,color:"#334155",width:isMobile?76:88,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.label}</div>
-                <div style={{flex:1,height:6,background:"#F1F5F9",borderRadius:3,overflow:"hidden",minWidth:30}}>
-                  <div style={{height:"100%",width:barW+"%",background:r.color,borderRadius:3}}/>
-                </div>
-                <div style={{fontSize:14,fontWeight:700,color:"#0F172A",width:52,textAlign:"right",flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{loading ? "—" : r.count.toLocaleString()}</div>
-                <div style={{fontSize:11,color:"#94A3B8",width:34,textAlign:"right",flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{loading ? "" : pct + "%"}</div>
-              </div>;
-            })}
-          </div>}
-      </>;
-    })())}
     {sec("Key Metrics")}
     {(function(){
       // Sparkline bars: lead counts per day for the last 7 days, scoped to the
@@ -11833,55 +11784,82 @@ var DashboardPage = function(p) {
     {sec("Campaigns & Pipeline")}
     <div className="crm-dash-row" style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"repeat(auto-fit, minmax(300px, 1fr))",gap:isMobile?10:14,marginBottom:14}}>
       {card(<>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:8,flexWrap:"wrap"}}>
-          <div style={{minWidth:0}}>
-            <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Campaign Performance</div>
-            <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>Top 5 by leads · {periodLabelForFilter(filter)}</div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+          <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Campaign &amp; Source Performance</div>
+          <div style={{display:"flex",gap:8}}>
+            {[["#1877F2","Facebook"],["#0F9D58","Sheets"],["#EA4335","G.Ads"]].map(function(s){return <span key={s[1]} style={{fontSize:10,color:"#64748B",display:"flex",alignItems:"center",gap:3}}><span style={{width:6,height:6,borderRadius:"50%",background:s[0],display:"inline-block"}}/>{s[1]}</span>;})}
           </div>
-          <span onClick={function(){ if(p.nav) p.nav("reports"); }} style={{fontSize:11,fontWeight:600,color:"#1D4ED8",cursor:"pointer",flexShrink:0}}>View all →</span>
         </div>
-        {(function(){
-          // Source: /api/reports/campaigns/performance — resolves development
-          // and unit type per lead vintage (v1 stores the development in
-          // `campaign`, v2 in `project`) and merges campaign-name variants
-          // (" - Copy", trailing numbers, month suffixes) that would otherwise
-          // fragment one campaign across several low-count rows.
-          if (campaignPerf === null) {
-            return <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>Loading…</div>;
-          }
-          if (campaignErr) {
-            return <div style={{fontSize:12,color:"#B45309",padding:"10px 0"}}>Couldn't load campaign data</div>;
-          }
-          if (!campaignPerf.length) {
-            return <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No campaign data in this period</div>;
-          }
-          var top = campaignPerf.slice(0, 5);
-          var cols = isMobile ? "minmax(0,1fr) 44px 44px 44px" : "minmax(140px,1fr) 60px 60px 60px 64px";
-          var headers = isMobile ? ["Campaign","Leads","EOI","Deals"] : ["Campaign","Leads","EOI","Deals","Conv."];
-          return <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
-            <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4}}>
-              {headers.map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
-            </div>
-            {top.map(function(c,i){
-              // Conversion is deals ÷ leads for this campaign cohort. Shown as
-              // "—" at zero leads rather than 0%, which would read as a real
-              // result. No spend data exists on this endpoint, so this is a
-              // conversion rate, deliberately NOT labelled ROI.
-              var conv = c.leads > 0 ? Math.round((c.deals / c.leads) * 100) : null;
-              var units = (c.unitTypes || []).filter(Boolean);
-              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:i<top.length-1?"1px solid #F8FAFC":"none"}}>
-                <div style={{minWidth:0,overflow:"hidden"}}>
-                  <div style={{fontSize:12,fontWeight:600,color:c.manual?"#94A3B8":"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.campaign}</div>
-                  {units.length>0 && <div style={{fontSize:10,color:"#94A3B8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{units.join(" · ")}</div>}
+        {isMobile ? (
+          // MOBILE: stacked card-per-campaign layout. The grid table (desktop
+          // path below) tried to cram 6 columns into a phone-width container;
+          // the name column clipped, headers and values drifted out of
+          // alignment, and rows rendered inconsistently once any cell's
+          // content shrank. A card per campaign removes the alignment burden
+          // entirely — each card is full-width, with the campaign name
+          // wrapping freely on top and a 4-stat mini-grid + Quality badge
+          // below where every number sits right under its own label.
+          <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",minWidth:0}}>
+            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No campaign data yet</div>}
+            {fCamps.map(function(c,i){
+              var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
+              return <div key={i} style={{border:"1px solid #F1F5F9",borderRadius:12,padding:"10px 12px",background:"#FBFBFD",minWidth:0,boxSizing:"border-box"}}>
+                <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:8,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0,flex:1}}>
+                    <span style={{width:8,height:8,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
+                    <div style={{minWidth:0,flex:1}}>
+                      <div style={{fontSize:13,fontWeight:700,color:"#0F172A",lineHeight:1.25,overflowWrap:"anywhere",wordBreak:"break-word"}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</div>
+                      <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{c.source||"\u2014"}</div>
+                    </div>
+                  </div>
+                  <div style={{flexShrink:0}}>{qBadge(c.quality)}</div>
                 </div>
-                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
-                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:c.eois>0?"#0369A1":"#CBD5E1"}}>{c.eois}</div>
-                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:c.deals>0?"#065F46":"#CBD5E1"}}>{c.deals}</div>
-                {!isMobile && <div style={{fontSize:12,fontWeight:600,textAlign:"center",color:conv===null?"#CBD5E1":conv>0?"#065F46":"#94A3B8"}}>{conv===null?"—":conv+"%"}</div>}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4, minmax(0, 1fr))",gap:6,paddingTop:8,borderTop:"1px solid #F1F5F9"}}>
+                  {[
+                    {l:"Leads", v:c.leads, sub:null,         vc:"#334155"},
+                    {l:"Int.",  v:c.int,   sub:c.ip+"%",     vc:"#15803D"},
+                    {l:"Meet.", v:c.meet,  sub:c.mp+"%",     vc:"#6D28D9"},
+                    {l:"Deals", v:c.deals, sub:null,         vc:"#065F46"}
+                  ].map(function(s,idx){return <div key={idx} style={{textAlign:"center",minWidth:0,padding:"2px 0"}}>
+                    <div style={{fontSize:10,fontWeight:600,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2,whiteSpace:"nowrap"}}>{s.l}</div>
+                    <div style={{fontSize:15,fontWeight:800,color:s.vc,lineHeight:1}}>{s.v}</div>
+                    {s.sub?<div style={{fontSize:10,color:"#94A3B8",marginTop:2}}>{s.sub}</div>:null}
+                  </div>;})}
+                </div>
               </div>;
             })}
-          </div>;
+          </div>
+        ) : (
+        <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+        {(function(){
+          // Desktop: grid-based table. Untouched by the mobile refactor.
+          var cols = "minmax(140px, 1fr) 50px 90px 90px 50px 60px";
+          var rowMinW = 500;
+          return <>
+            <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW}}>
+              {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
+            </div>
+            {fCamps.map(function(c,i){
+              var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
+              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:rowMinW}}>
+                <div style={{minWidth:0,overflow:"hidden"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>
+                    <span style={{width:7,height:7,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
+                    <span style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</span>
+                  </div>
+                  <div style={{fontSize:11,color:"#94A3B8",paddingLeft:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.source}</div>
+                </div>
+                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ip}%</div></div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.mp}%</div></div>
+                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
+                <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
+              </div>;
+            })}
+          </>;
         })()}
+        </div>
+        )}
       </>)}
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
         {card(<>
@@ -12022,31 +12000,35 @@ var DashboardPage = function(p) {
             if (p.setSpecialFilter) p.setSpecialFilter({type:type});
             if (p.nav) p.nav("leads");
           };
-          // Every row is now a full-collection server count from
-          // /api/dashboard/alerts. `null` means the fetch hasn't resolved (or
-          // failed) — render an em dash rather than 0, so "loading" and
-          // "genuinely zero" never look the same.
-          var A = alertsData;
-          var loading = A === null;
-          var n = function(v){ return (loading || v === null || v === undefined) ? "—" : v; };
-          // Overdue: adminStats.overdue is status="CallBack" AND callbackTime
-          // < now. This row previously counted EVERY lead with a past
-          // callbackTime regardless of status, so closed and dead leads
-          // carrying an uncleared callbackTime inflated it.
-          var overdueN = (adminStats && typeof adminStats.overdue === "number") ? adminStats.overdue : null;
-          var agentsSub = (loading || !A.activeAgentCount) ? "active sales staff"
-                        : "of " + A.activeAgentCount + " active sales staff";
-          var rotSub = loading ? "auto vs manual"
-                     : (A.rotationsAuto || 0) + " auto · " + (A.rotationsManual || 0) + " manual";
+          // Rotated > 3 times with no deal — heavy-churn leads that never closed.
+          var ROT_THRESHOLD = 3;
+          var heavyRotNoDeal = leads.filter(function(l){
+            if ((l.rotationCount||0) <= ROT_THRESHOLD) return false;
+            if (l.status==="DoneDeal") return false;
+            if (l.globalStatus==="donedeal" || l.globalStatus==="eoi") return false;
+            return true;
+          }).length;
+          // Agents with zero activity today — active sales staff who haven't logged anything since 00:00.
+          var todayStartMs = todayStart.getTime();
+          var activeAgents = (p.users||[]).filter(function(u){return u.active!==false && (u.role==="sales"||u.role==="team_leader"||u.role==="manager");});
+          var actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities||[]);
+          var activeAgentIds = {};
+          actPool.forEach(function(a){
+            var t = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            if (!t || t<todayStartMs) return;
+            var aid = a.userId&&a.userId._id?a.userId._id:a.userId;
+            if (aid) activeAgentIds[String(aid)] = true;
+          });
+          var inactiveAgentsToday = activeAgents.filter(function(u){return !activeAgentIds[String(u._id||gid(u))];}).length;
           var rows=[
-            {dot:"#F97316",n:n(overdueN),t:"overdue callbacks",s:"past scheduled, still Call Back",onClick:function(){gotoFilter("CallBack");}},
-            {dot:"#EF4444",n:n(untouchedTotal),t:"untouched leads",s:"no activity in 24h+",onClick:function(){gotoSpecial("untouched");}},
-            {dot:"#DC2626",n:n(loading?null:A.stale48h),t:"untouched 48h+",s:"no activity in 48h",onClick:function(){gotoSpecial("stale48h");}},
-            {dot:"#6366F1",n:n(loading?null:A.heavyRotNoDeal),t:"rotated > 3× no deal",s:"churning without closing",onClick:function(){gotoSpecial("rotatedThisMonth");}},
-            {dot:"#0EA5E9",n:n(loading?null:A.inactiveAgentsToday),t:"agents no activity today",s:agentsSub,onClick:function(){if(p.nav) p.nav("team");}},
-            {dot:"#F59E0B",n:n(loading?null:A.missingFeedback),t:"missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
-            {dot:"#6366F1",n:n(loading?null:A.rotationsMonth),t:"rotations this month",s:rotSub,onClick:function(){gotoSpecial("rotatedThisMonth");}},
-            {dot:"#7C3AED",n:n(loading?null:A.lockedNoRotation),t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
+            {dot:"#F97316",n:overdue,t:"overdue callbacks",s:"past scheduled",onClick:function(){gotoFilter("CallBack");}},
+            {dot:"#DC2626",n:stale48Count,t:"untouched 48h+",s:"no activity in 48h",onClick:function(){gotoSpecial("stale48h");}},
+            {dot:"#6366F1",n:heavyRotNoDeal,t:"rotated > "+ROT_THRESHOLD+"\u00d7 no deal",s:"churning without closing",onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#0EA5E9",n:inactiveAgentsToday,t:"agents no activity today",s:"of "+activeAgents.length+" active sales staff",onClick:function(){if(p.nav) p.nav("team");}},
+            {dot:"#EF4444",n:untouched,t:"untouched leads",s:"no action taken",onClick:function(){gotoSpecial("untouched");}},
+            {dot:"#F59E0B",n:missingFBCount,t:"missing feedback",s:"no notes",onClick:function(){gotoSpecial("missingFeedback");}},
+            {dot:"#6366F1",n:rotationsMonth,t:"rotations this month",s:rotMonthAuto+" auto \u00b7 "+rotMonthManual+" manual",onClick:function(){gotoSpecial("rotatedThisMonth");}},
+            {dot:"#7C3AED",n:lockedCount,t:"leads locked",s:"noRotation flag",onClick:function(){gotoSpecial("noRotation");}}
           ];
           return rows.map(function(a,i){
             return <div key={i} onClick={a.onClick} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:i<rows.length-1?"1px solid #F8FAFC":"none",cursor:"pointer"}}>
@@ -12114,6 +12096,41 @@ var DashboardPage = function(p) {
           the global filter changes, so the ranking reflects the selected
           period. */}
       {rankWidget({ mode: "admin", rangeLabel: periodLabelForFilter(filter) })}
+      {card(<>
+        <div style={{fontSize:15,fontWeight:700,color:"#0F172A",marginBottom:12}}>Leads by Status</div>
+        {(function(){
+          // Count ONE status per lead (the current agent's assignment). Historical rotated-off assignments are ignored
+          // so a single lead can never be counted under multiple statuses.
+          var assignSc={};
+          var assignTotal=0;
+          var normalize = function(st){
+            if (st==="Meeting Done") return "MeetingDone";
+            if (st==="No Answer") return "NoAnswer";
+            if (st==="Hot Case") return "HotCase";
+            if (st==="Not Interested") return "NotInterested";
+            if (st==="Call Back") return "CallBack";
+            return st;
+          };
+          leads.forEach(function(l){
+            var currentAid = l.agentId && l.agentId._id ? String(l.agentId._id) : String(l.agentId||"");
+            var active = currentAid ? (l.assignments||[]).find(function(a){ var aid=a.agentId&&a.agentId._id?a.agentId._id:a.agentId; return String(aid||"")===currentAid; }) : null;
+            var at = 0, st = "";
+            if (active) {
+              at = active.assignedAt ? new Date(active.assignedAt).getTime() : (l.createdAt?new Date(l.createdAt).getTime():0);
+              st = normalize(active.status || l.status || "NewLead");
+            } else {
+              at = l.createdAt ? new Date(l.createdAt).getTime() : 0;
+              st = normalize(l.status||"NewLead");
+            }
+            if (at<rangeStart || at>rangeEnd) return;
+            assignSc[st] = (assignSc[st]||0)+1;
+            assignTotal++;
+          });
+          var denom = Math.max(1,assignTotal);
+          var rows=[["New Lead","NewLead","#3B82F6"],["Potential","Potential","#10B981"],["Hot Case","HotCase","#F59E0B"],["Call Back","CallBack","#EF4444"],["Meeting","MeetingDone","#8B5CF6"],["Not Int.","NotInterested","#94A3B8"],["No Answer","NoAnswer","#CBD5E1"],["EOI","EOI","#0EA5E9"],["Done Deal","DoneDeal","#065F46"]];
+          return rows.map(function(s){return bRow(s[0],assignSc[s[1]]||0,denom,s[2],function(){ if(p.setFilter) p.setFilter(s[1]); if(p.nav) p.nav("leads"); });});
+        })()}
+      </>)}
     </div>
     {seeAllOpen && <div data-overlay-above="true" onClick={function(){setSeeAllOpen(false);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(15,23,42,0.55)",zIndex:1000,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"calc(40px + env(safe-area-inset-top, 0px)) 16px",overflowY:"auto"}}>
       <div onClick={function(e){e.stopPropagation();}} style={{background:"#fff",borderRadius:16,maxWidth:640,width:"100%",padding:"20px 22px",boxShadow:"0 10px 40px rgba(0,0,0,0.2)"}}>
