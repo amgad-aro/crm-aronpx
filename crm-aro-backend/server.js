@@ -8721,6 +8721,136 @@ app.get("/api/dashboard/admin-stats", auth, async function(req, res) {
   }
 });
 
+// ===== DASHBOARD — MANAGEMENT ALERTS =====
+// Server-side replacement for the in-memory Management Alerts scans in
+// DashboardPage. Those ran over `p.leads`, which since the STEP 4-5 X3
+// bootstrap shrink holds only the 100 newest-created leads — so every row
+// undercounted by roughly two orders of magnitude and drifted as the user
+// scrolled the Leads page.
+//
+// CURRENT-STATE counts, deliberately NOT bounded by the dashboard's period
+// filter: "leads needing attention right now" is not a smaller problem
+// because the user clicked Today. This matches the prior client behaviour,
+// which scanned every loaded lead regardless of the active filter.
+//
+// NOT folded into /api/leads/counts on purpose — that endpoint is on the hot
+// path for the LeadsPage tab counters and KPIsPage, and these aggregations
+// would tax every one of those callers for data they never read.
+//
+// The `untouched` row is NOT computed here: it comes from
+// /api/leads/untouched?count_only=true so the Dashboard's "Untouched Leads"
+// card and this alert row can never disagree (one definition, one owner).
+app.get("/api/dashboard/alerts", auth, async function(req, res) {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "sales_admin") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    var scope = await buildLeadCurrentOwnerScopeQuery(req);
+    if (scope === null) {
+      console.error("[scope:LEAK-GUARD] /api/dashboard/alerts rejected role=" + req.user.role + " uid=" + req.user.id);
+      return res.status(403).json({ error: "Scope unavailable for this role." });
+    }
+    var DAY = 86400000;
+    var now = new Date();
+    var stale48Cutoff = new Date(now.getTime() - 2 * DAY);
+    var monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    var base = [scope, { archived: { $ne: true } }];
+
+    // "Blank" = missing, null, empty, or whitespace-only. /\S/ matches "has at
+    // least one non-space character"; $not inverts that AND matches documents
+    // where the field is absent — same truthiness test the client used.
+    var BLANK = { $not: /\S/ };
+
+    // Missing feedback — mirrors App.js missingFBCount: any assignment slice
+    // with blank notes, OR a lead-level blank lastFeedback on a lead that has
+    // moved past NewLead and isn't closed.
+    var missingFeedbackCond = { $or: [
+      { assignments: { $elemMatch: { notes: BLANK } } },
+      { $and: [{ lastFeedback: BLANK }, { status: { $nin: ["NewLead", "DoneDeal"] } }] }
+    ]};
+
+    // Heavy churn — rotated more than 3× and still not closed.
+    var heavyRotCond = {
+      rotationCount: { $gt: 3 },
+      status: { $ne: "DoneDeal" },
+      globalStatus: { $nin: ["donedeal", "eoi"] }
+    };
+
+    // Stale 48h+ — latest touch = max(assignments[].lastActionAt), falling back
+    // to lastActivityTime then createdAt; older than 48h; excludes closed/dead
+    // statuses. Mirrors the App.js stale48Count fallback chain exactly.
+    var stale48Pipeline = [
+      { $match: { $and: base.concat([{ status: { $nin: ["DoneDeal", "NotInterested"] } }]) } },
+      { $addFields: { _latest: { $let: {
+        vars: { m: { $max: { $ifNull: ["$assignments.lastActionAt", []] } } },
+        in: { $ifNull: ["$$m", { $ifNull: ["$lastActivityTime", "$createdAt"] }] }
+      }}}},
+      { $match: { _latest: { $type: "date", $lt: stale48Cutoff } } },
+      { $count: "c" }
+    ];
+
+    // Rotations this month — agentHistory is Mixed[], so `date` may be a Date
+    // or an ISO string depending on vintage; $convert normalises both and
+    // drops unparseable entries rather than counting them as epoch 0.
+    var rotationsPipeline = [
+      { $match: { $and: base } },
+      { $project: { agentHistory: 1 } },
+      { $unwind: "$agentHistory" },
+      { $match: { "agentHistory.action": "Rotation" } },
+      { $addFields: { _rotAt: { $convert: { input: "$agentHistory.date", to: "date", onError: null, onNull: null } } } },
+      { $match: { _rotAt: { $gte: monthStart } } },
+      { $group: {
+        _id: null,
+        total: { $sum: 1 },
+        manual: { $sum: { $cond: [
+          { $eq: [{ $toLower: { $ifNull: ["$agentHistory.reason", ""] } }, "manual"] }, 1, 0
+        ]}}
+      }}
+    ];
+
+    // Agents with no logged activity today. Hidden accounts are excluded (the
+    // Play Store reviewer demo login would otherwise sit here permanently).
+    var activeAgentDocs = await User.find({
+      active: { $ne: false },
+      role: { $in: ["sales", "team_leader", "manager"] },
+      hidden: { $ne: true }
+    }).select("_id").lean();
+    var activeAgentIds = activeAgentDocs.map(function(u){ return u._id; });
+
+    var parts = await Promise.all([
+      Lead.countDocuments({ $and: base.concat([missingFeedbackCond]) }),
+      Lead.aggregate(stale48Pipeline),
+      Lead.countDocuments({ $and: base.concat([heavyRotCond]) }),
+      Lead.countDocuments({ $and: base.concat([{ "assignments.noRotation": true }]) }),
+      Lead.aggregate(rotationsPipeline),
+      activeAgentIds.length
+        ? Activity.distinct("userId", { userId: { $in: activeAgentIds }, createdAt: { $gte: todayStart } })
+        : Promise.resolve([])
+    ]);
+
+    var rotRow = (parts[4] && parts[4][0]) || { total: 0, manual: 0 };
+    var actedToday = {};
+    (parts[5] || []).forEach(function(id){ actedToday[String(id)] = true; });
+    var inactiveAgentsToday = activeAgentIds.filter(function(id){ return !actedToday[String(id)]; }).length;
+
+    res.json({
+      missingFeedback:    parts[0],
+      stale48h:           (parts[1] && parts[1][0] && parts[1][0].c) || 0,
+      heavyRotNoDeal:     parts[2],
+      lockedNoRotation:   parts[3],
+      rotationsMonth:     rotRow.total || 0,
+      rotationsManual:    rotRow.manual || 0,
+      rotationsAuto:      (rotRow.total || 0) - (rotRow.manual || 0),
+      inactiveAgentsToday: inactiveAgentsToday,
+      activeAgentCount:   activeAgentIds.length
+    });
+  } catch (e) {
+    console.error("[GET /api/dashboard/alerts]", e && e.message);
+    res.status(500).json({ error: e && e.message ? e.message : "alerts_failed" });
+  }
+});
+
 // ===== USER ROUTES =====
 app.get("/api/users", auth, async function(req, res) {
   try {
@@ -10263,6 +10393,18 @@ app.get("/api/leads/untouched", auth, async function(req, res) {
           assignedOnly: { $not: "$hasFollowUp" }
       }}
     ];
+    // ?count_only=true — the true total, not the top-50 page. The Dashboard's
+    // Management Alerts row needs a real count; the list above is capped at 50
+    // so `rows.length` maxes out and silently reads as "50 untouched leads".
+    // Reuses the identical stage prefix (match → project → addFields → match)
+    // and drops everything from $sort onward, so the count can never drift
+    // from the list this same endpoint returns.
+    if (req.query.count_only === "true" || req.query.count_only === "1") {
+      var sortIdx = pipeline.findIndex(function(s){ return s && s.$sort; });
+      var corePipeline = sortIdx > 0 ? pipeline.slice(0, sortIdx) : pipeline;
+      var counted = await Lead.aggregate(corePipeline.concat([{ $count: "c" }]));
+      return res.json({ count: (counted[0] && counted[0].c) || 0 });
+    }
     var out = await Lead.aggregate(pipeline);
     res.json(out);
   } catch (e) {
