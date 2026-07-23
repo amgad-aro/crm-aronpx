@@ -10512,7 +10512,61 @@ var DashboardPage = function(p) {
     var fg = pct === null ? "#94A3B8" : pct > 0 ? "#166534" : "#64748B";
     return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:bg,color:fg}}>{pct===null?"\u2014":pct+"%"}</span>;
   };
-  var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
+  var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"],"—":["#F1F5F9","#94A3B8"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
+
+  // Campaign Quality grade — restored as a column, but NOT with the old
+  // formula. That one graded interested-% against fixed 30/15 cutoffs on every
+  // range, so on Today/Yesterday (where almost nothing has progressed yet)
+  // essentially every campaign read "Low" — which is why it was dropped in
+  // 2ce138a. A single formula cannot be honest across a 1-day and a 90-day
+  // window, so this grades in two modes:
+  //   SHORT (Today / Yesterday / This Week) — deals and EOIs are simply too
+  //     slow to have landed yet, so judging on them would grade every fresh
+  //     campaign "Low" regardless of how good it is. Grade the early signal
+  //     instead: did it deliver people who ANSWER (contact rate) and who show
+  //     INTEREST (interested rate)?
+  //   LONG (This Month / Quarter) — enough time has passed for real funnel
+  //     progression, so grade what actually matters commercially: EOI rate
+  //     (reached the EOI stage, including the ones already won) + conversion %.
+  // Both of a mode's rates must clear the bar, so one strong number cannot
+  // carry a campaign that is weak on the other.
+  //
+  // THRESHOLDS ARE PROVISIONAL — estimates, NOT yet calibrated against the live
+  // collection. They were verified only against fixtures, which proves the two
+  // modes grade on different evidence but NOT that a real campaign clears the
+  // High bar. If the real rates run lower than these, the column repeats the
+  // exact failure that got the old badge deleted: everything reads "Low".
+  // Retuning is a two-line change — adjust the two constants below and nothing
+  // else; the grading logic is threshold-agnostic. Worth a read-only pass over
+  // leads grouped by campaign (interested/contacted/eoisReached/deals over
+  // leads, on a 7-day and a quarter window) to set them from real data.
+  var CAMPAIGN_Q_MIN_LEADS = 5;   // below this, rates are noise (1 lead = 0% or 100%)
+  var CAMPAIGN_Q_SHORT = { high: { int: 25, con: 55 }, med: { int: 10, con: 30 } };
+  var CAMPAIGN_Q_LONG  = { high: { eoi: 6,  conv: 3 }, med: { eoi: 2,  conv: 1 } };
+  // Short modes are the ranges where the funnel has not had time to move.
+  var campaignQIsShort = (filter === "today" || filter === "yesterday" || filter === "week");
+  var campaignQuality = function(c){
+    var leads = c.leads || 0;
+    // Honest small-sample guard: on 1-4 leads a single interested lead swings
+    // the rate from 0% to 100%, so grade nothing rather than grade noise.
+    if (leads < CAMPAIGN_Q_MIN_LEADS) return "—";
+    if (campaignQIsShort) {
+      // Reads the fCamps row's own field names (int / contacted / eoi / deals),
+      // NOT the raw endpoint names — the row renames interested -> int.
+      var intPct = (c.int       || 0) / leads * 100;
+      var conPct = (c.contacted || 0) / leads * 100;
+      var s = CAMPAIGN_Q_SHORT;
+      if (intPct >= s.high.int && conPct >= s.high.con) return "High";
+      if (intPct >= s.med.int  && conPct >= s.med.con)  return "Medium";
+      return "Low";
+    }
+    var eoiPct  = (c.eoi   || 0) / leads * 100;
+    var convPct = (c.deals || 0) / leads * 100;
+    var l = CAMPAIGN_Q_LONG;
+    if (eoiPct >= l.high.eoi && convPct >= l.high.conv) return "High";
+    if (eoiPct >= l.med.eoi  && convPct >= l.med.conv)  return "Medium";
+    return "Low";
+  };
 
   // Shared period labels used by both the Today's Activities card (Change 1
   // — respects the global filter) and the admin Rank Team widget (Change 2).
@@ -11273,17 +11327,26 @@ var DashboardPage = function(p) {
   var fCamps = (campaignPerf || []).slice(0, 8).map(function(c){
     var ip = c.leads > 0 ? Math.round((c.interested || 0) / c.leads * 100) : 0;
     var mp = c.leads > 0 ? Math.round((c.meetings   || 0) / c.leads * 100) : 0;
-    return {
+    // eoisReached (ever reached the EOI stage, incl. cancelled and the ones
+    // already converted to deals) — NOT the endpoint's `eois`, which is
+    // Pending|Approved only and would drop every EOI that has since been won.
+    var eoi = c.eoisReached || 0;
+    var row = {
       campaign: c.campaign || "",
       project:  (c.unitTypes && c.unitTypes[0]) || "",
       source:   c.topSource || "",
       leads:    c.leads || 0,
       int:      c.interested || 0,
       meet:     c.meetings || 0,
+      eoi:      eoi,
       deals:    c.deals || 0,
+      contacted: c.contacted || 0,
       ip: ip, mp: mp,
+      ep: c.leads > 0 ? Math.round(eoi / c.leads * 100) : 0,
       conv: c.leads > 0 ? Math.round((c.deals || 0) / c.leads * 100) : null
     };
+    row.quality = campaignQuality(row);
+    return row;
   });
 
   // Agent Performance compute moved to renderAgentPerformanceCard() helper
@@ -11663,8 +11726,9 @@ var DashboardPage = function(p) {
           // alignment, and rows rendered inconsistently once any cell's
           // content shrank. A card per campaign removes the alignment burden
           // entirely — each card is full-width, with the campaign name
-          // wrapping freely on top and a 4-stat mini-grid + Quality badge
-          // below where every number sits right under its own label.
+          // wrapping freely on top and a 5-stat mini-grid (Leads / Int. /
+          // Meet. / EOI / Deals) below where every number sits right under
+          // its own label, plus the Conv. and Quality badges on the header row.
           <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",minWidth:0}}>
             {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{campaignPerf===null?"Loading\u2026":"No campaign data yet"}</div>}
             {fCamps.map(function(c,i){
@@ -11678,13 +11742,14 @@ var DashboardPage = function(p) {
                       <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{c.source||"\u2014"}</div>
                     </div>
                   </div>
-                  <div style={{flexShrink:0}}>{convBadge(c.conv)}</div>
+                  <div style={{flexShrink:0,display:"flex",alignItems:"center",gap:5}}>{convBadge(c.conv)}{qBadge(c.quality)}</div>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(4, minmax(0, 1fr))",gap:6,paddingTop:8,borderTop:"1px solid #F1F5F9"}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(5, minmax(0, 1fr))",gap:6,paddingTop:8,borderTop:"1px solid #F1F5F9"}}>
                   {[
                     {l:"Leads", v:c.leads, sub:null,         vc:"#334155"},
                     {l:"Int.",  v:c.int,   sub:c.ip+"%",     vc:"#15803D"},
                     {l:"Meet.", v:c.meet,  sub:c.mp+"%",     vc:"#6D28D9"},
+                    {l:"EOI",   v:c.eoi,   sub:c.ep+"%",     vc:"#B45309"},
                     {l:"Deals", v:c.deals, sub:null,         vc:"#065F46"}
                   ].map(function(s,idx){return <div key={idx} style={{textAlign:"center",minWidth:0,padding:"2px 0"}}>
                     <div style={{fontSize:10,fontWeight:600,color:"#94A3B8",textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2,whiteSpace:"nowrap"}}>{s.l}</div>
@@ -11699,11 +11764,15 @@ var DashboardPage = function(p) {
         <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
         {(function(){
           // Desktop: grid-based table. Untouched by the mobile refactor.
-          var cols = "minmax(140px, 1fr) 50px 90px 90px 50px 60px";
-          var rowMinW = 500;
+          // Two columns added (EOI between Meetings and Deals, Quality at the
+          // end); every existing column keeps its width, so the table reads
+          // exactly as before with 90px + 70px of new content and a wider
+          // minWidth to keep the horizontal scroll honest on narrow desktops.
+          var cols = "minmax(140px, 1fr) 50px 90px 90px 90px 50px 60px 70px";
+          var rowMinW = 660;
           return <>
             <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW}}>
-              {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Conv."].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
+              {["Campaign \u00b7 Project","Leads","Interested","Meetings","EOI","Deals","Conv.","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
             </div>
             {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",minWidth:rowMinW}}>{campaignPerf===null?"Loading\u2026":"No campaign data yet"}</div>}
             {fCamps.map(function(c,i){
@@ -11719,8 +11788,10 @@ var DashboardPage = function(p) {
                 <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
                 <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ip}%</div></div>
                 <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.mp}%</div></div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#B45309"}}>{c.eoi}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ep}%</div></div>
                 <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
                 <div style={{textAlign:"center"}}>{convBadge(c.conv)}</div>
+                <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
               </div>;
             })}
           </>;

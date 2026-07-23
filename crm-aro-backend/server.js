@@ -21062,6 +21062,13 @@ var LEAD_UNIT_EXPR = { $cond: [{ $eq: ["$fieldsV2", true] }, { $ifNull: ["$unitT
 // (Deliberately WIDER than the Key Metrics tile's set, which is current-state
 // and excludes MeetingDone/DoneDeal — the two answer different questions.)
 var INTERESTED_SET = ["Interested", "HotCase", "Hot Case", "Potential", "MeetingDone", "Meeting Done", "DoneDeal"];
+// The inverse signal: statuses that mean NOBODY has been reached yet — never
+// worked ("" / NewLead) or worked and nobody picked up (NoAnswer). Anything
+// else implies a human answered at least once. Used by the campaign
+// performance table's contact rate; both spellings of each status are listed
+// because the collection carries the spaced legacy variants alongside the
+// camel-case enum.
+var CAMPAIGN_UNREACHED_SET = ["", "NewLead", "New Lead", "NoAnswer", "No Answer"];
 
 // GET /api/reports/overview/kpis
 // Returns the 4 top-line KPIs (revenue, pipeline, avg deal size, conv %)
@@ -25173,6 +25180,11 @@ app.get("/api/reports/campaigns", auth, reportsAuth, async function(req, res) {
 // later (cohort measurement). Counting conventions match the Leaderboard:
 //   EOI  = eoiStatus in {Pending, Approved}     (EOI Cancelled excluded)
 //   Deal = status DoneDeal | globalStatus donedeal, Deal Cancelled excluded
+// Two extra counts feed the Dashboard card only and are ADDITIVE — no existing
+// field changed meaning, so the Reports table above is byte-identical:
+//   eoisReached = ever reached the EOI stage (incl. cancelled AND converted-
+//                 to-deal, which clears eoiStatus). Broader than `eois`.
+//   contacted   = a human answered at least once (see CAMPAIGN_UNREACHED_SET).
 // One aggregation (group by {rawCampaign, project}); the campaign-variant
 // merge + top-unit-type pick happen in Node — lead.campaign cardinality is
 // tiny (~40 distinct) so the fuzzy rule stays in readable JS rather than a
@@ -25219,6 +25231,35 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
             { $in: ["$status", ["MeetingDone", "Meeting Done", "DoneDeal", "EOI"]] },
             { $eq: ["$globalStatus", "donedeal"] },
             { $eq: ["$globalStatus", "eoi"] }
+          ]},
+          // "Reached EOI" — every lead that EVER got to the EOI stage, whatever
+          // state it ended in: still Pending/Approved, EOI Cancelled, or already
+          // converted to a deal. Deliberately broader than _isEoi above, which
+          // stays Pending|Approved because the Reports > Campaigns table sorts
+          // and renders `eois` off it — that field is untouched.
+          // The eoi-to-deal handler CLEARS eoiStatus and stamps
+          // preDealStatus:"EOI" (see the convert block ~line 12921), so testing
+          // eoiStatus alone would miss every WON EOI — precisely the rows this
+          // column has to include. Hence the preDealStatus / status / globalStatus
+          // markers, which survive conversion.
+          _reachedEoi: { $or: [
+            { $gt: [{ $strLenCP: { $ifNull: ["$eoiStatus", ""] } }, 0] },
+            { $eq: ["$status", "EOI"] },
+            { $eq: ["$globalStatus", "eoi"] },
+            { $eq: ["$preDealStatus", "EOI"] }
+          ]},
+          // Contact rate input for the short-range Quality grade. "Contacted" =
+          // a human actually answered, so the lead moved off the two states that
+          // mean nobody was reached yet (NewLead = never worked, NoAnswer = tried
+          // and failed). Checked on the lead status AND on any assignment slice,
+          // so a lead that was reached by an earlier agent and later rotated back
+          // to NewLead still counts. This is the campaign-quality signal that a
+          // deal count cannot give on a 1-day window: a campaign delivering junk
+          // or wrong numbers shows up here immediately.
+          _isContacted: { $or: [
+            { $not: { $in: [{ $ifNull: ["$status", ""] }, CAMPAIGN_UNREACHED_SET] } },
+            { $anyElementTrue: { $map: { input: { $ifNull: ["$assignments", []] }, as: "a",
+                                         in: { $not: { $in: [{ $ifNull: ["$$a.status", ""] }, CAMPAIGN_UNREACHED_SET] } } } } }
           ]}
       }},
       { $group: {
@@ -25230,7 +25271,9 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
           eois:  { $sum: { $cond: ["$_isEoi", 1, 0] } },
           deals: { $sum: { $cond: ["$_isDeal", 1, 0] } },
           interested: { $sum: { $cond: ["$_isInt", 1, 0] } },
-          meetings:   { $sum: { $cond: ["$_isMeet", 1, 0] } }
+          meetings:   { $sum: { $cond: ["$_isMeet", 1, 0] } },
+          eoisReached: { $sum: { $cond: ["$_reachedEoi", 1, 0] } },
+          contacted:   { $sum: { $cond: ["$_isContacted", 1, 0] } }
       }}
     ]);
 
@@ -25264,9 +25307,10 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
       var isManual = base === "";
       var key = isManual ? " manual" : base.toLowerCase();
       var b = byKey[key];
-      if (!b) b = byKey[key] = { manual: isManual, labelCounts: {}, leads: 0, eois: 0, deals: 0, interested: 0, meetings: 0, units: {}, sources: {} };
+      if (!b) b = byKey[key] = { manual: isManual, labelCounts: {}, leads: 0, eois: 0, deals: 0, interested: 0, meetings: 0, eoisReached: 0, contacted: 0, units: {}, sources: {} };
       b.leads += r.leads; b.eois += r.eois; b.deals += r.deals;
       b.interested += (r.interested || 0); b.meetings += (r.meetings || 0);
+      b.eoisReached += (r.eoisReached || 0); b.contacted += (r.contacted || 0);
       if (!isManual) b.labelCounts[base] = (b.labelCounts[base] || 0) + r.leads;
       if (project) b.units[project] = (b.units[project] || 0) + r.leads;
       var src = String((r._id && r._id.source) || "").trim();
@@ -25282,7 +25326,8 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
       // Dashboard card. "" when the group has no source recorded.
       var topSource = Object.keys(b.sources).sort(function(a, c){ return b.sources[c] - b.sources[a]; })[0] || "";
       return { campaign: label, manual: b.manual, unitTypes: topUnits, leads: b.leads, eois: b.eois, deals: b.deals,
-               interested: b.interested, meetings: b.meetings, topSource: topSource };
+               interested: b.interested, meetings: b.meetings, eoisReached: b.eoisReached, contacted: b.contacted,
+               topSource: topSource };
     });
     // Default order: leads desc then deals desc; the manual bucket always sinks
     // to the bottom so it never outranks a real campaign on lead volume.
