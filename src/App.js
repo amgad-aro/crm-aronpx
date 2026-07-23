@@ -11763,35 +11763,61 @@ var DashboardPage = function(p) {
         ) : (
         <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
         {(function(){
-          // Desktop: grid-based table. Untouched by the mobile refactor.
-          // Two columns added (EOI between Meetings and Deals, Quality at the
-          // end); every existing column keeps its width, so the table reads
-          // exactly as before with 90px + 70px of new content and a wider
-          // minWidth to keep the horizontal scroll honest on narrow desktops.
-          var cols = "minmax(140px, 1fr) 50px 90px 90px 90px 50px 60px 70px";
-          var rowMinW = 660;
+          // Desktop: grid-based table, sized to fit the card with NO horizontal
+          // scroll \u2014 all eight tracks visible at once.
+          //
+          // The EOI + Quality columns originally kept every old track at its
+          // former width and just added 90px + 70px on top of a 660px minWidth.
+          // Measured at a 1440px viewport that put 668px of content into a 533px
+          // container: 135px of overflow with Quality clipped off the right edge.
+          //
+          // Refit, in order of how much width each move bought back:
+          //   - numeric tracks cut to just fit their content (a 3-4 digit count
+          //     over a 2-3 char percentage), not the old uniform 90px;
+          //   - headers abbreviated to the same short labels the mobile card
+          //     already uses (Interested -> Int., Meetings -> Meet.) \u2014 the
+          //     header text was what forced those tracks wide, since it cannot
+          //     wrap. Full names live on the title attribute for hover;
+          //   - grid gap 4px -> 3px across eight tracks;
+          //   - number 13px -> 12px, percentage subline 10px -> 9px;
+          //   - the fixed 660px minWidth removed entirely, so the name column
+          //     absorbs whatever is left and truncates with an ellipsis rather
+          //     than pushing the table wider than its card.
+          // Fixed tracks total 314px + 21px of gaps; the name column takes the
+          // remainder (~198px at a 1440px viewport) and never less than 72px.
+          // That 72px floor only binds once the card drops under ~410px (a
+          // sub-1200px window), where it buys a clean fit instead of a
+          // scrollbar; at every normal desktop width the name column is far
+          // wider than its floor, so the floor costs nothing there.
+          var cols = "minmax(72px, 1fr) 38px 42px 42px 38px 40px 46px 68px";
+          var heads = [["Campaign \u00b7 Project","Campaign \u00b7 Project"],["Leads","Leads"],
+                       ["Int.","Interested"],["Meet.","Meetings"],["EOI","Reached EOI"],
+                       ["Deals","Deals"],["Conv.","Conversion (deals / leads)"],["Quality","Campaign quality grade"]];
           return <>
-            <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW}}>
-              {["Campaign \u00b7 Project","Leads","Interested","Meetings","EOI","Deals","Conv.","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
+            <div style={{display:"grid",gridTemplateColumns:cols,gap:3,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4}}>
+              {heads.map(function(h){return <div key={h[0]} title={h[1]} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h[0]==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h[0]}</div>;})}
             </div>
-            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",minWidth:rowMinW}}>{campaignPerf===null?"Loading\u2026":"No campaign data yet"}</div>}
+            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{campaignPerf===null?"Loading\u2026":"No campaign data yet"}</div>}
             {fCamps.map(function(c,i){
               var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
-              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:rowMinW}}>
-                <div style={{minWidth:0,overflow:"hidden"}}>
+              // Full "Campaign \u00b7 Project \u00b7 Source" on the title attribute, since
+              // the visible label is now free to truncate at the column edge.
+              var fullName = (c.campaign||"\u2014") + " \u00b7 " + (c.project||"\u2014") + (c.source ? (" \u00b7 " + c.source) : "");
+              return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:3,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC"}}>
+                <div style={{minWidth:0,overflow:"hidden"}} title={fullName}>
                   <div style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>
                     <span style={{width:7,height:7,borderRadius:"50%",background:srcC,display:"inline-block",flexShrink:0}}/>
-                    <span style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</span>
+                    <span style={{fontSize:12,fontWeight:600,color:"#0F172A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{c.campaign||"\u2014"} &middot; {c.project||"\u2014"}</span>
                   </div>
-                  <div style={{fontSize:11,color:"#94A3B8",paddingLeft:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.source}</div>
+                  <div style={{fontSize:10,color:"#94A3B8",paddingLeft:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.source}</div>
                 </div>
-                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
-                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ip}%</div></div>
-                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.mp}%</div></div>
-                <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#B45309"}}>{c.eoi}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ep}%</div></div>
-                <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
-                <div style={{textAlign:"center"}}>{convBadge(c.conv)}</div>
-                <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
+                <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:"#334155"}}>{c.leads}</div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:9,color:"#94A3B8"}}>{c.ip}%</div></div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:9,color:"#94A3B8"}}>{c.mp}%</div></div>
+                <div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:700,color:"#B45309"}}>{c.eoi}</div><div style={{fontSize:9,color:"#94A3B8"}}>{c.ep}%</div></div>
+                <div style={{fontSize:12,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
+                <div style={{textAlign:"center",minWidth:0}}>{convBadge(c.conv)}</div>
+                <div style={{textAlign:"center",minWidth:0}}>{qBadge(c.quality)}</div>
               </div>;
             })}
           </>;
