@@ -10030,7 +10030,6 @@ var DashboardPage = function(p) {
   // adminMetrics values while loading, so existing numbers stay visible
   // through the first paint. Once STEP 4-5 shrinks the bootstrap, the
   // in-memory fallback becomes wrong but this state stays authoritative.
-  var [statsCounts, setStatsCounts] = useState(null);
   // Management Alerts, server-side. GET /api/dashboard/alerts counts over the
   // full Lead collection; the rows below used to scan `leads` (= p.leads),
   // which since the STEP 4-5 X3 bootstrap shrink holds only the 100
@@ -10057,9 +10056,9 @@ var DashboardPage = function(p) {
   // depending on which vintage a lead was created under.
   var [campaignPerf, setCampaignPerf] = useState(null);
   // STEP 4-5 X2 — server-side AgentPerf table from /api/dashboard/agent-perf.
-  // Replaces the in-memory agentPerfMemo scan once resolved. Falls back to
-  // the in-memory computation while loading and during sales role render
-  // (which gets 403 from the endpoint and is never rendered anyway).
+  // Sole source for the card: the in-memory agentPerfMemo fallback is gone,
+  // so null means "not resolved yet" and the card renders a loading row
+  // rather than flashing the old pre-fix numbers.
   var [agentPerfState, setAgentPerfState] = useState(null);
   useEffect(function(){
     var onResize = function(){ setIsMobile(window.innerWidth<768); };
@@ -10172,55 +10171,11 @@ var DashboardPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, filter, isOnlyAdmin]);
 
-  // STEP 4-3 — Dashboard admin tile counts. Mirrors the same range derivation
-  // as adminMetrics (admin path only) and pulls aggregated counts from
-  // /api/leads/counts + /api/daily-requests/counts. The render below uses
-  // these values whenever statsCounts is non-null (overriding adminMetrics'
-  // in-memory derivations). Fetch is keyed on cbBust so lead/DR WS events
-  // refresh the tiles in real time.
-  useEffect(function(){
-    if (p.cu.role === "hr") return; // redundant with !isOnlyAdmin below; explicit HR guard for consistency
-    if (!p.token) return;
-    if (!isOnlyAdmin) return;
-    var cancelled = false;
-    var nd = new Date();
-    var cY = nd.getFullYear(), cM = nd.getMonth(), cD = nd.getDate();
-    var jsDay = nd.getDay();
-    var daysSinceSat = (jsDay - 6 + 7) % 7;
-    var todayStart = new Date(cY, cM, cD, 0,0,0,0);
-    var todayEnd   = new Date(cY, cM, cD, 23,59,59,999);
-    var yestStart  = new Date(cY, cM, cD-1, 0,0,0,0);
-    var yestEnd    = new Date(cY, cM, cD-1, 23,59,59,999);
-    var weekStart  = new Date(cY, cM, cD - daysSinceSat, 0,0,0,0);
-    var weekEnd    = new Date(weekStart.getTime() + 7*86400000 - 1);
-    var monthStart = new Date(cY, cM, 1, 0,0,0,0);
-    var monthEnd   = new Date(cY, cM+1, 0, 23,59,59,999);
-    var rs, re;
-    if (filter==="today") { rs = todayStart.getTime(); re = todayEnd.getTime(); }
-    else if (filter==="yesterday") { rs = yestStart.getTime(); re = yestEnd.getTime(); }
-    else if (filter==="week") { rs = weekStart.getTime(); re = weekEnd.getTime(); }
-    else if (filter==="month") { rs = monthStart.getTime(); re = monthEnd.getTime(); }
-    else if (typeof filter==="string" && /^Q\d\s+\d{4}$/.test(filter)) {
-      var mm = filter.match(/^Q(\d)\s+(\d{4})$/);
-      var qn = parseInt(mm[1]), qy = parseInt(mm[2]);
-      rs = new Date(qy, (qn-1)*3, 1).getTime();
-      re = new Date(qy, qn*3, 0, 23,59,59,999).getTime();
-    } else { rs = monthStart.getTime(); re = monthEnd.getTime(); }
-    var fromIso = new Date(rs).toISOString();
-    var toIso   = new Date(re).toISOString();
-    Promise.all([
-      apiFetch("/api/leads/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;}),
-      apiFetch("/api/daily-requests/counts?from="+encodeURIComponent(fromIso)+"&to="+encodeURIComponent(toIso),"GET",null,p.token).catch(function(){return null;})
-      // The third call here fetched the any-status overdue-callback count for
-      // the Management Alerts row. That row now uses adminStats.overdue (the
-      // honest status="CallBack" definition), so the request is gone.
-    ]).then(function(r){
-      if (cancelled) return;
-      if (r[0] && r[1]) setStatsCounts({ leads: r[0], drs: r[1] });
-    });
-    return function(){ cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust, filter, isOnlyAdmin]);
+  // The /api/leads/counts + /api/daily-requests/counts fetch that lived here is
+  // gone. It ran 14 countDocuments + 3 aggregations on EVERY filter change and
+  // nothing rendered the result: the Key Metrics tiles read adminStats
+  // (/api/dashboard/admin-stats), and byCampaign — its last real consumer — was
+  // replaced by /api/reports/campaigns/performance.
 
   // Management Alerts + the true untouched total. Both are current-state, so
   // neither takes the period filter — only cbBust, so lead/DR mutations
@@ -10471,166 +10426,13 @@ var DashboardPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, agentPerfRange.rsA, agentPerfRange.reA]);
 
-  // Agent Performance per-row data — previously computed inline inside
-  // renderAgentPerformanceCard as O(users × leads × assignments). For 50
-  // agents × 5000 leads × 3 assignments × ~7 filter passes per agent that
-  // was ~9s of synchronous work on a Quarter click and crashed mobile.
-  // Pre-indexing leads/DRs/activities by agentId in three linear passes
-  // drops the per-user work to O(|al[uid]| × avg_assignments_per_lead) and
-  // the total to O(leads × avg_assignments + activities + dailyReqs + users).
-  // Result is identical to the original (verified semantic equivalence
-  // per check / status / feedback / response-time predicate).
-  var agentPerfMemo = useMemo(function(){
-    var rsA = agentPerfRange.rsA, reA = agentPerfRange.reA;
-    var now = Date.now();
-    var interestedStatusesA = ["Interested","Hot Case","HotCase","Potential"];
-    var users = p.users || [];
-    var dailyReqs = p.dailyReqs || [];
-    var actPool = (todayActivities && todayActivities.length) ? todayActivities : (p.activities || []);
-
-    // Pass 1: bucket leads by every agentId that has an in-range assignment.
-    // Same pass also tallies rotation in/out by agent NAME (agentHistory keys
-    // on name, not id), deduped per lead so a doubly-rotated lead counts once.
-    var alByAgent = new Map();
-    var rotOutByName = new Map(), rotInByName = new Map();
-    for (var i=0; i<leads.length; i++) {
-      var l = leads[i];
-      var assigns = l.assignments;
-      if (assigns && assigns.length) {
-        var added = null;
-        for (var j=0; j<assigns.length; j++) {
-          var a = assigns[j];
-          var rawAid = a.agentId && a.agentId._id ? a.agentId._id : a.agentId;
-          if (!rawAid) continue;
-          var aidStr = String(rawAid);
-          if (added && added.has(aidStr)) continue;
-          var t = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
-          if (!isNaN(t) && t>=rsA && t<=reA) {
-            if (!added) added = new Set();
-            added.add(aidStr);
-            var arr = alByAgent.get(aidStr);
-            if (!arr) { arr = []; alByAgent.set(aidStr, arr); }
-            arr.push(l);
-          }
-        }
-      }
-      var hist = l.agentHistory;
-      if (hist && hist.length) {
-        var froms = null, tos = null;
-        for (var k=0; k<hist.length; k++) {
-          var h = hist[k];
-          if (!h || h.action!=="Rotation") continue;
-          if (h.fromAgent) { if (!froms) froms = new Set(); froms.add(h.fromAgent); }
-          if (h.toAgent)   { if (!tos)   tos   = new Set(); tos.add(h.toAgent); }
-        }
-        if (froms) froms.forEach(function(name){ rotOutByName.set(name, (rotOutByName.get(name)||0)+1); });
-        if (tos)   tos.forEach(function(name){   rotInByName.set(name,  (rotInByName.get(name)||0)+1); });
-      }
-    }
-
-    // Pass 2: in-range non-archived DRs bucketed by agentId.
-    var drsByAgent = new Map();
-    for (var d=0; d<dailyReqs.length; d++) {
-      var r = dailyReqs[d];
-      if (r.archived) continue;
-      var rt = r.createdAt ? new Date(r.createdAt).getTime() : 0;
-      if (isNaN(rt) || rt<rsA || rt>reA) continue;
-      var raid = r.agentId && r.agentId._id ? r.agentId._id : r.agentId;
-      if (!raid) continue;
-      var raidStr = String(raid);
-      var arrR = drsByAgent.get(raidStr);
-      if (!arrR) { arrR = []; drsByAgent.set(raidStr, arrR); }
-      arrR.push(r);
-    }
-
-    // Pass 3: in-range activities bucketed by userId; also pre-tally calls
-    // so we don't have to re-scan per agent.
-    var actsByAgent = new Map();
-    var actCallsByAgent = new Map();
-    for (var x=0; x<actPool.length; x++) {
-      var act = actPool[x];
-      var xaid = act.userId && act.userId._id ? act.userId._id : act.userId;
-      if (!xaid) continue;
-      var xt = act.createdAt ? new Date(act.createdAt).getTime() : 0;
-      if (isNaN(xt) || xt<rsA || xt>reA) continue;
-      var xidStr = String(xaid);
-      var aarr = actsByAgent.get(xidStr);
-      if (!aarr) { aarr = []; actsByAgent.set(xidStr, aarr); }
-      aarr.push(act);
-      if (act.type==="call" || ((act.note||"").toLowerCase().indexOf("call")>=0)) {
-        actCallsByAgent.set(xidStr, (actCallsByAgent.get(xidStr)||0)+1);
-      }
-    }
-
-    // Pass 4: per-sales-user, walk only that agent's bucketed leads. Inside
-    // each lead, walk only its assignments (small) once to derive every
-    // per-uid metric. Total work: O(sum of |al[uid]| × avg_assignments).
-    return users.filter(function(u){return u.role==="sales";}).map(function(u){
-      var uid = String(u._id||gid(u));
-      var uname = u.name || "";
-      var al = alByAgent.get(uid) || [];
-      var adr = drsByAgent.get(uid) || [];
-      var aActs = actsByAgent.get(uid) || [];
-      var acalls = actCallsByAgent.get(uid) || 0;
-      var arotOut = rotOutByName.get(uname) || 0;
-      var arotIn = rotInByName.get(uname) || 0;
-
-      var aint=0, ameet=0, anoAns=0, afup=0, aover=0, adeals=0, aFbLeads=0;
-      var rtSum=0, rtCount=0;
-      for (var ai=0; ai<al.length; ai++) {
-        var lead = al[ai];
-        var hasInt=false, hasMeet=false, hasNoAns=false, hasAgentFb=false;
-        var lassigns = lead.assignments;
-        if (lassigns) {
-          for (var aj=0; aj<lassigns.length; aj++) {
-            var asg = lassigns[aj];
-            var asgAid = asg.agentId && asg.agentId._id ? asg.agentId._id : asg.agentId;
-            if (String(asgAid)!==uid) continue;
-            var asgSt = asg.status;
-            if (!hasInt && interestedStatusesA.indexOf(asgSt)>=0) hasInt = true;
-            if (!hasMeet && (asgSt==="Meeting Done" || asgSt==="MeetingDone")) hasMeet = true;
-            if (!hasNoAns && (asgSt==="NoAnswer" || asgSt==="No Answer")) hasNoAns = true;
-            if (!hasAgentFb) {
-              if ((asg.notes && String(asg.notes).trim().length>0) || (asg.lastFeedback && String(asg.lastFeedback).trim().length>0)) hasAgentFb = true;
-            }
-            if (asg.lastActionAt && lead.createdAt) {
-              var diff = new Date(asg.lastActionAt).getTime() - new Date(lead.createdAt).getTime();
-              if (diff>=0) { rtSum+=diff; rtCount++; }
-            }
-          }
-        }
-        if (hasInt) aint++;
-        if (hasMeet) ameet++;
-        if (hasNoAns) anoAns++;
-        if (lead.callbackTime) {
-          afup++;
-          if (new Date(lead.callbackTime).getTime()<now && !["MeetingDone","DoneDeal","EOI"].includes(lead.status)) aover++;
-        }
-        if (lead.status==="DoneDeal" || lead.globalStatus==="donedeal") adeals++;
-        var leadLevelFb = (lead.notes && String(lead.notes).trim().length>0) || (lead.lastFeedback && String(lead.lastFeedback).trim().length>0);
-        if (leadLevelFb || hasAgentFb) aFbLeads++;
-      }
-
-      var fbPct = al.length>0 ? (aFbLeads/al.length) : 0;
-      var respH = rtCount>0 ? (rtSum/rtCount)/3600000 : 0;
-      var ip = al.length>0 ? Math.round(aint/al.length*100) : 0;
-      var mp = al.length>0 ? Math.round(ameet/al.length*100) : 0;
-      var cbTotal = afup;
-      var cbOnTime = afup - aover;
-      var cbPct = cbTotal>0 ? (cbOnTime/cbTotal) : (afup===0 ? 1 : 0);
-      var qActivity = al.length>0 ? Math.min(25, (aActs.length/al.length)*25) : 0;
-      var qFeedback = fbPct * 20;
-      var qResp = respH>0 ? Math.max(0, 20 - respH*2) : (rtCount>0?20:10);
-      var qMeeting = al.length>0 ? Math.min(15, (ameet/al.length)*100*0.15) : 0;
-      var qCallback = cbPct * 20;
-      var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
-      if (qualityScore>100) qualityScore = 100; if (qualityScore<0) qualityScore = 0;
-      var actScore = Math.min(100, (al.length+adr.length)*5);
-      var rtScore = respH>0 ? Math.max(0, 100-respH*2) : 50;
-      var score = Math.round(actScore*0.4 + mp*0.3 + ip*0.2 + rtScore*0.1);
-      return {uid:uid,name:u.name,leads:al.length,dr:adr.length,total:al.length+adr.length,calls:acalls,followups:afup,overdue:aover,interested:aint,ip:ip,meetings:ameet,mp:mp,deals:adeals,rotOut:arotOut,rotIn:arotIn,noAnswer:anoAns,respTime:respH>0?respH.toFixed(1):"—",score:score,quality:qualityScore};
-    }).sort(function(a,b){return b.quality-a.quality;});
-  },[leads, p.users, p.dailyReqs, p.activities, todayActivities, agentPerfRange]);
+  // The in-memory agentPerfMemo that used to live here is gone. It scanned
+  // `leads` (= p.leads, only the 100 newest-created leads since the STEP 4-5
+  // X3 bootstrap shrink) and reproduced the OLD metric definitions: rotation
+  // tallies matched by agent NAME and ignoring the period, plus a "response
+  // time" that was really lastActionAt - lead.createdAt. It rendered in the
+  // gap before /api/dashboard/agent-perf resolved, so the pre-fix numbers
+  // flashed on every filter change. The card now waits for the server rows.
 
   var hourNow = new Date().getHours();
   var greeting = hourNow<6 ? "Good Night \ud83d\ude34" : hourNow<12 ? "Good Morning \u2600\ufe0f" : hourNow<18 ? "Good Afternoon \ud83c\udf24\ufe0f" : hourNow<24 ? "Good Evening \ud83c\udf19" : "Good Night \ud83d\ude34";
@@ -10807,16 +10609,17 @@ var DashboardPage = function(p) {
   };
 
   // Agent Performance widget — used by both the admin dashboard and the
-  // team-scoped (TL/manager/director) dashboard. The per-agent metrics are
-  // pre-computed via the agentPerfMemo useMemo above (filter-keyed). The rsA
-  // and reA params are accepted for backward call-site compatibility but no
-  // longer drive the compute; both call sites pass values that map to the
-  // same memoized range (see agentPerfRange).
+  // team-scoped (TL/manager/director) dashboard. Rows come exclusively from
+  // /api/dashboard/agent-perf (already sorted by quality desc). The rsA/reA
+  // params are accepted for backward call-site compatibility but don't drive
+  // anything; both call sites map to the same fetched range (agentPerfRange).
   var renderAgentPerformanceCard = function(/* rsA, reA */){
-    // STEP 4-5 X2 — prefer the server-rendered rows when present (the
-    // in-memory memo becomes wrong post-X3 bootstrap shrink). Same shape,
-    // already sorted by quality desc on the server.
-    var fAgentPerfA = agentPerfState || agentPerfMemo;
+    // null = the fetch hasn't resolved (or failed). Render a placeholder row
+    // rather than an in-memory approximation — the old fallback showed
+    // name-matched, period-ignoring rotations and a lead-age "Resp.", which
+    // flashed as real numbers before the server rows landed.
+    var fAgentPerfA = agentPerfState;
+    var agentPerfLoading = fAgentPerfA === null;
     return card(<>
       <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
         <div style={{fontSize:15,fontWeight:700,color:"#0F172A"}}>Agent Performance</div>
@@ -10826,7 +10629,9 @@ var DashboardPage = function(p) {
       <div style={{display:"grid",gridTemplateColumns:isMobile?"36px 150px repeat(14, 56px)":"36px 160px repeat(14, minmax(0, 1fr))",gap:4,paddingTop:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,width:isMobile?"max-content":"100%",minWidth:isMobile?980:undefined,position:"sticky",top:0,zIndex:10,background:"#fff"}}>
         {["","Agent","Leads","DR","Total","Calls","Follow","Overdue","Int","Meet","Deals","Rot OUT","Rot IN","No Ans","Resp.","Quality"].map(function(h,idx){return <div key={h+idx} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Agent"?"left":"center",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h}</div>;})}
       </div>
-      {fAgentPerfA.map(function(a,i){
+      {agentPerfLoading && <div style={{fontSize:12,color:"#94A3B8",padding:"14px 0",textAlign:"center"}}>Loading agent performance…</div>}
+      {!agentPerfLoading && fAgentPerfA.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"14px 0",textAlign:"center"}}>No agent activity in this period</div>}
+      {(fAgentPerfA||[]).map(function(a,i){
         var medals=["🥇","🥈","🥉"];
         var avBg=["#DBEAFE","#DCFCE7","#FEF3C7","#EDE9FE","#FFE4E6"][i%5];
         var avC=["#1D4ED8","#166534","#92400E","#5B21B6","#9F1239"][i%5];
@@ -11445,30 +11250,12 @@ var DashboardPage = function(p) {
   var fLeads = adminMetrics.fLeads, fTotal = adminMetrics.fTotal, fSC = adminMetrics.fSC, fDR = adminMetrics.fDR;
   var statusChangedInRange = adminMetrics.statusChangedInRange;
   var interestedStatuses = adminMetrics.interestedStatuses, allLeadsUntimed = adminMetrics.allLeadsUntimed;
-  var meetingsFromLeads = adminMetrics.meetingsFromLeads, meetingsFromDR = adminMetrics.meetingsFromDR, meetingsFiltered = adminMetrics.meetingsFiltered;
-  var interestedFiltered = adminMetrics.interestedFiltered;
-  var dealsFromLeads = adminMetrics.dealsFromLeads, dealsFromDR = adminMetrics.dealsFromDR, dealsFiltered = adminMetrics.dealsFiltered;
-  var overdueLeads = adminMetrics.overdueLeads, overdueDR = adminMetrics.overdueDR, overdueFiltered = adminMetrics.overdueFiltered;
-  var callbacksFiltered = adminMetrics.callbacksFiltered, drFiltered = adminMetrics.drFiltered;
-  // STEP 4-3 — once /api/leads/counts + /api/daily-requests/counts have
-  // resolved, prefer the server-aggregated numbers over the in-memory
-  // adminMetrics derivations. Same shape; identical semantics. Once STEP 4-5
-  // shrinks p.leads / p.dailyReqs the in-memory derivation becomes wrong but
-  // statsCounts stays correct.
-  if (statsCounts) {
-    meetingsFromLeads = statsCounts.leads.meetings;
-    meetingsFromDR    = statsCounts.drs.meetings;
-    meetingsFiltered  = meetingsFromLeads + meetingsFromDR;
-    interestedFiltered = statsCounts.leads.interested;
-    dealsFromLeads = statsCounts.leads.deals;
-    dealsFromDR    = statsCounts.drs.deals;
-    dealsFiltered  = dealsFromLeads + dealsFromDR;
-    overdueLeads = statsCounts.leads.overdueCallbacks;
-    overdueDR    = statsCounts.drs.overdueCallbacks;
-    overdueFiltered = overdueLeads + overdueDR;
-    callbacksFiltered = statsCounts.leads.callbacksInRange;
-    drFiltered = statsCounts.drs.total;
-  }
+  // meetings* / interested* / deals* / overdue* / callbacksFiltered / drFiltered
+  // were destructured out of adminMetrics here and then overridden from
+  // statsCounts. Neither the derivation nor the override was ever rendered —
+  // the Key Metrics tiles read adminStats — so both are gone. adminMetrics
+  // still computes the underlying fields; it is shared with the team-scoped
+  // render and is left untouched.
 
   // Campaign performance (filtered). STEP 4-5 X2 \u2014 prefers
   // statsCounts.leads.byCampaign when resolved (server aggregates top 12
