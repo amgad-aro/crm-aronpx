@@ -18659,13 +18659,68 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
       createdAt: { $gte: new Date(rsA), $lte: new Date(reA) }
     }).select("_id userId leadId type note createdAt").lean();
 
+    // Legacy-vintage fallback for rotation attribution. agentHistory entries
+    // only gained an `agentId` when the per-agent daily-cap aggregation was
+    // added, so older entries carry names alone. Id is used when present; this
+    // map is the fallback so legacy rows still attribute.
+    var allUsers = await User.find({}).select("_id name").lean();
+    var nameToId = {};
+    allUsers.forEach(function(u){ if (u.name) nameToId[u.name] = String(u._id); });
+
+    // Median first-response hours per agent. Same definition as
+    // /api/reports/agents/:id/kpis: for every assignments[] slice assigned in
+    // range, the first CONTACT activity by that agent against that lead
+    // at-or-after assignedAt. Deliberately no upper bound on the activity
+    // timestamp — the question is "how fast did they respond after being
+    // assigned", not "did the reply land inside the report window". Slices
+    // with no follow-up contribute nothing rather than counting as 0.
+    var CONTACT_TYPES = ["call", "meeting", "followup", "email", "note"];
+    var visibleIds = users.map(function(u){ return u._id; });
+    var responseRows = await Lead.aggregate([
+      { $match: { archived: { $ne: true }, "assignments.agentId": { $in: visibleIds } } },
+      { $project: { assignments: 1 } },
+      { $unwind: "$assignments" },
+      { $match: {
+          "assignments.agentId": { $in: visibleIds },
+          "assignments.assignedAt": { $gte: new Date(rsA), $lte: new Date(reA) }
+      }},
+      { $project: { agentId: "$assignments.agentId", assignedAt: "$assignments.assignedAt", leadId: "$_id" } },
+      { $lookup: {
+          from: "activities",
+          let: { agent: "$agentId", lead: "$leadId", assigned: "$assignedAt" },
+          pipeline: [
+            { $match: { $expr: { $and: [
+              { $eq: ["$userId", "$$agent"] },
+              { $eq: ["$leadId", "$$lead"] },
+              { $gte: ["$createdAt", "$$assigned"] },
+              { $in: ["$type", CONTACT_TYPES] }
+            ]}}},
+            { $sort: { createdAt: 1 } },
+            { $limit: 1 },
+            { $project: { createdAt: 1 } }
+          ],
+          as: "firstContact"
+      }},
+      { $unwind: "$firstContact" },
+      { $project: { agentId: 1, hours: { $divide: [{ $subtract: ["$firstContact.createdAt", "$assignedAt"] }, 3600000] } } },
+      { $match: { hours: { $gte: 0 } } },
+      { $group: { _id: "$agentId", hoursArr: { $push: "$hours" } } }
+    ]);
+    var respByAgent = new Map();
+    responseRows.forEach(function(r){
+      var arr = (r.hoursArr || []).slice().sort(function(a,b){ return a-b; });
+      if (!arr.length) return;
+      var mid = Math.floor(arr.length / 2);
+      respByAgent.set(String(r._id), arr.length % 2 ? arr[mid] : (arr[mid-1] + arr[mid]) / 2);
+    });
+
     var now = Date.now();
     var interestedStatusesA = ["Interested", "Hot Case", "HotCase", "Potential"];
 
     // Pass 1: bucket leads by agentId via assignments in range, plus
     // rotation in/out tallies by NAME (agentHistory keys on name).
     var alByAgent = new Map();
-    var rotOutByName = new Map(), rotInByName = new Map();
+    var rotOutById = new Map(), rotInById = new Map();
     for (var i = 0; i < leads.length; i++) {
       var l = leads[i];
       var assigns = l.assignments;
@@ -18687,17 +18742,41 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
           }
         }
       }
+      // Rotation tallies — now PERIOD-SCOPED and keyed by id.
+      // agentHistory is Mixed[]; each Rotation entry is
+      // {action, fromAgent(name), toAgent(name), agentId(RECEIVER), reason, by, date}.
+      // The SENDER carries no id, so recover it from the chain: sorted by date
+      // the entries are successive holders, so entry[k-1]'s receiver IS entry[k]'s
+      // sender. The first entry is reason:"first_assignment" (fromAgent:"") and
+      // therefore contributes no rot-OUT. `date` may be a Date or an ISO string
+      // depending on vintage — new Date() handles both, and unparseable entries
+      // are skipped rather than counted as epoch 0 (which would have dragged
+      // every legacy row into range).
       var hist = l.agentHistory;
       if (hist && hist.length) {
-        var froms = null, tos = null;
+        var rots = [];
         for (var k = 0; k < hist.length; k++) {
           var h = hist[k];
           if (!h || h.action !== "Rotation") continue;
-          if (h.fromAgent) { if (!froms) froms = new Set(); froms.add(h.fromAgent); }
-          if (h.toAgent)   { if (!tos)   tos   = new Set(); tos.add(h.toAgent); }
+          var ht = h.date ? new Date(h.date).getTime() : NaN;
+          if (isNaN(ht)) continue;
+          var toId = h.agentId ? String(h.agentId) : (h.toAgent ? (nameToId[h.toAgent] || "") : "");
+          rots.push({ t: ht, to: toId });
         }
-        if (froms) froms.forEach(function(name){ rotOutByName.set(name, (rotOutByName.get(name)||0)+1); });
-        if (tos)   tos.forEach(function(name){   rotInByName.set(name,  (rotInByName.get(name)||0)+1); });
+        rots.sort(function(a, b){ return a.t - b.t; });
+        var froms = null, tos = null;
+        for (var r = 0; r < rots.length; r++) {
+          // Window test AFTER sorting so rots[r-1] is the true chronological
+          // predecessor even when it falls outside the selected period.
+          if (rots[r].t < rsA || rots[r].t > reA) continue;
+          if (rots[r].to) { if (!tos) tos = new Set(); tos.add(rots[r].to); }
+          var senderId = r > 0 ? rots[r-1].to : "";
+          if (senderId) { if (!froms) froms = new Set(); froms.add(senderId); }
+        }
+        // Sets => a lead rotated through the same agent twice counts once,
+        // matching the "Leads rotated to/from this agent" column titles.
+        if (froms) froms.forEach(function(id){ rotOutById.set(id, (rotOutById.get(id)||0)+1); });
+        if (tos)   tos.forEach(function(id){   rotInById.set(id,  (rotInById.get(id)||0)+1); });
       }
     }
 
@@ -18737,11 +18816,10 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
       var adr = drsByAgent.get(uid) || [];
       var aActs = actsByAgent.get(uid) || [];
       var acalls = actCallsByAgent.get(uid) || 0;
-      var arotOut = rotOutByName.get(uname) || 0;
-      var arotIn  = rotInByName.get(uname) || 0;
+      var arotOut = rotOutById.get(uid) || 0;
+      var arotIn  = rotInById.get(uid) || 0;
 
       var aint = 0, ameet = 0, anoAns = 0, afup = 0, aover = 0, adeals = 0, aFbLeads = 0;
-      var rtSum = 0, rtCount = 0;
       for (var ai = 0; ai < al.length; ai++) {
         var lead = al[ai];
         var hasInt = false, hasMeet = false, hasNoAns = false, hasAgentFb = false;
@@ -18758,10 +18836,11 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
             if (!hasAgentFb) {
               if ((asg.notes && String(asg.notes).trim().length > 0) || (asg.lastFeedback && String(asg.lastFeedback).trim().length > 0)) hasAgentFb = true;
             }
-            if (asg.lastActionAt && lead.createdAt) {
-              var diff = new Date(asg.lastActionAt).getTime() - new Date(lead.createdAt).getTime();
-              if (diff >= 0) { rtSum += diff; rtCount++; }
-            }
+            // (The old rtSum/rtCount accumulator lived here. It measured
+            // lastActionAt - lead.createdAt, i.e. the LEAD'S AGE at the agent's
+            // most recent touch — not a response time at all: touching a
+            // month-old lead today reported "720h". Replaced by the median
+            // first-response aggregation above.)
           }
         }
         if (hasInt) aint++;
@@ -18777,18 +18856,39 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
       }
 
       var fbPct = al.length > 0 ? (aFbLeads / al.length) : 0;
-      var respH = rtCount > 0 ? (rtSum / rtCount) / 3600000 : 0;
+      // Median hours from assignment to first contact (see the aggregation
+      // above). null = this agent had no in-range assignment that was ever
+      // followed up, which is NOT the same as "responded instantly".
+      var respMedian = respByAgent.has(uid) ? respByAgent.get(uid) : null;
+      var respH = respMedian === null ? 0 : respMedian;
       var ip = al.length > 0 ? Math.round(aint / al.length * 100) : 0;
       var mp = al.length > 0 ? Math.round(ameet / al.length * 100) : 0;
       var cbTotal = afup;
       var cbOnTime = afup - aover;
-      var cbPct = cbTotal > 0 ? (cbOnTime / cbTotal) : (afup === 0 ? 1 : 0);
-      var qActivity = al.length > 0 ? Math.min(25, (aActs.length / al.length) * 25) : 0;
-      var qFeedback = fbPct * 20;
-      var qResp = respH > 0 ? Math.max(0, 20 - respH * 2) : (rtCount > 0 ? 20 : 10);
-      var qMeeting = al.length > 0 ? Math.min(15, (ameet / al.length) * 100 * 0.15) : 0;
-      var qCallback = cbPct * 20;
-      var qualityScore = Math.round(qActivity + qFeedback + qResp + qMeeting + qCallback);
+
+      // Quality 0-100. Previously each component contributed a fixed slice of
+      // 100 and MISSING data scored full or half marks: an agent with no
+      // callbacks scheduled took the whole 20-point compliance block
+      // (cbPct = 1 when afup === 0) and one with no response data took 10 free
+      // points — so doing nothing scored 30/100. Now every component is a 0..1
+      // ratio with a weight, a component is only included when there IS data
+      // for it, and the total is renormalised over the applicable weights.
+      // No data at all => no components => 0.
+      var qParts = [];
+      if (al.length > 0) {
+        qParts.push({ w: 25, v: Math.min(1, aActs.length / al.length) });          // activity density
+        qParts.push({ w: 20, v: fbPct });                                          // feedback coverage
+        qParts.push({ w: 15, v: Math.min(1, ameet / al.length) });                 // meeting rate
+      }
+      if (respMedian !== null) {
+        qParts.push({ w: 20, v: Math.max(0, Math.min(1, 1 - respMedian / 10)) });   // 0h => 1, >=10h => 0
+      }
+      if (cbTotal > 0) {
+        qParts.push({ w: 20, v: cbOnTime / cbTotal });                              // callback compliance
+      }
+      var qWeight = qParts.reduce(function(sum, c){ return sum + c.w; }, 0);
+      var qEarned = qParts.reduce(function(sum, c){ return sum + c.w * c.v; }, 0);
+      var qualityScore = qWeight > 0 ? Math.round((qEarned / qWeight) * 100) : 0;
       if (qualityScore > 100) qualityScore = 100;
       if (qualityScore < 0)   qualityScore = 0;
       var actScore = Math.min(100, (al.length + adr.length) * 5);
@@ -18799,7 +18899,7 @@ app.get("/api/dashboard/agent-perf", auth, async function(req, res) {
         total: al.length + adr.length, calls: acalls, followups: afup,
         overdue: aover, interested: aint, ip: ip, meetings: ameet, mp: mp,
         deals: adeals, rotOut: arotOut, rotIn: arotIn, noAnswer: anoAns,
-        respTime: respH > 0 ? respH.toFixed(1) : "—",
+        respTime: respMedian !== null ? respMedian.toFixed(1) : "—",
         score: score, quality: qualityScore
       };
     }).sort(function(a, b){ return b.quality - a.quality; });
@@ -20957,6 +21057,11 @@ function reportsParseRange(from, to) {
 // after the field-refactor cleanup phase (all leads v2).
 var LEAD_DEV_EXPR  = { $cond: [{ $eq: ["$fieldsV2", true] }, { $ifNull: ["$project",  ""] }, { $ifNull: ["$campaign", ""] }] };
 var LEAD_UNIT_EXPR = { $cond: [{ $eq: ["$fieldsV2", true] }, { $ifNull: ["$unitType", ""] }, { $ifNull: ["$project",  ""] }] };
+// Funnel-superset "interested" set: reaching a meeting or a deal implies
+// interest, so Interested >= Meetings >= Deals holds on the campaign table.
+// (Deliberately WIDER than the Key Metrics tile's set, which is current-state
+// and excludes MeetingDone/DoneDeal — the two answer different questions.)
+var INTERESTED_SET = ["Interested", "HotCase", "Hot Case", "Potential", "MeetingDone", "Meeting Done", "DoneDeal"];
 
 // GET /api/reports/overview/kpis
 // Returns the 4 top-line KPIs (revenue, pipeline, avg deal size, conv %)
@@ -25099,13 +25204,33 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
           // _id keys stay named campaign/project so the Node post-processing below
           // is unchanged; for all-v1 data this equals the raw campaign/project.
           _dev:  LEAD_DEV_EXPR,
-          _unit: LEAD_UNIT_EXPR
+          _unit: LEAD_UNIT_EXPR,
+          // Funnel flags for the Dashboard's Campaign card. Aggregation-expression
+          // syntax ($in/$eq), never query syntax — spreading query-style
+          // {field:value} objects into $or makes every operand a truthy document
+          // literal, so $or is always true and every lead counts (the 100%-rate
+          // bug that bit the old byCampaign aggregation).
+          _isInt: { $or: [
+            { $in: ["$status", INTERESTED_SET] },
+            { $anyElementTrue: { $map: { input: { $ifNull: ["$assignments", []] }, as: "a",
+                                         in: { $in: ["$$a.status", INTERESTED_SET] } } } }
+          ]},
+          _isMeet: { $or: [
+            { $in: ["$status", ["MeetingDone", "Meeting Done", "DoneDeal", "EOI"]] },
+            { $eq: ["$globalStatus", "donedeal"] },
+            { $eq: ["$globalStatus", "eoi"] }
+          ]}
       }},
       { $group: {
-          _id: { campaign: "$_dev", project: "$_unit" },
+          // `source` joins the key so the Dashboard card can show a dominant
+          // source dot. The Node merge below re-collapses these rows per
+          // campaign, so the shape ReportsPage consumes is unchanged.
+          _id: { campaign: "$_dev", project: "$_unit", source: "$source" },
           leads: { $sum: 1 },
           eois:  { $sum: { $cond: ["$_isEoi", 1, 0] } },
-          deals: { $sum: { $cond: ["$_isDeal", 1, 0] } }
+          deals: { $sum: { $cond: ["$_isDeal", 1, 0] } },
+          interested: { $sum: { $cond: ["$_isInt", 1, 0] } },
+          meetings:   { $sum: { $cond: ["$_isMeet", 1, 0] } }
       }}
     ]);
 
@@ -25139,10 +25264,13 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
       var isManual = base === "";
       var key = isManual ? " manual" : base.toLowerCase();
       var b = byKey[key];
-      if (!b) b = byKey[key] = { manual: isManual, labelCounts: {}, leads: 0, eois: 0, deals: 0, units: {} };
+      if (!b) b = byKey[key] = { manual: isManual, labelCounts: {}, leads: 0, eois: 0, deals: 0, interested: 0, meetings: 0, units: {}, sources: {} };
       b.leads += r.leads; b.eois += r.eois; b.deals += r.deals;
+      b.interested += (r.interested || 0); b.meetings += (r.meetings || 0);
       if (!isManual) b.labelCounts[base] = (b.labelCounts[base] || 0) + r.leads;
       if (project) b.units[project] = (b.units[project] || 0) + r.leads;
+      var src = String((r._id && r._id.source) || "").trim();
+      if (src) b.sources[src] = (b.sources[src] || 0) + r.leads;
     });
 
     var campaigns = Object.keys(byKey).map(function(key){
@@ -25150,7 +25278,11 @@ app.get("/api/reports/campaigns/performance", auth, reportsAuth, async function(
       var label = b.manual ? "No campaign / Manual"
         : (Object.keys(b.labelCounts).sort(function(a, c){ return b.labelCounts[c] - b.labelCounts[a]; })[0] || "(unnamed)");
       var topUnits = Object.keys(b.units).sort(function(a, c){ return b.units[c] - b.units[a]; }).slice(0, 3);
-      return { campaign: label, manual: b.manual, unitTypes: topUnits, leads: b.leads, eois: b.eois, deals: b.deals };
+      // Dominant source by lead volume — drives the coloured dot on the
+      // Dashboard card. "" when the group has no source recorded.
+      var topSource = Object.keys(b.sources).sort(function(a, c){ return b.sources[c] - b.sources[a]; })[0] || "";
+      return { campaign: label, manual: b.manual, unitTypes: topUnits, leads: b.leads, eois: b.eois, deals: b.deals,
+               interested: b.interested, meetings: b.meetings, topSource: topSource };
     });
     // Default order: leads desc then deals desc; the manual bucket always sinks
     // to the bottom so it never outranks a real campaign on lead volume.

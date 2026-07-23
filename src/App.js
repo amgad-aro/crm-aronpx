@@ -10047,6 +10047,15 @@ var DashboardPage = function(p) {
   // adding excludeSource to the shared statsCounts call would silently change
   // the Campaign & Source Performance card, which reads byCampaign from it.
   var [statusDist, setStatusDist] = useState(null);
+  // Campaign & Source Performance rows from /api/reports/campaigns/performance:
+  // resolves development/unit per lead vintage (v1 keeps the development in
+  // `campaign`, v2 in `project`) and merges name variants (" - Copy", trailing
+  // numbers, month suffixes) so one campaign is one row. The old source
+  // (/api/leads/counts byCampaign) grouped the raw campaign|project|source
+  // triple, so "Naia Sahel", "Naia Sahel - Copy" and "Naia Sahel 2" were three
+  // separate low-count rows and the two columns meant different things
+  // depending on which vintage a lead was created under.
+  var [campaignPerf, setCampaignPerf] = useState(null);
   // STEP 4-5 X2 — server-side AgentPerf table from /api/dashboard/agent-perf.
   // Replaces the in-memory agentPerfMemo scan once resolved. Falls back to
   // the in-memory computation while loading and during sales role render
@@ -10231,6 +10240,20 @@ var DashboardPage = function(p) {
     return function(){ cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, isOnlyAdmin]);
+
+  // Campaign rows follow the page period filter (campaign performance is a
+  // period question, unlike the current-state alerts above).
+  useEffect(function(){
+    if (!p.token) return;
+    if (!isOnlyAdmin) return;
+    var cancelled = false;
+    setCampaignPerf(null);
+    apiFetch("/api/reports/campaigns/performance?from=" + agentPerfRange.rsA + "&to=" + agentPerfRange.reA, "GET", null, p.token)
+      .then(function(r){ if (!cancelled) setCampaignPerf((r && Array.isArray(r.campaigns)) ? r.campaigns : []); })
+      .catch(function(){ if (!cancelled) setCampaignPerf([]); });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust, agentPerfRange.rsA, agentPerfRange.reA, isOnlyAdmin]);
 
   // Leads by Status — full-collection distribution for the active period.
   // Same range derivation as the statsCounts fetch above so the card keeps the
@@ -10673,6 +10696,15 @@ var DashboardPage = function(p) {
   var fillCard = {display:"flex",flexDirection:"column",minHeight:0,boxSizing:"border-box"};
   // The one scrollable region inside each of those cards.
   var fillList = {flex:1,minHeight:0,overflowY:"auto",WebkitOverflowScrolling:"touch",marginRight:-6,paddingRight:6};
+  // Conversion pill. Same geometry as qBadge (the "Quality" badge it replaces)
+  // so the Campaign card's last column keeps its shape and alignment; only the
+  // meaning changes, from a 30/15-threshold interested-% label that could not
+  // read anything but "Low" on a short range, to the actual deals/leads rate.
+  var convBadge=function(pct){
+    var bg = pct === null ? "#F1F5F9" : pct > 0 ? "#DCFCE7" : "#F1F5F9";
+    var fg = pct === null ? "#94A3B8" : pct > 0 ? "#166534" : "#64748B";
+    return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:bg,color:fg}}>{pct===null?"\u2014":pct+"%"}</span>;
+  };
   var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
   // Shared period labels used by both the Today's Activities card (Change 1
@@ -11437,29 +11469,30 @@ var DashboardPage = function(p) {
   // statsCounts.leads.byCampaign when resolved (server aggregates top 12
   // campaign|project|source buckets in range). Falls back to the in-memory
   // fLeads scan during the first paint so existing numbers stay visible.
-  var fCamps;
-  if (statsCounts && statsCounts.leads && Array.isArray(statsCounts.leads.byCampaign)) {
-    fCamps = statsCounts.leads.byCampaign.slice(0, 8).map(function(c){
-      var ip = c.leads > 0 ? Math.round(c.interested / c.leads * 100) : 0;
-      var mp = c.leads > 0 ? Math.round(c.meet / c.leads * 100) : 0;
-      return Object.assign({}, c, { int: c.interested || 0, ip: ip, mp: mp, quality: ip > 30 ? "High" : ip > 15 ? "Medium" : "Low" });
-    });
-  } else {
-    var fCampMap={};
-    fLeads.forEach(function(l){
-      var k=(l.campaign||"\u2014")+"|"+(l.project||"\u2014")+"|"+(l.source||"\u2014");
-      if(!fCampMap[k]) fCampMap[k]={campaign:l.campaign||"",project:l.project||"",source:l.source||"",leads:0,int:0,meet:0,deals:0};
-      fCampMap[k].leads++;
-      if((l.assignments||[]).some(function(a){return interestedStatuses.includes(a.status);})||interestedStatuses.includes(l.status)) fCampMap[k].int++;
-      if((l.assignments||[]).some(function(a){return a.status==="Meeting Done"||a.status==="MeetingDone";})||l.status==="MeetingDone"||l.status==="DoneDeal") fCampMap[k].meet++;
-      if(l.status==="DoneDeal") fCampMap[k].deals++;
-    });
-    fCamps=Object.values(fCampMap).sort(function(a,b){return b.leads-a.leads;}).slice(0,8).map(function(c){
-      var ip=c.leads>0?Math.round(c.int/c.leads*100):0;
-      var mp=c.leads>0?Math.round(c.meet/c.leads*100):0;
-      return Object.assign({},c,{ip:ip,mp:mp,quality:ip>30?"High":ip>15?"Medium":"Low"});
-    });
-  }
+  // Mapped onto the same row shape the markup already reads, so the card's
+  // layout is untouched:
+  //   campaign -> vintage-resolved DEVELOPMENT (was the raw `campaign` field,
+  //               which on legacy leads already held the development)
+  //   project  -> the group's top unit type (legacy `project` held the unit)
+  //   source   -> dominant source by lead volume, for the coloured dot
+  //   conv     -> deals / leads, replacing the old "Quality" badge, which was
+  //               interested-% under fixed 30/15 thresholds and therefore
+  //               pinned to "Low" on any short range regardless of performance.
+  var fCamps = (campaignPerf || []).slice(0, 8).map(function(c){
+    var ip = c.leads > 0 ? Math.round((c.interested || 0) / c.leads * 100) : 0;
+    var mp = c.leads > 0 ? Math.round((c.meetings   || 0) / c.leads * 100) : 0;
+    return {
+      campaign: c.campaign || "",
+      project:  (c.unitTypes && c.unitTypes[0]) || "",
+      source:   c.topSource || "",
+      leads:    c.leads || 0,
+      int:      c.interested || 0,
+      meet:     c.meetings || 0,
+      deals:    c.deals || 0,
+      ip: ip, mp: mp,
+      conv: c.leads > 0 ? Math.round((c.deals || 0) / c.leads * 100) : null
+    };
+  });
 
   // Agent Performance compute moved to renderAgentPerformanceCard() helper
   // above so it can be shared between the admin and team-scoped dashboards.
@@ -11841,7 +11874,7 @@ var DashboardPage = function(p) {
           // wrapping freely on top and a 4-stat mini-grid + Quality badge
           // below where every number sits right under its own label.
           <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",minWidth:0}}>
-            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>No campaign data yet</div>}
+            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0"}}>{campaignPerf===null?"Loading\u2026":"No campaign data yet"}</div>}
             {fCamps.map(function(c,i){
               var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
               return <div key={i} style={{border:"1px solid #F1F5F9",borderRadius:12,padding:"10px 12px",background:"#FBFBFD",minWidth:0,boxSizing:"border-box"}}>
@@ -11853,7 +11886,7 @@ var DashboardPage = function(p) {
                       <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{c.source||"\u2014"}</div>
                     </div>
                   </div>
-                  <div style={{flexShrink:0}}>{qBadge(c.quality)}</div>
+                  <div style={{flexShrink:0}}>{convBadge(c.conv)}</div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4, minmax(0, 1fr))",gap:6,paddingTop:8,borderTop:"1px solid #F1F5F9"}}>
                   {[
@@ -11878,8 +11911,9 @@ var DashboardPage = function(p) {
           var rowMinW = 500;
           return <>
             <div style={{display:"grid",gridTemplateColumns:cols,gap:4,paddingBottom:8,borderBottom:"1px solid #F1F5F9",marginBottom:4,minWidth:rowMinW}}>
-              {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Quality"].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
+              {["Campaign \u00b7 Project","Leads","Interested","Meetings","Deals","Conv."].map(function(h){return <div key={h} style={{fontSize:11,fontWeight:700,color:"#94A3B8",textAlign:h==="Campaign \u00b7 Project"?"left":"center",whiteSpace:"nowrap"}}>{h}</div>;})}
             </div>
+            {fCamps.length===0 && <div style={{fontSize:12,color:"#94A3B8",padding:"10px 0",minWidth:rowMinW}}>{campaignPerf===null?"Loading\u2026":"No campaign data yet"}</div>}
             {fCamps.map(function(c,i){
               var srcC=c.source==="Facebook"?"#1877F2":c.source==="Google Sheets"?"#0F9D58":"#EA4335";
               return <div key={i} style={{display:"grid",gridTemplateColumns:cols,gap:4,alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F8FAFC",minWidth:rowMinW}}>
@@ -11894,7 +11928,7 @@ var DashboardPage = function(p) {
                 <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#15803D"}}>{c.int}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.ip}%</div></div>
                 <div style={{textAlign:"center"}}><div style={{fontSize:13,fontWeight:700,color:"#6D28D9"}}>{c.meet}</div><div style={{fontSize:10,color:"#94A3B8"}}>{c.mp}%</div></div>
                 <div style={{fontSize:13,fontWeight:700,textAlign:"center",color:"#065F46"}}>{c.deals}</div>
-                <div style={{textAlign:"center"}}>{qBadge(c.quality)}</div>
+                <div style={{textAlign:"center"}}>{convBadge(c.conv)}</div>
               </div>;
             })}
           </>;
