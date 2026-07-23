@@ -10241,20 +10241,6 @@ var DashboardPage = function(p) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.token, p.cbBust, isOnlyAdmin]);
 
-  // Campaign rows follow the page period filter (campaign performance is a
-  // period question, unlike the current-state alerts above).
-  useEffect(function(){
-    if (!p.token) return;
-    if (!isOnlyAdmin) return;
-    var cancelled = false;
-    setCampaignPerf(null);
-    apiFetch("/api/reports/campaigns/performance?from=" + agentPerfRange.rsA + "&to=" + agentPerfRange.reA, "GET", null, p.token)
-      .then(function(r){ if (!cancelled) setCampaignPerf((r && Array.isArray(r.campaigns)) ? r.campaigns : []); })
-      .catch(function(){ if (!cancelled) setCampaignPerf([]); });
-    return function(){ cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[p.token, p.cbBust, agentPerfRange.rsA, agentPerfRange.reA, isOnlyAdmin]);
-
   // Leads by Status — full-collection distribution for the active period.
   // Same range derivation as the statsCounts fetch above so the card keeps the
   // period behaviour it already had; excludeSource drops the Daily Request
@@ -10447,6 +10433,25 @@ var DashboardPage = function(p) {
     } else { rsA = todayStart.getTime(); reA = todayEnd.getTime(); }
     return { rsA: rsA, reA: reA };
   },[filter]);
+
+  // MUST stay below the agentPerfRange assignment above: a dependency
+  // array is evaluated at the useEffect CALL SITE on every render, so
+  // reading agentPerfRange.rsA before the memo is assigned throws
+  // (var hoists the declaration, not the value) and takes the whole
+  // DashboardPage render down for EVERY role — the guards inside the
+  // callback do not protect the deps.
+  // period question, unlike the current-state alerts above).
+  useEffect(function(){
+    if (!p.token) return;
+    if (!isOnlyAdmin) return;
+    var cancelled = false;
+    setCampaignPerf(null);
+    apiFetch("/api/reports/campaigns/performance?from=" + agentPerfRange.rsA + "&to=" + agentPerfRange.reA, "GET", null, p.token)
+      .then(function(r){ if (!cancelled) setCampaignPerf((r && Array.isArray(r.campaigns)) ? r.campaigns : []); })
+      .catch(function(){ if (!cancelled) setCampaignPerf([]); });
+    return function(){ cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.token, p.cbBust, agentPerfRange.rsA, agentPerfRange.reA, isOnlyAdmin]);
 
   // STEP 4-5 X2 — server-driven AgentPerf rows. Replaces the agentPerfMemo
   // in-memory scans (which would silently undercount post-X3 bootstrap
