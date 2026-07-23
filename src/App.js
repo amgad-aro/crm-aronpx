@@ -10512,7 +10512,7 @@ var DashboardPage = function(p) {
     var fg = pct === null ? "#94A3B8" : pct > 0 ? "#166534" : "#64748B";
     return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:bg,color:fg}}>{pct===null?"\u2014":pct+"%"}</span>;
   };
-  var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"],"—":["#F1F5F9","#94A3B8"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
+  var qBadge=function(q){var m2={High:["#DCFCE7","#166534"],Medium:["#FEF3C7","#92400E"],Low:["#FEE2E2","#991B1B"]};var c2=m2[q]||m2.Low;return <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:6,background:c2[0],color:c2[1]}}>{q}</span>;};
 
   // Campaign Quality grade — restored as a column, but NOT with the old
   // formula. That one graded interested-% against fixed 30/15 cutoffs on every
@@ -10540,16 +10540,26 @@ var DashboardPage = function(p) {
   // else; the grading logic is threshold-agnostic. Worth a read-only pass over
   // leads grouped by campaign (interested/contacted/eoisReached/deals over
   // leads, on a 7-day and a quarter window) to set them from real data.
-  var CAMPAIGN_Q_MIN_LEADS = 5;   // below this, rates are noise (1 lead = 0% or 100%)
+  //
+  // NO MINIMUM SAMPLE SIZE — owner decision. Every campaign is graded, however
+  // few leads it has, so a 1-lead campaign gets a real badge instead of a "—".
+  // The tradeoff is deliberate and worth knowing when reading the column: on a
+  // handful of leads a single lead moves a rate by 100/leads points, so a
+  // 1-lead campaign can only ever score 0% or 100% on each rate and will read
+  // High or Low with nothing in between. Small-sample rows are therefore noisy
+  // by construction — the grade is honest about the data it has, not a claim
+  // that the sample is sufficient. Sort by Leads to see which grades carry
+  // weight. (A previous revision withheld a grade below 5 leads; removed here.)
   var CAMPAIGN_Q_SHORT = { high: { int: 25, con: 55 }, med: { int: 10, con: 30 } };
   var CAMPAIGN_Q_LONG  = { high: { eoi: 6,  conv: 3 }, med: { eoi: 2,  conv: 1 } };
   // Short modes are the ranges where the funnel has not had time to move.
   var campaignQIsShort = (filter === "today" || filter === "yesterday" || filter === "week");
   var campaignQuality = function(c){
+    // Guard only against divide-by-zero, NOT against small samples: a 0-lead
+    // row (which the grouping should never emit) scores every rate at 0 and
+    // grades Low rather than producing NaN comparisons.
     var leads = c.leads || 0;
-    // Honest small-sample guard: on 1-4 leads a single interested lead swings
-    // the rate from 0% to 100%, so grade nothing rather than grade noise.
-    if (leads < CAMPAIGN_Q_MIN_LEADS) return "—";
+    if (leads <= 0) return "Low";
     if (campaignQIsShort) {
       // Reads the fCamps row's own field names (int / contacted / eoi / deals),
       // NOT the raw endpoint names — the row renames interested -> int.
